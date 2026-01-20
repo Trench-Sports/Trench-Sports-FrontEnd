@@ -1,0 +1,88 @@
+:root {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.4;
+}
+body {
+  margin: 0;
+  background: #0b0f14;
+  color: #e9eef5;
+}
+a { color: inherit; }
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 28px 16px;
+}
+.card {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+  border-radius: 16px;
+  padding: 16px;
+  margin-top: 16px;
+}
+.row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+button {
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.18);
+  background: rgba(255,255,255,0.10);
+  color: #e9eef5;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+code {
+  background: rgba(0,0,0,0.35);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+.log {
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+}
+
+/* --- Responsive Contacts layout --- */
+.contactsLayout {
+  display: grid;
+  grid-template-columns: minmax(320px, 520px) minmax(240px, 320px) minmax(320px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.contactsColGrid { min-width: 0; }
+.contactsColControls { min-width: 0; }
+.contactsColSessions { min-width: 0; }
+
+/* Prevent the ContactGrid from forcing horizontal overflow */
+.gridWrap {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+/* iPad / smaller laptops: 2 columns, grid spans full width */
+@media (max-width: 1024px) {
+  .contactsLayout {
+    grid-template-columns: 1fr 1fr;
+  }
+  .contactsColGrid {
+    grid-column: 1 / -1;
+  }
+}
+
+/* mobile: stack everything + full-width buttons in rows */
+@media (max-width: 640px) {
+  .contactsLayout {
+    grid-template-columns: 1fr;
+  }
+  .row > button {
+    flex: 1 1 100%;
+  }
+}
