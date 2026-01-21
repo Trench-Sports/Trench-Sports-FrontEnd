@@ -123,6 +123,15 @@ function LegendBar({
   );
 }
 
+function requireSupabase() {
+  if (!supabase) {
+    throw new Error(
+      "Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel Environment Variables (Production + Preview)."
+    );
+  }
+  return supabase;
+}
+
 export default function App() {
   const [conn, setConn] = useState<AdapterConnection | null>(null);
   const [status, setStatus] = useState<string>("Disconnected");
@@ -219,10 +228,8 @@ export default function App() {
       }
 
       if (isHit(msg)) {
-        // Update grid
         setGridLive((prev) => applyHit(prev, msg));
 
-        // Update live readout + session max
         const r0 = Number(msg.row) - 1;
         const c0 = Number(msg.col) - 1;
         const v = Number(msg.voltage ?? 0);
@@ -254,7 +261,6 @@ export default function App() {
       setStatus(`Connected to ${c.device.name ?? "device"}`);
       appendLine(`[info] Connected to ${c.device.name ?? "device"}`);
 
-      // new live session
       resetLiveSessionStats();
       setDataSource("live");
 
@@ -307,10 +313,12 @@ export default function App() {
     setDbLoading(true);
     setDbError("");
     try {
+      const sb = requireSupabase();
+
       let sessionId = dbSessionId.trim();
 
       if (!sessionId) {
-        const { data: sess, error: sessErr } = await supabase
+        const { data: sess, error: sessErr } = await sb
           .from("sessions")
           .select("id, started_at_ms, grid_rows, grid_cols")
           .order("started_at_ms", { ascending: false })
@@ -329,7 +337,7 @@ export default function App() {
         setGridDb(cloneGridWithHits(rows, cols));
       }
 
-      const { data: evt, error: evtErr } = await supabase
+      const { data: evt, error: evtErr } = await sb
         .from("events")
         .select("event_id, t_start_ms")
         .eq("session_id", sessionId)
@@ -342,7 +350,7 @@ export default function App() {
 
       setDbEventId(evt.event_id);
 
-      const { data: cells, error: cellsErr } = await supabase
+      const { data: cells, error: cellsErr } = await sb
         .from("event_cells")
         .select("r, c, v_min, p_max_kpa, t_last_ms")
         .eq("event_id", evt.event_id);
@@ -386,19 +394,26 @@ export default function App() {
     setGridSize({ rows, cols });
     setGridDb(cloneGridWithHits(rows, cols));
 
-    const { data: sum, error: sumErr } = await supabase
-      .from("session_summaries")
-      .select(
-        "session_id, num_events, session_duration_ms, cadence_hz_avg, cadence_hz_median, peak_force_stats, impulse_stats, longest_pause_ms, Date_Of_Record"
-      )
-      .eq("session_id", session.id)
-      .maybeSingle();
+    try {
+      const sb = requireSupabase();
 
-    if (sumErr) {
-      appendLine(`[warn] Failed to load session_summaries for ${session.id}: ${sumErr.message}`);
+      const { data: sum, error: sumErr } = await sb
+        .from("session_summaries")
+        .select(
+          "session_id, num_events, session_duration_ms, cadence_hz_avg, cadence_hz_median, peak_force_stats, impulse_stats, longest_pause_ms, Date_Of_Record"
+        )
+        .eq("session_id", session.id)
+        .maybeSingle();
+
+      if (sumErr) {
+        appendLine(`[warn] Failed to load session_summaries for ${session.id}: ${sumErr.message}`);
+        setSelectedSummary(null);
+      } else {
+        setSelectedSummary((sum ?? null) as SessionSummaryRow | null);
+      }
+    } catch (e: any) {
       setSelectedSummary(null);
-    } else {
-      setSelectedSummary((sum ?? null) as SessionSummaryRow | null);
+      appendLine(`[warn] ${e?.message ?? String(e)}`);
     }
 
     if (opts?.autoLoadLatestEvent) {
@@ -410,7 +425,9 @@ export default function App() {
     setSessionsLoading(true);
     setSessionsError("");
     try {
-      const { data: sess, error: sessErr } = await supabase
+      const sb = requireSupabase();
+
+      const { data: sess, error: sessErr } = await sb
         .from("sessions")
         .select("id, started_at_ms, ended_at_ms, grid_rows, grid_cols, device_model, sampling_hz")
         .order("started_at_ms", { ascending: false })
@@ -432,6 +449,13 @@ export default function App() {
   }
 
   useEffect(() => {
+    // If Supabase isn't configured, still render the page (don’t blank screen)
+    if (!supabase) {
+      setSessionsError(
+        "Supabase not configured on this deployment. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel."
+      );
+      return;
+    }
     fetchRecentSessions();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -447,7 +471,9 @@ export default function App() {
   const legendForceMax =
     dataSource === "live"
       ? Math.max(1, liveMaxForce)
-      : (typeof supaMaxForce === "number" && Number.isFinite(supaMaxForce) ? Math.max(1, supaMaxForce) : 1);
+      : typeof supaMaxForce === "number" && Number.isFinite(supaMaxForce)
+      ? Math.max(1, supaMaxForce)
+      : 1;
 
   return (
     <div className="container">
@@ -487,9 +513,7 @@ export default function App() {
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Contacts</h3>
 
-        {/* Responsive layout via styles.css */}
         <div className="contactsLayout">
-          {/* Column 1: Contact grid */}
           <div className="contactsColGrid">
             <div className="gridWrap">
               <ContactGrid
@@ -504,7 +528,6 @@ export default function App() {
             </div>
           </div>
 
-          {/* Column 2: Controls + Live Readout */}
           <div className="contactsColControls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <SectionCard title="Display Controls">
               <div style={{ marginBottom: 10 }}>
@@ -580,12 +603,11 @@ export default function App() {
             </SectionCard>
           </div>
 
-          {/* Column 3: Supabase Sessions */}
           <div className="contactsColSessions" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <SectionCard title="Supabase Sessions">
               <div className="row" style={{ marginBottom: 10 }}>
-                <button onClick={fetchRecentSessions} disabled={sessionsLoading} style={{ width: "100%" }}>
-                  {sessionsLoading ? "Refreshing…" : "Refresh (latest 5)"}
+                <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
+                  {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
                 </button>
               </div>
 
@@ -601,6 +623,7 @@ export default function App() {
                     <button
                       key={s.id}
                       onClick={() => selectSession(s, { autoLoadLatestEvent: false })}
+                      disabled={!supabase}
                       style={{
                         textAlign: "left",
                         padding: 10,
@@ -610,6 +633,7 @@ export default function App() {
                           : "1px solid rgba(255,255,255,0.12)",
                         background: active ? "rgba(0,255,120,0.08)" : "transparent",
                         cursor: "pointer",
+                        opacity: supabase ? 1 : 0.6,
                       }}
                     >
                       <div style={{ fontWeight: 800, fontSize: 13 }}>{s.id}</div>
@@ -681,8 +705,8 @@ export default function App() {
                 </div>
 
                 <div style={{ marginTop: 10 }}>
-                  <button onClick={loadLatestFromSupabase} disabled={dbLoading} style={{ width: "100%" }}>
-                    {dbLoading ? "Loading…" : "Load latest event grid"}
+                  <button onClick={loadLatestFromSupabase} disabled={dbLoading || !supabase} style={{ width: "100%" }}>
+                    {dbLoading ? "Loading…" : !supabase ? "Supabase not configured" : "Load latest event grid"}
                   </button>
                 </div>
 
@@ -704,7 +728,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* COMMANDS */}
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Commands</h3>
         <div className="row">
@@ -726,7 +749,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* LOGS */}
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Logs</h3>
         <div className="log">{logLines.length ? logLines.join("\n") : "—"}</div>
