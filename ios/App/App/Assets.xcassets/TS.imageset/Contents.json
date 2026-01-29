@@ -1,17 +1,17 @@
 {
   "images" : [
     {
-      "filename" : "TS_Logo_Enhancement_Set_1-01_1024.png",
+      "filename" : "TS.png",
       "idiom" : "universal",
       "scale" : "1x"
     },
     {
-      "filename" : "TS_Logo_Enhancement_Set_1-01_1024 1.png",
+      "filename" : "TS 1.png",
       "idiom" : "universal",
       "scale" : "2x"
     },
     {
-      "filename" : "TS_Logo_Enhancement_Set_1-01_1024 2.png",
+      "filename" : "TS 2.png",
       "idiom" : "universal",
       "scale" : "3x"
     }
