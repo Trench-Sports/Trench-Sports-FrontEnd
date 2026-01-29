@@ -1,4 +1,5 @@
 // src/bluetooth/adapter_native.ts
+// # python3 -m thonny
 import { BleClient, type BleDevice } from "@capacitor-community/bluetooth-le";
 
 export type NativeAdapterConnection = {
@@ -26,13 +27,13 @@ export async function connectToAdapterNative(args: {
 }): Promise<NativeAdapterConnection> {
   await ensureInit();
 
-  // Shows native device picker (requestDevice) :contentReference[oaicite:2]{index=2}
-  const dev: BleDevice = await BleClient.requestDevice({
-    services: [args.serviceUuid],
-    namePrefix: args.namePrefix,
-  });
+  const requestOpts: any = {};
+  if (args.namePrefix && args.namePrefix.trim().length > 0) {
+    requestOpts.namePrefix = args.namePrefix.trim();
+  }
 
-  // Connect + disconnect callback :contentReference[oaicite:3]{index=3}
+  const dev: BleDevice = await BleClient.requestDevice(requestOpts);
+
   await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
 
   return {
