@@ -1,10 +1,14 @@
 // src/bluetooth/adapter.ts
+import { connectToAdapterWeb, disconnectWeb, startNotificationsWeb, writeUtf8Web, type WebAdapterConnection } from "./adapter_web";
+import {
+  connectToAdapterNative,
+  disconnectNative,
+  startNotificationsNative,
+  writeUtf8Native,
+  type NativeAdapterConnection,
+} from "./adapter_native";
 
-export type AdapterConnection = {
-  device: BluetoothDevice;
-  server: BluetoothRemoteGATTServer;
-  service: BluetoothRemoteGATTService;
-};
+export type AdapterConnection = WebAdapterConnection | NativeAdapterConnection;
 
 function normalizeUuid(u?: string) {
   const s = (u ?? "").trim();
@@ -14,6 +18,12 @@ function normalizeUuid(u?: string) {
 function isLocalhost() {
   const h = location.hostname;
   return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+export function isNativeApp(): boolean {
+  const cap = (window as any).Capacitor;
+  // Capacitor injects window.Capacitor in native builds
+  return !!cap?.isNativePlatform?.() || (typeof cap?.getPlatform === "function" && cap.getPlatform() !== "web");
 }
 
 export function getBleConfig() {
@@ -28,6 +38,7 @@ export function getBleConfig() {
 export function getBluetoothDiagnostics() {
   const navAny = navigator as any;
   return {
+    platform: isNativeApp() ? "native" : "web",
     url: location.href,
     protocol: location.protocol,
     secureContext: window.isSecureContext,
@@ -38,9 +49,22 @@ export function getBluetoothDiagnostics() {
   };
 }
 
-export async function connectToAdapter(): Promise<AdapterConnection> {
-  const navAny = navigator as any;
+export async function connectToAdapter(opts?: { onDisconnect?: () => void }): Promise<AdapterConnection> {
+  const cfg = getBleConfig();
+  if (!cfg.SERVICE_UUID) throw new Error("Missing VITE_BLE_SERVICE_UUID.");
 
+  const args = {
+    serviceUuid: cfg.SERVICE_UUID,
+    namePrefix: cfg.NAME_PREFIX,
+    onDisconnect: opts?.onDisconnect,
+  };
+
+  if (isNativeApp()) {
+    return await connectToAdapterNative(args);
+  }
+
+  // Web Bluetooth path
+  const navAny = navigator as any;
   if (!window.isSecureContext && !isLocalhost()) {
     throw new Error("Web Bluetooth requires HTTPS (secure context).");
   }
@@ -48,43 +72,13 @@ export async function connectToAdapter(): Promise<AdapterConnection> {
     throw new Error("Web Bluetooth not supported in this browser/context.");
   }
 
-  const { SERVICE_UUID, NAME_PREFIX } = getBleConfig();
-  if (!SERVICE_UUID) throw new Error("Missing VITE_BLE_SERVICE_UUID.");
-
-  // Try namePrefix first (your desired behavior)
-  const filtered: RequestDeviceOptions = {
-    filters: [{ namePrefix: NAME_PREFIX }],
-    optionalServices: [SERVICE_UUID],
-  };
-
-  // Fallback to acceptAllDevices if the filter yields nothing / throws
-  const fallback: RequestDeviceOptions = {
-    acceptAllDevices: true,
-    optionalServices: [SERVICE_UUID],
-  };
-
-  let device: BluetoothDevice;
-
-  try {
-    device = await navAny.bluetooth.requestDevice(filtered);
-  } catch {
-    device = await navAny.bluetooth.requestDevice(fallback);
-  }
-
-  if (!device.gatt) throw new Error("Selected device has no GATT.");
-
-  const server = await device.gatt.connect();
-  const service = await server.getPrimaryService(SERVICE_UUID);
-
-  return { device, server, service };
+  return await connectToAdapterWeb(args);
 }
 
 export async function disconnect(conn: AdapterConnection | null) {
-  try {
-    if (conn?.device?.gatt?.connected) conn.device.gatt.disconnect();
-  } catch {
-    // ignore
-  }
+  if (!conn) return;
+  if (conn.kind === "native") return disconnectNative(conn);
+  return disconnectWeb(conn);
 }
 
 export async function startNotifications(
@@ -95,22 +89,14 @@ export async function startNotifications(
   const uuid = normalizeUuid(characteristicUuid);
   if (!uuid) throw new Error("Missing notify characteristic UUID (VITE_BLE_CHAR_UUID_TX).");
 
-  const ch = await conn.service.getCharacteristic(uuid);
-  await ch.startNotifications();
-
-  ch.addEventListener("characteristicvaluechanged", (ev) => {
-    const t = ev.target as BluetoothRemoteGATTCharacteristic;
-    if (t?.value) onValue(t.value);
-  });
-
-  return ch;
+  if (conn.kind === "native") return startNotificationsNative(conn, uuid, onValue);
+  return startNotificationsWeb(conn, uuid, onValue);
 }
 
 export async function writeUtf8(conn: AdapterConnection, characteristicUuid: string, text: string) {
   const uuid = normalizeUuid(characteristicUuid);
   if (!uuid) throw new Error("Missing write characteristic UUID (VITE_BLE_CHAR_UUID_RX).");
 
-  const ch = await conn.service.getCharacteristic(uuid);
-  const enc = new TextEncoder();
-  await ch.writeValue(enc.encode(text));
+  if (conn.kind === "native") return writeUtf8Native(conn, uuid, text);
+  return writeUtf8Web(conn, uuid, text);
 }

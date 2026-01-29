@@ -3,10 +3,11 @@ import {
   connectToAdapter,
   disconnect,
   getBleConfig,
+  getBluetoothDiagnostics,
+  isNativeApp,
   startNotifications,
   writeUtf8,
   type AdapterConnection,
-  getBluetoothDiagnostics,
 } from "./bluetooth/adapter";
 
 import { ContactGrid, type MetricMode } from "./components/ContactGrid";
@@ -123,7 +124,7 @@ export default function App() {
   const [logLines, setLogLines] = useState<string[]>([]);
   const [btDiag, setBtDiag] = useState(() => getBluetoothDiagnostics());
 
-  // Live grid state (BLE)
+  // Live grid state
   const [gridSize, setGridSize] = useState<GridSize>({ cols: 8, rows: 12 });
   const [gridLive, setGridLive] = useState<Cell[][]>(() => makeGrid(12, 8));
 
@@ -192,7 +193,9 @@ export default function App() {
   useEffect(() => {
     const d = getBluetoothDiagnostics();
     setBtDiag(d);
-    appendLine(`[diag] secureContext=${d.secureContext} protocol=${d.protocol} hasBluetooth=${d.hasBluetooth} hasRequestDevice=${d.hasRequestDevice}`);
+    appendLine(
+      `[diag] platform=${d.platform} secureContext=${d.secureContext} protocol=${d.protocol} hasBluetooth=${d.hasBluetooth} hasRequestDevice=${d.hasRequestDevice}`
+    );
     appendLine(`[diag] userAgent=${d.userAgent}`);
   }, []);
 
@@ -207,69 +210,79 @@ export default function App() {
     setLiveMaxForce(0);
   }
 
+  function handleMessageObject(msg: any) {
+    const gs = extractGridSize(msg);
+    if (gs) {
+      setGridSize(gs);
+      setGridLive(makeGrid(gs.rows, gs.cols));
+      setGridDb(cloneGridWithHits(gs.rows, gs.cols));
+      resetLiveSessionStats();
+      appendLine(`[info] grid_size set to ${gs.rows}x${gs.cols}`);
+      return;
+    }
+
+    if (isHit(msg)) {
+      setGridLive((prev) => applyHit(prev, msg));
+
+      const r0 = Number(msg.row) - 1;
+      const c0 = Number(msg.col) - 1;
+      const v = Number(msg.voltage ?? 0);
+
+      if (Number.isFinite(r0) && Number.isFinite(c0) && Number.isFinite(v)) {
+        const f = getForceN(r0, c0, v);
+        setLiveLast({ r0, c0, voltage: v, forceN: f, atMs: Date.now() });
+        setLiveMaxVoltage((m) => Math.max(m, v));
+        setLiveMaxForce((m) => Math.max(m, f));
+      }
+    }
+  }
+
+  function handleIncomingLine(line: string) {
+    appendLine(`RECEIVED > ${line}`);
+    const msg = tryParseJson(line);
+    if (!msg) return;
+    handleMessageObject(msg);
+  }
+
+  // BLE notifies sometimes arrive chunked; keep NDJSON buffer logic.
   function handleIncomingText(chunkText: string) {
     rxBufferRef.current += chunkText;
     const popped = popNdjsonLines(rxBufferRef.current);
     rxBufferRef.current = popped.buffer;
 
     for (const line of popped.lines) {
-      appendLine(`RECEIVED > ${line}`);
-      const msg = tryParseJson(line);
-      if (!msg) continue;
-
-      const gs = extractGridSize(msg);
-      if (gs) {
-        setGridSize(gs);
-        setGridLive(makeGrid(gs.rows, gs.cols));
-        setGridDb(cloneGridWithHits(gs.rows, gs.cols));
-        resetLiveSessionStats();
-        appendLine(`[info] grid_size set to ${gs.rows}x${gs.cols}`);
-        continue;
-      }
-
-      if (isHit(msg)) {
-        setGridLive((prev) => applyHit(prev, msg));
-
-        const r0 = Number(msg.row) - 1;
-        const c0 = Number(msg.col) - 1;
-        const v = Number(msg.voltage ?? 0);
-
-        if (Number.isFinite(r0) && Number.isFinite(c0) && Number.isFinite(v)) {
-          const f = getForceN(r0, c0, v);
-          setLiveLast({ r0, c0, voltage: v, forceN: f, atMs: Date.now() });
-          setLiveMaxVoltage((m) => Math.max(m, v));
-          setLiveMaxForce((m) => Math.max(m, f));
-        }
-      }
+      handleIncomingLine(line);
     }
   }
 
   async function onConnect() {
     try {
-      const d = getBluetoothDiagnostics();
-      appendLine(`[connect] click received. secureContext=${d.secureContext} hasRequestDevice=${d.hasRequestDevice}`);
       setStatus("Opening Bluetooth picker…");
+      appendLine(`[connect] attempting platform=${isNativeApp() ? "native" : "web"}`);
 
-      // This will either open the picker or throw a visible error
-      const c = await connectToAdapter();
+      // Close any old connection first
+      await disconnect(conn);
+      setConn(null);
+
+      const c = await connectToAdapter({
+        onDisconnect: () => {
+          setConn(null);
+          setStatus("Disconnected");
+          appendLine("[event] disconnected");
+        },
+      });
 
       setConn(c);
-      setStatus(`Connected to ${c.device.name ?? "device"}`);
-      appendLine(`[info] Connected to ${c.device.name ?? "device"}`);
-
       resetLiveSessionStats();
       setDataSource("live");
 
-      c.device.addEventListener("gattserverdisconnected", () => {
-        setConn(null);
-        setStatus("Disconnected");
-        appendLine("[event] gattserverdisconnected");
-      });
+      setStatus(`Connected (${c.kind}) to ${c.name}`);
+      appendLine(`[info] Connected (${c.kind}) to ${c.name}`);
 
       if (cfg.CHAR_UUID_TX) {
         await startNotifications(c, cfg.CHAR_UUID_TX, (dv) => {
-          const dec = new TextDecoder();
-          const txt = dec.decode(dv.buffer);
+          const bytes = new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength);
+          const txt = new TextDecoder().decode(bytes);
           handleIncomingText(txt);
         });
         appendLine(`[info] Notifications started on ${cfg.CHAR_UUID_TX}`);
@@ -292,10 +305,13 @@ export default function App() {
   async function sendCommand(cmd: string) {
     try {
       if (!conn) throw new Error("Not connected.");
+
+      const sanitized = cmd.trim().replaceAll("\n", "").replaceAll("\r", "");
       if (!cfg.CHAR_UUID_RX) throw new Error("Missing VITE_BLE_CHAR_UUID_RX.");
-      const sanitized = cmd.trim().replaceAll("\\n", "").replaceAll("\\r", "");
+
       const toSend = sanitized.endsWith("\n") ? sanitized : sanitized + "\n";
       await writeUtf8(conn, cfg.CHAR_UUID_RX, toSend);
+
       appendLine(`SENT > ${sanitized}`);
     } catch (e: any) {
       appendLine(`[error] ${e?.message ?? String(e)}`);
@@ -305,8 +321,9 @@ export default function App() {
   async function testRequestDevice() {
     try {
       const d = getBluetoothDiagnostics();
-      appendLine(`[test] attempting requestDevice. secureContext=${d.secureContext} hasRequestDevice=${d.hasRequestDevice}`);
-      // Minimal call that should ALWAYS open picker on supported browsers
+      appendLine(
+        `[test] attempting requestDevice. secureContext=${d.secureContext} hasRequestDevice=${d.hasRequestDevice}`
+      );
       await (navigator as any).bluetooth.requestDevice({ acceptAllDevices: true });
       appendLine("[test] requestDevice resolved (picker closed).");
     } catch (e: any) {
@@ -314,7 +331,7 @@ export default function App() {
     }
   }
 
-  // --- Supabase bits unchanged (keeping short) ---
+  // --- Supabase bits unchanged ---
   async function fetchRecentSessions() {
     setSessionsLoading(true);
     setSessionsError("");
@@ -334,6 +351,62 @@ export default function App() {
     }
   }
 
+  async function fetchSessionSummary(sessionId: string) {
+    try {
+      const sb = requireSupabase();
+      const { data, error } = await sb.from("session_summaries").select("*").eq("session_id", sessionId).maybeSingle();
+      if (error) throw error;
+      setSelectedSummary((data as any) ?? null);
+    } catch (e: any) {
+      appendLine(`[supabase.error] ${e?.message ?? String(e)}`);
+      setSelectedSummary(null);
+    }
+  }
+
+  async function fetchLatestProcessedEvent(sessionId: string) {
+    setDbLoading(true);
+    setDbError("");
+    try {
+      const sb = requireSupabase();
+
+      const { data: ev, error: evErr } = await sb
+        .from("events")
+        .select("event_id, cells")
+        .eq("session_id", sessionId)
+        .order("event_idx", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (evErr) throw evErr;
+      if (!ev) throw new Error("No events found for this session.");
+
+      setDbSessionId(sessionId);
+      setDbEventId((ev as any).event_id ?? "");
+
+      setGridDb(() => {
+        const next = cloneGridWithHits(gridSize.rows, gridSize.cols);
+        const cells = (ev as any).cells ?? [];
+        for (const c of cells) {
+          const rc = c?.rc;
+          if (!Array.isArray(rc) || rc.length < 2) continue;
+          const r = Number(rc[0]) - 1;
+          const col = Number(rc[1]) - 1;
+          const v = Number(c?.v_max ?? 0);
+          if (r >= 0 && col >= 0 && r < next.length && col < next[0].length) {
+            next[r][col] = { voltage: v, lastHitAt: Date.now() };
+          }
+        }
+        return next;
+      });
+
+      setDataSource("supabase");
+    } catch (e: any) {
+      setDbError(e?.message ?? String(e));
+    } finally {
+      setDbLoading(false);
+    }
+  }
+
   useEffect(() => {
     if (!supabase) {
       setSessionsError("Supabase not configured on this deployment.");
@@ -345,68 +418,99 @@ export default function App() {
 
   const gridToShow = dataSource === "live" ? gridLive : gridDb;
 
+  const transportLabel = conn?.kind ? (conn.kind === "native" ? "Native BLE" : "Web BLE") : "—";
+
   return (
     <div className="container">
       <h1>Trench Sports FrontEnd</h1>
 
       <div className="card">
-        <div className="row">
-          <button onClick={onConnect} disabled={!!conn}>
-            Connect Bluetooth
-          </button>
-          <button onClick={onDisconnect} disabled={!conn}>
-            Disconnect
-          </button>
-          <button onClick={testRequestDevice}>Test BLE Picker</button>
-          <button onClick={clearLog}>Clear Logs</button>
+        <h3 style={{ marginTop: 0 }}>Connection</h3>
+
+        <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 8 }}>
+          Status: <b>{status}</b> &nbsp;|&nbsp; Transport: <b>{transportLabel}</b>
         </div>
 
-        <p style={{ marginTop: 12 }}>
-          <strong>Status:</strong> {status}
-        </p>
+        <div className="row" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+          <button disabled={!!conn} onClick={onConnect}>
+            Connect Bluetooth
+          </button>
 
-        <details style={{ marginTop: 12 }}>
-          <summary>Bluetooth Diagnostics</summary>
-          <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5 }}>
-            <div>URL: <code>{btDiag.url}</code></div>
-            <div>Protocol: <code>{btDiag.protocol}</code></div>
-            <div>Secure Context: <code>{String(btDiag.secureContext)}</code></div>
-            <div>Has navigator.bluetooth: <code>{String(btDiag.hasBluetooth)}</code></div>
-            <div>Has requestDevice: <code>{String(btDiag.hasRequestDevice)}</code></div>
-            <div>Platform: <code>{String(btDiag.platform)}</code></div>
-            <div>User-Agent: <code style={{ whiteSpace: "pre-wrap" }}>{btDiag.userAgent}</code></div>
-          </div>
-        </details>
+          {/* Web-only BLE sanity test */}
+          {!isNativeApp() && btDiag.hasRequestDevice ? (
+            <button disabled={!!conn} onClick={testRequestDevice}>
+              Test BLE Picker
+            </button>
+          ) : null}
 
-        <details style={{ marginTop: 12 }}>
-          <summary>BLE Config (from VITE_ env vars)</summary>
-          <div style={{ marginTop: 8 }}>
-            <div>
-              Service UUID: <code>{cfg.SERVICE_UUID ?? "NOT SET"}</code>
-            </div>
-            <div>
-              Notify (TX) UUID: <code>{cfg.CHAR_UUID_TX ?? "NOT SET"}</code>
-            </div>
-            <div>
-              Write (RX) UUID: <code>{cfg.CHAR_UUID_RX ?? "NOT SET"}</code>
-            </div>
+          <button disabled={!conn} onClick={onDisconnect}>
+            Disconnect
+          </button>
+
+          <button onClick={clearLog}>Clear Log</button>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.9 }}>
+          <div>
+            platform: {btDiag.platform} | secureContext: {String(btDiag.secureContext)} | protocol: {btDiag.protocol}
           </div>
-        </details>
+          <div>
+            hasBluetooth: {String(btDiag.hasBluetooth)} | hasRequestDevice: {String(btDiag.hasRequestDevice)}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Controls</h3>
+        <div className="row">
+          <button onClick={() => setDataSource("live")} disabled={dataSource === "live"}>
+            Live
+          </button>
+          <button onClick={() => setDataSource("supabase")} disabled={dataSource === "supabase"}>
+            Supabase
+          </button>
+
+          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.15)", margin: "0 8px" }} />
+
+          <button onClick={() => setMetricMode("voltage")} disabled={metricMode === "voltage"}>
+            Voltage
+          </button>
+          <button onClick={() => setMetricMode("force")} disabled={metricMode === "force"}>
+            Force
+          </button>
+        </div>
+
+        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+          Grid: {gridSize.rows}×{gridSize.cols} | DB session: {dbSessionId || "—"} | DB event: {dbEventId || "—"}
+          {dbLoading ? " (loading…)" : ""}
+          {dbError ? ` (error: ${dbError})` : ""}
+        </div>
       </div>
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Contacts</h3>
+
         <div className="contactsLayout">
           <div className="contactsColGrid">
             <div className="gridWrap">
-              <ContactGrid grid={gridToShow} gridSize={gridSize} hitGlowMs={450} flipY={true} flipX={true} mode={metricMode} getForceN={getForceN} />
+              <ContactGrid
+                grid={gridToShow}
+                gridSize={gridSize}
+                hitGlowMs={450}
+                flipY={true}
+                flipX={true}
+                mode={metricMode}
+                getForceN={getForceN}
+              />
             </div>
           </div>
+
           <div className="contactsColControls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <SectionCard title="Live Readout">
               <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.6 }}>
                 <div>
-                  <span style={{ opacity: 0.75 }}>Last cell:</span> {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
+                  <span style={{ opacity: 0.75 }}>Last cell:</span>{" "}
+                  {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
                 </div>
                 <div>
                   <span style={{ opacity: 0.75 }}>Last voltage:</span> {liveLast ? `${fmtNum(liveLast.voltage, 3)} V` : "—"}
@@ -432,10 +536,59 @@ export default function App() {
               <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
                 {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
               </button>
+
               {sessionsError ? <div style={{ marginTop: 10, color: "#ff8080", fontSize: 12 }}>{sessionsError}</div> : null}
+
               <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
                 {recentSessions.length ? `Loaded ${recentSessions.length} sessions.` : "—"}
               </div>
+
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                {recentSessions.map((s) => (
+                  <button
+                    key={s.id}
+                    style={{ width: "100%", textAlign: "left" }}
+                    disabled={!supabase}
+                    onClick={async () => {
+                      setSelectedSession(s);
+                      await fetchSessionSummary(s.id);
+                      await fetchLatestProcessedEvent(s.id);
+                    }}
+                  >
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{s.id}</div>
+                    <div style={{ fontSize: 12, opacity: 0.85 }}>
+                      duration: {fmtMs(s.ended_at_ms && s.started_at_ms ? s.ended_at_ms - s.started_at_ms : null)} | grid:{" "}
+                      {s.grid_rows ?? "—"}×{s.grid_cols ?? "—"}
+                    </div>
+                  </button>
+                ))}
+              </div>
+
+              {selectedSession ? (
+                <div style={{ marginTop: 12, fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
+                  <div>
+                    <b>Selected:</b> {selectedSession.id}
+                  </div>
+                  <div>Sampling: {fmtNum(selectedSession.sampling_hz, 1)} Hz</div>
+                  <div>Device: {selectedSession.device_model ?? "—"}</div>
+                  <div>
+                    Session duration:{" "}
+                    {fmtMs(
+                      selectedSession.ended_at_ms && selectedSession.started_at_ms
+                        ? selectedSession.ended_at_ms - selectedSession.started_at_ms
+                        : null
+                    )}
+                  </div>
+                  {selectedSummary ? (
+                    <div style={{ marginTop: 8 }}>
+                      <div>
+                        Events: {selectedSummary.num_events ?? "—"} | Cadence avg: {fmtNum(selectedSummary.cadence_hz_avg, 2)} Hz
+                      </div>
+                      <div>Longest pause: {fmtMs(selectedSummary.longest_pause_ms)}</div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </SectionCard>
           </div>
         </div>
