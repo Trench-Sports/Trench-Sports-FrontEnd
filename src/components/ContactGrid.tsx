@@ -37,54 +37,58 @@ export function ContactGrid({
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
-        <strong>
+      <div style={{ display: "flex", justifyContent: "center", gap: 12 }}>
+        <strong style={{ textAlign: "center" }}>
           Contacts ({gridSize.rows}y × {gridSize.cols}x) — {mode.toUpperCase()} ({unit})
         </strong>
       </div>
 
-      <div
-        style={{
-          marginTop: 10,
-          display: "grid",
-          gridTemplateColumns: `repeat(${gridSize.cols}, 26px)`,
-          gridTemplateRows: `repeat(${gridSize.rows}, 26px)`,
-          gap: 6,
-        }}
-      >
-        {rows.map((rowCells, rDisplay) =>
-          rowCells.map((cell, c) => {
-            // r for compute should match original grid indexing
-            const r = flipY ? gridSize.rows - 1 - rDisplay : rDisplay;
 
-            const age = now - cell.lastHitAt;
-            const active = cell.lastHitAt > 0 && age < hitGlowMs;
+      {/* Center the grid regardless of parent width */}
+      <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: `repeat(${gridSize.cols}, 26px)`,
+            gridTemplateRows: `repeat(${gridSize.rows}, 26px)`,
+            gap: 6,
+            width: "fit-content",
+          }}
+        >
+          {rows.map((rowCells, rDisplay) =>
+            rowCells.map((cell, c) => {
+              // r for compute should match original grid indexing
+              const r = flipY ? gridSize.rows - 1 - rDisplay : rDisplay;
 
-            const v = cell.voltage || 0;
-            const force = getForceN ? getForceN(r, c, v) : 0;
-            const val = mode === "voltage" ? v : force;
+              const age = now - cell.lastHitAt;
+              const active = cell.lastHitAt > 0 && age < hitGlowMs;
 
-            const norm = Math.max(0, Math.min(1, val / maxVal));
-            const opacity = active ? 0.20 + 0.80 * norm : 0.08;
+              const v = cell.voltage || 0;
+              const force = getForceN ? getForceN(r, c, v) : 0;
+              const val = mode === "voltage" ? v : force;
 
-            const y = flipY ? gridSize.rows - rDisplay : rDisplay + 1;
+              const norm = Math.max(0, Math.min(1, val / maxVal));
+              const opacity = active ? 0.20 + 0.80 * norm : 0.08;
 
-            return (
-              <div
-                key={`${rDisplay}-${c}`}
-                title={`(x=${c + 1}, y=${y}) V=${v.toFixed(3)}  F=${force.toFixed(2)}N`}
-                style={{
-                  width: 26,
-                  height: 26,
-                  borderRadius: 8,
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  background: `rgba(0, 255, 120, ${opacity})`,
-                  boxShadow: active ? "0 0 10px rgba(0,255,120,0.35)" : "none",
-                }}
-              />
-            );
-          })
-        )}
+              const y = flipY ? gridSize.rows - rDisplay : rDisplay + 1;
+
+              return (
+                <div
+                  key={`${rDisplay}-${c}`}
+                  title={`(x=${c + 1}, y=${y}) V=${v.toFixed(3)}  F=${force.toFixed(2)}N`}
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: 8,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: `rgba(0, 255, 120, ${opacity})`,
+                    boxShadow: active ? "0 0 10px rgba(0,255,120,0.35)" : "none",
+                  }}
+                />
+              );
+            })
+          )}
+        </div>
       </div>
     </div>
   );

@@ -506,93 +506,100 @@ export default function App() {
           </div>
 
           <div className="contactsColControls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <SectionCard title="Live Readout">
-              <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.6 }}>
-                <div>
-                  <span style={{ opacity: 0.75 }}>Last cell:</span>{" "}
-                  {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
+            <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
+              <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Live Readout</div>}>
+                <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.6 }}>
+                  <div>
+                    <span style={{ opacity: 0.75 }}>Last cell:</span>{" "}
+                    {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.75 }}>Last voltage:</span>{" "}
+                    {liveLast ? `${fmtNum(liveLast.voltage, 3)} V` : "—"}
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.75 }}>Last force:</span>{" "}
+                    {liveLast ? `${fmtNum(liveLast.forceN, 2)} N` : "—"}
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.75 }}>Session max voltage:</span> {fmtNum(liveMaxVoltage, 3)} V
+                  </div>
+                  <div>
+                    <span style={{ opacity: 0.75 }}>Session max force:</span> {fmtNum(liveMaxForce, 2)} N
+                  </div>
                 </div>
-                <div>
-                  <span style={{ opacity: 0.75 }}>Last voltage:</span> {liveLast ? `${fmtNum(liveLast.voltage, 3)} V` : "—"}
-                </div>
-                <div>
-                  <span style={{ opacity: 0.75 }}>Last force:</span> {liveLast ? `${fmtNum(liveLast.forceN, 2)} N` : "—"}
-                </div>
-                <div>
-                  <span style={{ opacity: 0.75 }}>Session max voltage:</span> {fmtNum(liveMaxVoltage, 3)} V
-                </div>
-                <div>
-                  <span style={{ opacity: 0.75 }}>Session max force:</span> {fmtNum(liveMaxForce, 2)} N
-                </div>
-              </div>
 
-              <LegendBar title="Voltage legend" minLabel="0.0 V" maxLabel="3.3 V" />
-              <LegendBar title="Force legend" minLabel="0 N" maxLabel="500 N" />
-            </SectionCard>
+                <LegendBar title="Voltage legend" minLabel="0.0 V" maxLabel="3.3 V" />
+                <LegendBar title="Force legend" minLabel="0 N" maxLabel="500 N" />
+              </SectionCard>
+            </div>
           </div>
 
           <div className="contactsColSessions" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <SectionCard title="Supabase Sessions">
-              <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
-                {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
-              </button>
+            <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
+              <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Supabase Sessions</div>}>
+                <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
+                  {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
+                </button>
 
-              {sessionsError ? <div style={{ marginTop: 10, color: "#ff8080", fontSize: 12 }}>{sessionsError}</div> : null}
+                {sessionsError ? <div style={{ marginTop: 10, color: "#ff8080", fontSize: 12 }}>{sessionsError}</div> : null}
 
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-                {recentSessions.length ? `Loaded ${recentSessions.length} sessions.` : "—"}
-              </div>
-
-              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                {recentSessions.map((s) => (
-                  <button
-                    key={s.id}
-                    style={{ width: "100%", textAlign: "left" }}
-                    disabled={!supabase}
-                    onClick={async () => {
-                      setSelectedSession(s);
-                      await fetchSessionSummary(s.id);
-                      await fetchLatestProcessedEvent(s.id);
-                    }}
-                  >
-                    <div style={{ fontSize: 12, fontWeight: 700 }}>{s.id}</div>
-                    <div style={{ fontSize: 12, opacity: 0.85 }}>
-                      duration: {fmtMs(s.ended_at_ms && s.started_at_ms ? s.ended_at_ms - s.started_at_ms : null)} | grid:{" "}
-                      {s.grid_rows ?? "—"}×{s.grid_cols ?? "—"}
-                    </div>
-                  </button>
-                ))}
-              </div>
-
-              {selectedSession ? (
-                <div style={{ marginTop: 12, fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
-                  <div>
-                    <b>Selected:</b> {selectedSession.id}
-                  </div>
-                  <div>Sampling: {fmtNum(selectedSession.sampling_hz, 1)} Hz</div>
-                  <div>Device: {selectedSession.device_model ?? "—"}</div>
-                  <div>
-                    Session duration:{" "}
-                    {fmtMs(
-                      selectedSession.ended_at_ms && selectedSession.started_at_ms
-                        ? selectedSession.ended_at_ms - selectedSession.started_at_ms
-                        : null
-                    )}
-                  </div>
-                  {selectedSummary ? (
-                    <div style={{ marginTop: 8 }}>
-                      <div>
-                        Events: {selectedSummary.num_events ?? "—"} | Cadence avg: {fmtNum(selectedSummary.cadence_hz_avg, 2)} Hz
-                      </div>
-                      <div>Longest pause: {fmtMs(selectedSummary.longest_pause_ms)}</div>
-                    </div>
-                  ) : null}
+                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+                  {recentSessions.length ? `Loaded ${recentSessions.length} sessions.` : "—"}
                 </div>
-              ) : null}
-            </SectionCard>
+
+                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                  {recentSessions.map((s) => (
+                    <button
+                      key={s.id}
+                      style={{ width: "100%", textAlign: "left" }}
+                      disabled={!supabase}
+                      onClick={async () => {
+                        setSelectedSession(s);
+                        await fetchSessionSummary(s.id);
+                        await fetchLatestProcessedEvent(s.id);
+                      }}
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 700 }}>{s.id}</div>
+                      <div style={{ fontSize: 12, opacity: 0.85 }}>
+                        duration: {fmtMs(s.ended_at_ms && s.started_at_ms ? s.ended_at_ms - s.started_at_ms : null)} | grid:{" "}
+                        {s.grid_rows ?? "—"}×{s.grid_cols ?? "—"}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+
+                {selectedSession ? (
+                  <div style={{ marginTop: 12, fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
+                    <div>
+                      <b>Selected:</b> {selectedSession.id}
+                    </div>
+                    <div>Sampling: {fmtNum(selectedSession.sampling_hz, 1)} Hz</div>
+                    <div>Device: {selectedSession.device_model ?? "—"}</div>
+                    <div>
+                      Session duration:{" "}
+                      {fmtMs(
+                        selectedSession.ended_at_ms && selectedSession.started_at_ms
+                          ? selectedSession.ended_at_ms - selectedSession.started_at_ms
+                          : null
+                      )}
+                    </div>
+                    {selectedSummary ? (
+                      <div style={{ marginTop: 8 }}>
+                        <div>
+                          Events: {selectedSummary.num_events ?? "—"} | Cadence avg: {fmtNum(selectedSummary.cadence_hz_avg, 2)} Hz
+                        </div>
+                        <div>Longest pause: {fmtMs(selectedSummary.longest_pause_ms)}</div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </SectionCard>
+            </div>
           </div>
-        </div>
-      </div>
+
+        </div> {/* contactsLayout */}
+    </div> {/* Contacts card */}
 
       <div className="card">
         <h3 style={{ marginTop: 0 }}>Commands</h3>
