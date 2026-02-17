@@ -1,48 +1,170 @@
 :root {
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.4;
+
+  /* Electric purple accent */
+  --accent: #b400ff;
+  --accent-soft: rgba(180, 0, 255, 0.18);
+
+  /* Theme tokens (default = dark) */
+  --bg: #07070a;
+  --panel: rgba(255,255,255,0.06);
+  --panel-border: rgba(255,255,255,0.10);
+  --text: rgba(255,255,255,0.92);
+  --muted: rgba(255,255,255,0.65);
+
+  --btn-bg: rgba(255,255,255,0.10);
+  --btn-border: rgba(255,255,255,0.18);
 }
+
+:root[data-theme="light"] {
+  --bg: #f7f7fb;
+  --panel: rgba(20,20,40,0.04);
+  --panel-border: rgba(20,20,40,0.10);
+  --text: rgba(20,20,40,0.92);
+  --muted: rgba(20,20,40,0.62);
+
+  --btn-bg: rgba(20,20,40,0.06);
+  --btn-border: rgba(20,20,40,0.14);
+}
+
+html, body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  background: #0b0f14;
-  color: #e9eef5;
+  background: var(--bg);
+  color: var(--text);
 }
+
 a { color: inherit; }
+
 .container {
   max-width: 960px;
   margin: 0 auto;
   padding: 28px 16px;
 }
+
 .card {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.10);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
   border-radius: 16px;
   padding: 16px;
   margin-top: 16px;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
+
+.card:hover {
+  border-color: rgba(180, 0, 255, 0.28);
+  box-shadow:
+    0 0 0 2px rgba(180, 0, 255, 0.10),
+    0 10px 30px rgba(0, 0, 0, 0.35);
+  transform: translateY(-1px);
+}
+
 .row {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
   align-items: center;
 }
+
 button {
   border-radius: 12px;
-  border: 1px solid rgba(255,255,255,0.18);
-  background: rgba(255,255,255,0.10);
-  color: #e9eef5;
+  border: 1px solid var(--btn-border);
+  background: var(--btn-bg);
+  color: var(--text);
   padding: 10px 14px;
   cursor: pointer;
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
 }
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+
+button:hover:not(:disabled) {
+  transform: translateY(-2px);
+  border-color: rgba(180, 0, 255, 0.28);
+  box-shadow:
+    0 0 0 2px rgba(180, 0, 255, 0.10),
+    0 10px 22px rgba(0, 0, 0, 0.28);
 }
+
+button:active:not(:disabled) {
+  transform: translateY(0px);
+  box-shadow:
+    0 0 0 2px rgba(180, 0, 255, 0.08),
+    0 6px 14px rgba(0, 0, 0, 0.22);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Secondary / Command button (electric purple) */
+.btnSecondary {
+  background: var(--accent);
+  border: 1px solid rgba(180, 0, 255, 0.55);
+  font-weight: 800;
+  letter-spacing: 0.2px;
+
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease, color 160ms ease, border-color 160ms ease;
+}
+
+/* Base text color by theme */
+:root[data-theme="light"] .btnSecondary {
+  color: #ffffff; /* light mode = white text */
+}
+
+:root[data-theme="dark"] .btnSecondary {
+  color: #000000; /* dark mode = black text */
+}
+
+/* If you don't explicitly set data-theme="dark", this makes dark the default */
+:root:not([data-theme="light"]) .btnSecondary {
+  color: #000000; /* default/dark = black text */
+}
+
+/* Keep your floating effect */
+.btnSecondary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow:
+    0 0 0 2px rgba(180, 0, 255, 0.14),
+    0 12px 24px rgba(0, 0, 0, 0.28);
+}
+
+/* Light mode hover: black bg + white text */
+:root[data-theme="light"] .btnSecondary:hover:not(:disabled) {
+  background: #000000;
+  color: #ffffff;
+  border-color: rgba(0, 0, 0, 0.75);
+}
+
+/* Dark mode hover: white bg + black text */
+:root:not([data-theme="light"]) .btnSecondary:hover:not(:disabled) {
+  background: #ffffff;
+  color: #000000;
+  border-color: rgba(255, 255, 255, 0.8);
+}
+
+/* Active press */
+.btnSecondary:active:not(:disabled) {
+  transform: translateY(0px);
+  box-shadow:
+    0 0 0 2px rgba(180, 0, 255, 0.10),
+    0 7px 16px rgba(0, 0, 0, 0.22);
+}
+
+/* Disabled */
+.btnSecondary:disabled {
+  opacity: 0.55;
+}
+
 code {
   background: rgba(0,0,0,0.35);
   padding: 2px 6px;
   border-radius: 8px;
 }
+
 .log {
   white-space: pre-wrap;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
@@ -57,32 +179,91 @@ code {
   align-items: start;
 }
 
-.contactsColGrid { min-width: 0; }
-.contactsColControls { min-width: 0; }
+.contactsColGrid,
+.contactsColControls,
 .contactsColSessions { min-width: 0; }
 
-/* Prevent the ContactGrid from forcing horizontal overflow */
 .gridWrap {
   max-width: 100%;
   overflow-x: auto;
 }
 
-/* iPad / smaller laptops: 2 columns, grid spans full width */
 @media (max-width: 1024px) {
-  .contactsLayout {
-    grid-template-columns: 1fr 1fr;
-  }
-  .contactsColGrid {
-    grid-column: 1 / -1;
-  }
+  .contactsLayout { grid-template-columns: 1fr 1fr; }
+  .contactsColGrid { grid-column: 1 / -1; }
 }
 
-/* mobile: stack everything + full-width buttons in rows */
 @media (max-width: 640px) {
-  .contactsLayout {
-    grid-template-columns: 1fr;
-  }
-  .row > button {
-    flex: 1 1 100%;
-  }
+  .contactsLayout { grid-template-columns: 1fr; }
+  .row > button { flex: 1 1 100%; }
+}
+
+/* TopBar */
+.topBar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  margin-bottom: 14px;
+  background: rgba(0,0,0,0.18);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+}
+
+:root[data-theme="light"] .topBar {
+  background: rgba(255,255,255,0.65);
+}
+
+.topBarLeft {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topBarLogo {
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.topBarLogoFallback {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(180,0,255,0.25), rgba(180,0,255,0.70));
+}
+
+.topBarTitle {
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.iconButton:hover {
+  border-color: rgba(180, 0, 255, 0.28);
+  box-shadow: 0 0 0 2px rgba(180, 0, 255, 0.10);
+  transform: translateY(-1px);
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }

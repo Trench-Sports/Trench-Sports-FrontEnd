@@ -20,7 +20,12 @@ import {
   applyHit,
   type GridSize,
   type Cell,
-} from "./visualization/contacts";
+} from "./tools/contacts";
+import TopBar from "./components/topBar.jsx";
+import { initTheme, toggleTheme } from "./lib/themeManager.jsx";
+
+import darkLogo from "./images/TS.png";
+import lightLogo from "./images/Trench Sports Logo Power Purple.png";
 
 import { supabase } from "./supabaseClient";
 import { pressureKpaFromVoltage, forceNFromPressureKpa } from "./processing/calibration";
@@ -98,7 +103,7 @@ function LegendBar({ title, minLabel, maxLabel }: { title: string; minLabel: str
           height: 10,
           borderRadius: 999,
           border: "1px solid rgba(255,255,255,0.14)",
-          background: "linear-gradient(90deg, rgba(0,255,120,0.10), rgba(0,255,120,0.95))",
+          background: "linear-gradient(90deg, rgba(180,0,255,0.10), rgba(180,0,255,0.95))",
         }}
       />
       <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12, opacity: 0.8 }}>
@@ -119,6 +124,13 @@ function requireSupabase() {
 }
 
 export default function App() {
+  const [theme, setTheme] = useState("dark");
+
+  useEffect(() => {
+    const t = initTheme();
+    setTheme(t);
+  }, []);
+
   const [conn, setConn] = useState<AdapterConnection | null>(null);
   const [status, setStatus] = useState<string>("Disconnected");
   const [logLines, setLogLines] = useState<string[]>([]);
@@ -421,200 +433,220 @@ export default function App() {
   const transportLabel = conn?.kind ? (conn.kind === "native" ? "Native BLE" : "Web BLE") : "—";
 
   return (
-    <div className="container">
-      <h1>Trench Sports FrontEnd</h1>
+    <div style={{ padding: 16 }}>
+      <TopBar
+        theme={theme}
+        onToggleTheme={() => setTheme((prev) => toggleTheme(prev))}
+        logoSrc={theme === "dark" ? darkLogo : lightLogo}
+      />
 
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Connection</h3>
+      <div className="container">
+        <h1>Trench Sports App</h1>
 
-        <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 8 }}>
-          Status: <b>{status}</b> &nbsp;|&nbsp; Transport: <b>{transportLabel}</b>
-        </div>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Connection</h3>
 
-        <div className="row" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-          <button disabled={!!conn} onClick={onConnect}>
-            Connect Bluetooth
-          </button>
+          <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 8 }}>
+            Status: <b>{status}</b> &nbsp;|&nbsp; Transport: <b>{transportLabel}</b>
+          </div>
 
-          {/* Web-only BLE sanity test */}
-          {!isNativeApp() && btDiag.hasRequestDevice ? (
-            <button disabled={!!conn} onClick={testRequestDevice}>
-              Test BLE Picker
+          <div className="row" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
+            <button disabled={!!conn} onClick={onConnect}>
+              Connect Bluetooth
             </button>
-          ) : null}
 
-          <button disabled={!conn} onClick={onDisconnect}>
-            Disconnect
-          </button>
+            {/* Web-only BLE sanity test */}
+            {/* {!isNativeApp() && btDiag.hasRequestDevice ? (
+              <button disabled={!!conn} onClick={testRequestDevice}>
+                Test BLE Picker
+              </button>
+            ) : null} */}
 
-          <button onClick={clearLog}>Clear Log</button>
-        </div>
+            <button disabled={!conn} onClick={onDisconnect}>
+              Disconnect
+            </button>
 
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.9 }}>
-          <div>
-            platform: {btDiag.platform} | secureContext: {String(btDiag.secureContext)} | protocol: {btDiag.protocol}
+            <button onClick={clearLog}>Clear Log</button>
           </div>
-          <div>
-            hasBluetooth: {String(btDiag.hasBluetooth)} | hasRequestDevice: {String(btDiag.hasRequestDevice)}
-          </div>
-        </div>
-      </div>
 
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Controls</h3>
-        <div className="row">
-          <button onClick={() => setDataSource("live")} disabled={dataSource === "live"}>
-            Live
-          </button>
-          <button onClick={() => setDataSource("supabase")} disabled={dataSource === "supabase"}>
-            Supabase
-          </button>
-
-          <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.15)", margin: "0 8px" }} />
-
-          <button onClick={() => setMetricMode("voltage")} disabled={metricMode === "voltage"}>
-            Voltage
-          </button>
-          <button onClick={() => setMetricMode("force")} disabled={metricMode === "force"}>
-            Force
-          </button>
-        </div>
-
-        <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-          Grid: {gridSize.rows}×{gridSize.cols} | DB session: {dbSessionId || "—"} | DB event: {dbEventId || "—"}
-          {dbLoading ? " (loading…)" : ""}
-          {dbError ? ` (error: ${dbError})` : ""}
-        </div>
-      </div>
-
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Contacts</h3>
-
-        <div className="contactsLayout">
-          <div className="contactsColGrid">
-            <div className="gridWrap">
-              <ContactGrid
-                grid={gridToShow}
-                gridSize={gridSize}
-                hitGlowMs={450}
-                flipY={true}
-                flipX={true}
-                mode={metricMode}
-                getForceN={getForceN}
-              />
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.9 }}>
+            <div>
+              platform: {btDiag.platform} | secureContext: {String(btDiag.secureContext)} | protocol: {btDiag.protocol}
+            </div>
+            <div>
+              hasBluetooth: {String(btDiag.hasBluetooth)} | hasRequestDevice: {String(btDiag.hasRequestDevice)}
             </div>
           </div>
+        </div>
 
-          <div className="contactsColControls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
-              <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Live Readout</div>}>
-                <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.6 }}>
-                  <div>
-                    <span style={{ opacity: 0.75 }}>Last cell:</span>{" "}
-                    {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
-                  </div>
-                  <div>
-                    <span style={{ opacity: 0.75 }}>Last voltage:</span>{" "}
-                    {liveLast ? `${fmtNum(liveLast.voltage, 3)} V` : "—"}
-                  </div>
-                  <div>
-                    <span style={{ opacity: 0.75 }}>Last force:</span>{" "}
-                    {liveLast ? `${fmtNum(liveLast.forceN, 2)} N` : "—"}
-                  </div>
-                  <div>
-                    <span style={{ opacity: 0.75 }}>Session max voltage:</span> {fmtNum(liveMaxVoltage, 3)} V
-                  </div>
-                  <div>
-                    <span style={{ opacity: 0.75 }}>Session max force:</span> {fmtNum(liveMaxForce, 2)} N
-                  </div>
-                </div>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Controls</h3>
+          <div className="row">
+            <button onClick={() => setDataSource("live")} disabled={dataSource === "live"}>
+              Live
+            </button>
+            <button onClick={() => setDataSource("supabase")} disabled={dataSource === "supabase"}>
+              Supabase
+            </button>
 
-                <LegendBar title="Voltage legend" minLabel="0.0 V" maxLabel="3.3 V" />
-                <LegendBar title="Force legend" minLabel="0 N" maxLabel="500 N" />
-              </SectionCard>
-            </div>
+            <div style={{ width: 1, height: 22, background: "rgba(255,255,255,0.15)", margin: "0 8px" }} />
+
+            <button onClick={() => setMetricMode("voltage")} disabled={metricMode === "voltage"}>
+              Voltage
+            </button>
+            <button onClick={() => setMetricMode("force")} disabled={metricMode === "force"}>
+              Force
+            </button>
           </div>
 
-          <div className="contactsColSessions" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
-              <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Supabase Sessions</div>}>
-                <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
-                  {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
-                </button>
+          <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+            Grid: {gridSize.rows}×{gridSize.cols} | DB session: {dbSessionId || "—"} | DB event: {dbEventId || "—"}
+            {dbLoading ? " (loading…)" : ""}
+            {dbError ? ` (error: ${dbError})` : ""}
+          </div>
+        </div>
 
-                {sessionsError ? <div style={{ marginTop: 10, color: "#ff8080", fontSize: 12 }}>{sessionsError}</div> : null}
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Contacts</h3>
 
-                <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
-                  {recentSessions.length ? `Loaded ${recentSessions.length} sessions.` : "—"}
-                </div>
+          <div className="contactsLayout">
+            <div className="contactsColGrid">
+              <div className="gridWrap">
+                <ContactGrid
+                  grid={gridToShow}
+                  gridSize={gridSize}
+                  hitGlowMs={450}
+                  flipY={true}
+                  flipX={true}
+                  mode={metricMode}
+                  getForceN={getForceN}
+                />
+              </div>
+            </div>
 
-                <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                  {recentSessions.map((s) => (
-                    <button
-                      key={s.id}
-                      style={{ width: "100%", textAlign: "left" }}
-                      disabled={!supabase}
-                      onClick={async () => {
-                        setSelectedSession(s);
-                        await fetchSessionSummary(s.id);
-                        await fetchLatestProcessedEvent(s.id);
-                      }}
-                    >
-                      <div style={{ fontSize: 12, fontWeight: 700 }}>{s.id}</div>
-                      <div style={{ fontSize: 12, opacity: 0.85 }}>
-                        duration: {fmtMs(s.ended_at_ms && s.started_at_ms ? s.ended_at_ms - s.started_at_ms : null)} | grid:{" "}
-                        {s.grid_rows ?? "—"}×{s.grid_cols ?? "—"}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-
-                {selectedSession ? (
-                  <div style={{ marginTop: 12, fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
+            <div className="contactsColControls" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
+                <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Live Readout</div>}>
+                  <div style={{ fontSize: 12, opacity: 0.9, lineHeight: 1.6 }}>
                     <div>
-                      <b>Selected:</b> {selectedSession.id}
+                      <span style={{ opacity: 0.75 }}>Last cell:</span>{" "}
+                      {liveLast ? `x=${liveLast.c0 + 1}, y=${liveLast.r0 + 1}` : "—"}
                     </div>
-                    <div>Sampling: {fmtNum(selectedSession.sampling_hz, 1)} Hz</div>
-                    <div>Device: {selectedSession.device_model ?? "—"}</div>
                     <div>
-                      Session duration:{" "}
-                      {fmtMs(
-                        selectedSession.ended_at_ms && selectedSession.started_at_ms
-                          ? selectedSession.ended_at_ms - selectedSession.started_at_ms
-                          : null
-                      )}
+                      <span style={{ opacity: 0.75 }}>Last voltage:</span>{" "}
+                      {liveLast ? `${fmtNum(liveLast.voltage, 3)} V` : "—"}
                     </div>
-                    {selectedSummary ? (
-                      <div style={{ marginTop: 8 }}>
-                        <div>
-                          Events: {selectedSummary.num_events ?? "—"} | Cadence avg: {fmtNum(selectedSummary.cadence_hz_avg, 2)} Hz
+                    <div>
+                      <span style={{ opacity: 0.75 }}>Last force:</span>{" "}
+                      {liveLast ? `${fmtNum(liveLast.forceN, 2)} N` : "—"}
+                    </div>
+                    <div>
+                      <span style={{ opacity: 0.75 }}>Session max voltage:</span> {fmtNum(liveMaxVoltage, 3)} V
+                    </div>
+                    <div>
+                      <span style={{ opacity: 0.75 }}>Session max force:</span> {fmtNum(liveMaxForce, 2)} N
+                    </div>
+                  </div>
+
+                  <LegendBar title="Voltage legend" minLabel="0.0 V" maxLabel="3.3 V" />
+                  <LegendBar title="Force legend" minLabel="0 N" maxLabel="500 N" />
+                </SectionCard>
+              </div>
+            </div>
+
+            <div className="contactsColSessions" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ width: "100%", maxWidth: 420, margin: "0 auto" }}>
+                <SectionCard title={<div style={{ textAlign: "center", width: "100%" }}>Supabase Sessions</div>}>
+                  <button onClick={fetchRecentSessions} disabled={sessionsLoading || !supabase} style={{ width: "100%" }}>
+                    {sessionsLoading ? "Refreshing…" : !supabase ? "Supabase not configured" : "Refresh (latest 5)"}
+                  </button>
+
+                  {sessionsError ? (
+                    <div style={{ marginTop: 10, color: "#ff8080", fontSize: 12 }}>{sessionsError}</div>
+                  ) : null}
+
+                  <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>
+                    {recentSessions.length ? `Loaded ${recentSessions.length} sessions.` : "—"}
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {recentSessions.map((s) => (
+                      <button
+                        key={s.id}
+                        style={{ width: "100%", textAlign: "left" }}
+                        disabled={!supabase}
+                        onClick={async () => {
+                          setSelectedSession(s);
+                          await fetchSessionSummary(s.id);
+                          await fetchLatestProcessedEvent(s.id);
+                        }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 700 }}>{s.id}</div>
+                        <div style={{ fontSize: 12, opacity: 0.85 }}>
+                          duration: {fmtMs(s.ended_at_ms && s.started_at_ms ? s.ended_at_ms - s.started_at_ms : null)} | grid:{" "}
+                          {s.grid_rows ?? "—"}×{s.grid_cols ?? "—"}
                         </div>
-                        <div>Longest pause: {fmtMs(selectedSummary.longest_pause_ms)}</div>
-                      </div>
-                    ) : null}
+                      </button>
+                    ))}
                   </div>
-                ) : null}
-              </SectionCard>
+
+                  {selectedSession ? (
+                    <div style={{ marginTop: 12, fontSize: 12, opacity: 0.85, lineHeight: 1.6 }}>
+                      <div>
+                        <b>Selected:</b> {selectedSession.id}
+                      </div>
+                      <div>Sampling: {fmtNum(selectedSession.sampling_hz, 1)} Hz</div>
+                      <div>Device: {selectedSession.device_model ?? "—"}</div>
+                      <div>
+                        Session duration:{" "}
+                        {fmtMs(
+                          selectedSession.ended_at_ms && selectedSession.started_at_ms
+                            ? selectedSession.ended_at_ms - selectedSession.started_at_ms
+                            : null
+                        )}
+                      </div>
+                      {selectedSummary ? (
+                        <div style={{ marginTop: 8 }}>
+                          <div>
+                            Events: {selectedSummary.num_events ?? "—"} | Cadence avg:{" "}
+                            {fmtNum(selectedSummary.cadence_hz_avg, 2)} Hz
+                          </div>
+                          <div>Longest pause: {fmtMs(selectedSummary.longest_pause_ms)}</div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </SectionCard>
+              </div>
             </div>
           </div>
-
-        </div> {/* contactsLayout */}
-    </div> {/* Contacts card */}
-
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Commands</h3>
-        <div className="row">
-          <button disabled={!conn} onClick={() => sendCommand("START_LISTEN")}>START_LISTEN</button>
-          <button disabled={!conn} onClick={() => sendCommand("STOP_LISTEN")}>STOP_LISTEN</button>
-          <button disabled={!conn} onClick={() => sendCommand("REQUEST_LOG")}>REQUEST_LOG</button>
-          <button disabled={!conn} onClick={() => sendCommand("CLEAR_LOG")}>CLEAR_LOG</button>
-          <button disabled={!conn} onClick={() => sendCommand("ping")}>ping</button>
         </div>
-      </div>
 
-      <div className="card">
-        <h3 style={{ marginTop: 0 }}>Logs</h3>
-        <div className="log">{logLines.length ? logLines.join("\n") : "—"}</div>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Commands</h3>
+          <div className="row">
+            <button className="btnSecondary" disabled={!conn} onClick={() => sendCommand("START_LISTEN")}>
+              START
+            </button>
+            <button className="btnSecondary" disabled={!conn} onClick={() => sendCommand("STOP_LISTEN")}>
+              STOP
+            </button>
+            <button disabled={!conn} onClick={() => sendCommand("REQUEST_LOG")}>
+              REQUEST LOG
+            </button>
+            <button disabled={!conn} onClick={() => sendCommand("CLEAR_LOG")}>
+              CLEAR LOG
+            </button>
+            <button disabled={!conn} onClick={() => sendCommand("ping")}>
+              ping
+            </button>
+          </div>
+        </div>
+
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Logs</h3>
+          <div className="log">{logLines.length ? logLines.join("\n") : "—"}</div>
+        </div>
       </div>
     </div>
   );

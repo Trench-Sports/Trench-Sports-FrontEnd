@@ -1,5 +1,5 @@
 // src/components/ContactGrid.tsx
-import type { Cell, GridSize } from "../visualization/contacts";
+import type { Cell, GridSize } from "../tools/contacts";
 
 export type MetricMode = "voltage" | "force";
 
@@ -81,8 +81,8 @@ export function ContactGrid({
                     height: 26,
                     borderRadius: 8,
                     border: "1px solid rgba(255,255,255,0.12)",
-                    background: `rgba(0, 255, 120, ${opacity})`,
-                    boxShadow: active ? "0 0 10px rgba(0,255,120,0.35)" : "none",
+                    background: `rgba(180, 0, 255, ${opacity})`,
+                    boxShadow: active ? "0 0 10px rgba(180, 0, 255, 0.35)" : "none",
                   }}
                 />
               );
