@@ -40,7 +40,7 @@ export default function Signup() {
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [showPw, setShowPw] = useState(false);
-  const [agree, setAgree] = useState(true);
+  const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -128,12 +128,20 @@ export default function Signup() {
                 </button>
               </div>
 
-              <div className="ts-strengthRow" aria-hidden="true">
-                <div className={`ts-strengthBar s${pwScore}`} />
-                <span className="ts-strengthText">
-                  {pwScore <= 1 ? "Weak" : pwScore === 2 ? "Okay" : pwScore === 3 ? "Good" : "Strong"}
-                </span>
-              </div>
+              {pw.length > 0 && (
+                <div className="ts-strengthRow">
+                  <div className={`ts-strengthBar s${pwScore}`} />
+                  <span className="ts-strengthText">
+                      {pwScore <= 1
+                        ? "Weak"
+                        : pwScore === 2
+                        ? "Okay"
+                        : pwScore === 3
+                        ? "Good"
+                         : "Strong"}
+                  </span>
+                </div>
+              )}
             </label>
 
             <label className="ts-field">
