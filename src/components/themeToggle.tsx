@@ -1,7 +1,12 @@
-// themeToggle.jsx
-import React from "react";
+// /src/components/themeToggle.jsx
 
-function SunIcon({ size = 18 }) {
+import type { ThemeMode } from "../lib/themeManager"; // adjust path if yours differs
+
+type IconProps = {
+  size?: number;
+};
+
+function SunIcon({ size = 18 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z" stroke="currentColor" strokeWidth="2" />
@@ -15,7 +20,7 @@ function SunIcon({ size = 18 }) {
   );
 }
 
-function MoonIcon({ size = 18 }) {
+function MoonIcon({ size = 18 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path
@@ -28,7 +33,12 @@ function MoonIcon({ size = 18 }) {
   );
 }
 
-export default function ThemeToggle({ theme, onToggle }) {
+export type ThemeToggleProps = {
+  theme: ThemeMode | string; // allow string to avoid breaking callers
+  onToggle: () => void;
+};
+
+export default function ThemeToggle({ theme, onToggle }: ThemeToggleProps): JSX.Element {
   const isDark = theme === "dark";
   return (
     <button
