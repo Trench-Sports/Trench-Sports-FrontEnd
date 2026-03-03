@@ -1,5 +1,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { supabase } from "../supabaseClient";
+
+type Role = "coach" | "admin";
 
 function getTheme(): "dark" | "light" {
   const root = document.documentElement;
@@ -24,19 +27,20 @@ export default function Signup() {
 
   const [theme, setTheme] = useState<"dark" | "light">(() => getTheme());
   useEffect(() => {
-    // Track theme changes (dataset/class) using a MutationObserver
     const root = document.documentElement;
     const obs = new MutationObserver(() => setTheme(getTheme()));
     obs.observe(root, { attributes: true, attributeFilter: ["class", "data-theme"] });
     return () => obs.disconnect();
   }, []);
 
-  const logoSrc = theme === "dark"
-    ? "/src/images/TS.png"
-    : "/src/images/Trench Sports Logo Power Purple.png";
+  const logoSrc =
+    theme === "dark" ? "/src/images/TS.png" : "/src/images/Trench Sports Logo Power Purple.png";
+
+  const [role, setRole] = useState<Role>("coach");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
 
   const [email, setEmail] = useState("");
-  const [name, setName] = useState("");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -47,25 +51,52 @@ export default function Signup() {
   const pwScore = useMemo(() => scorePassword(pw), [pw]);
   const pwOk = pwScore >= 3;
   const matchOk = pw.length > 0 && pw === pw2;
+  const passwordsReady = pwOk && matchOk;
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
 
+    if (!firstName.trim()) return setError("Please enter your first name.");
+    if (!lastName.trim()) return setError("Please enter your last name.");
     if (!email.trim()) return setError("Please enter your email.");
     if (!pwOk) return setError("Password is too weak. Try 12+ chars with mixed types.");
     if (!matchOk) return setError("Passwords do not match.");
     if (!agree) return setError("Please accept the terms to continue.");
+    if (!supabase) return setError("Supabase is not configured (missing env vars).");
 
     setBusy(true);
     try {
-      // 🔧 Hook this into your Supabase auth when you're ready.
-      // Example later:
-      // await supabase.auth.signUp({ email, password: pw, options: { data: { name } } });
+      // 1) Sign up user
+      const { data, error: signErr } = await supabase.auth.signUp({
+        email: email.trim(),
+        password: pw,
+      });
+      if (signErr) throw signErr;
 
-      // For now: fake success
-      await new Promise((r) => setTimeout(r, 450));
-      navigate("/dashboard");
+      // If email confirmations are enabled, user might be null until confirmed.
+      // We still send them to onboarding, but only upsert profile if we have user id now.
+      const userId = data.user?.id;
+
+      // 2) Save profile info (best-effort)
+      if (userId) {
+        const { error: profErr } = await supabase.from("profiles").upsert(
+          {
+            user_id: userId,
+            role,
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            email: email.trim().toLowerCase(),
+          },
+          { onConflict: "user_id" }
+        );
+
+        // Don't throw here; log and continue
+        if (profErr) console.warn("Profile upsert failed:", profErr);
+      }
+
+      // 3) Go to onboarding to finish remaining required fields + program code
+      navigate("/onboarding", { replace: true });
     } catch (err: any) {
       setError(err?.message || "Signup failed. Please try again.");
     } finally {
@@ -86,15 +117,37 @@ export default function Signup() {
           </div>
 
           <form onSubmit={onSubmit} className="ts-signupForm">
+            {/* 1) Name first */}
             <div className="ts-grid2">
               <label className="ts-field">
-                <span>Name</span>
+                <span>First name</span>
                 <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Jaylen"
-                  autoComplete="name"
+                  value={firstName}
+                  onChange={(e) => setFirstName(e.target.value)}
+                  placeholder="John"
+                  autoComplete="given-name"
                 />
+              </label>
+
+              <label className="ts-field">
+                <span>Last name</span>
+                <input
+                  value={lastName}
+                  onChange={(e) => setLastName(e.target.value)}
+                  placeholder="Doe"
+                  autoComplete="family-name"
+                />
+              </label>
+            </div>
+
+            {/* 2) Then role + email */}
+            <div className="ts-grid2">
+              <label className="ts-field">
+                <span>Role</span>
+                <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
+                  <option value="coach">Coach</option>
+                  <option value="admin">Admin</option>
+                </select>
               </label>
 
               <label className="ts-field">
@@ -102,7 +155,7 @@ export default function Signup() {
                 <input
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@team.com"
+                  placeholder="trenchsports@ai.com"
                   autoComplete="email"
                 />
               </label>
@@ -132,13 +185,13 @@ export default function Signup() {
                 <div className="ts-strengthRow">
                   <div className={`ts-strengthBar s${pwScore}`} />
                   <span className="ts-strengthText">
-                      {pwScore <= 1
-                        ? "Weak"
-                        : pwScore === 2
-                        ? "Okay"
-                        : pwScore === 3
-                        ? "Good"
-                         : "Strong"}
+                    {pwScore <= 1
+                      ? "Weak"
+                      : pwScore === 2
+                      ? "Okay"
+                      : pwScore === 3
+                      ? "Good"
+                      : "Strong"}
                   </span>
                 </div>
               )}
@@ -161,35 +214,46 @@ export default function Signup() {
             <label className="ts-checkRow">
               <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
               <span>
-                I agree to the <span className="ts-linkish">Terms</span> and <span className="ts-linkish">Privacy</span>.
+                I agree to the <span className="ts-linkish">Terms</span> and{" "}
+                <span className="ts-linkish">Privacy</span>.
               </span>
             </label>
 
             {error ? <div className="ts-error">{error}</div> : null}
 
-            <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
-              {busy ? "Creating..." : "Create account"}
-            </button>
-
-            <div className="ts-divider">
-              <span>or</span>
-            </div>
-
-            <div className="ts-altRow">
-              <button type="button" className="ts-btnAlt" onClick={() => alert("Connect Google later")}>
-                Continue with Google
+            {passwordsReady ? (
+            <>
+              <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
+                {busy ? "Creating..." : "Create account"}
               </button>
-              <button type="button" className="ts-btnAlt" onClick={() => alert("Connect Apple later")}>
-                Continue with Apple
-              </button>
+
+              <div className="ts-divider">
+                <span>or</span>
+              </div>
+
+              <div className="ts-altRow">
+                <button type="button" className="ts-btnAlt" onClick={() => alert("Connect Google later")}>
+                  Continue with Google
+                </button>
+                <button type="button" className="ts-btnAlt" onClick={() => alert("Connect Apple later")}>
+                  Continue with Apple
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="ts-hintBad" style={{ marginTop: 8 }}>
+              Enter matching passwords to continue.
             </div>
+          )}
 
             <div className="ts-signupFooter">
-              <span>Already have an account?</span> <Link to="/dashboard">Go to dashboard</Link>
+              <span>Already have an account?</span> <Link to="/login">Go to login</Link>
             </div>
 
             <div className="ts-backRow">
-              <Link to="/" className="ts-backLink">← Back to landing</Link>
+              <Link to="/" className="ts-backLink">
+                ← Back to landing
+              </Link>
             </div>
           </form>
         </div>

@@ -1231,6 +1231,48 @@ code {
     background: rgba(0, 0, 0, 0.18);
 }
 
+/* Match selects to input styling */
+.ts-field select {
+  width: 100%;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.14);
+  color: inherit;
+  outline: none;
+
+  /* makes select look like an input */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+
+  transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+
+  /* space for the dropdown arrow */
+  padding-right: 40px;
+
+  /* subtle custom arrow */
+  background-image:
+    linear-gradient(45deg, transparent 50%, rgba(255,255,255,0.65) 50%),
+    linear-gradient(135deg, rgba(255,255,255,0.65) 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 12px) 50%;
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.ts-field select:focus {
+  border-color: rgba(180, 0, 255, 0.45);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+/* Optional: make options readable on some browsers */
+.ts-field select option {
+  background: var(--bg);
+  color: var(--text);
+}
+
 .ts-inputRow {
     display: flex;
     gap: 10px;
