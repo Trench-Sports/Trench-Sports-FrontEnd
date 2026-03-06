@@ -6,12 +6,44 @@ import { supabase } from "../supabaseClient";
 type Role = "coach" | "admin";
 type Step = 0 | 1;
 
+const ADMIN_POSITIONS = [
+  "Head Coach",
+  "Associate Head Coach",
+  "Team Doctor",
+  "Athletic Director",
+  "Program Director",
+  "Team Manager",
+] as const;
+
+const COACH_POSITIONS = [
+  "Strength Coach",
+  "Coach",
+  "Athletic Trainer",
+  "Assistant Coach",
+  "Graduate Assistant",
+  "Volunteer Coach",
+] as const;
+
+const US_STATES = [
+  ["AL", "Alabama"], ["AK", "Alaska"], ["AZ", "Arizona"], ["AR", "Arkansas"],
+  ["CA", "California"], ["CO", "Colorado"], ["CT", "Connecticut"], ["DE", "Delaware"],
+  ["FL", "Florida"], ["GA", "Georgia"], ["HI", "Hawaii"], ["ID", "Idaho"],
+  ["IL", "Illinois"], ["IN", "Indiana"], ["IA", "Iowa"], ["KS", "Kansas"],
+  ["KY", "Kentucky"], ["LA", "Louisiana"], ["ME", "Maine"], ["MD", "Maryland"],
+  ["MA", "Massachusetts"], ["MI", "Michigan"], ["MN", "Minnesota"], ["MS", "Mississippi"],
+  ["MO", "Missouri"], ["MT", "Montana"], ["NE", "Nebraska"], ["NV", "Nevada"],
+  ["NH", "New Hampshire"], ["NJ", "New Jersey"], ["NM", "New Mexico"], ["NY", "New York"],
+  ["NC", "North Carolina"], ["ND", "North Dakota"], ["OH", "Ohio"], ["OK", "Oklahoma"],
+  ["OR", "Oregon"], ["PA", "Pennsylvania"], ["RI", "Rhode Island"], ["SC", "South Carolina"],
+  ["SD", "South Dakota"], ["TN", "Tennessee"], ["TX", "Texas"], ["UT", "Utah"],
+  ["VT", "Vermont"], ["VA", "Virginia"], ["WA", "Washington"], ["WV", "West Virginia"],
+  ["WI", "Wisconsin"], ["WY", "Wyoming"],
+] as const;
+
 type Program = { id: string; name: string; location: string | null; onboarding_code: string };
 type Team = { id: string; name: string; team_type: any };
 
 const REQUIRED_BACKGROUND_FIELDS = [
-  "first_name",
-  "last_name",
   "position",
   "city",
   "state",
@@ -47,8 +79,6 @@ export default function Onboarding() {
   const [step, setStep] = useState<Step>(0);
 
   // Background (Step 1)
-  const [firstName, setFirstName] = useState("");
-  const [lastName, setLastName] = useState("");
   const [position, setPosition] = useState("");
   const [city, setCity] = useState("");
   const [stateVal, setStateVal] = useState("");
@@ -73,14 +103,12 @@ export default function Onboarding() {
 
   const backgroundOk = useMemo(() => {
     return (
-      firstName.trim() &&
-      lastName.trim() &&
       position.trim() &&
       city.trim() &&
       stateVal.trim() &&
       dob.trim()
     );
-  }, [firstName, lastName, position, city, stateVal, dob]);
+  }, [position, city, stateVal, dob]);
 
   const coachTrainingOk = useMemo(() => {
     return programHit?.id && coreTeamId;
@@ -126,8 +154,6 @@ export default function Onboarding() {
         // Prefill anything we have
         if (alive && profile) {
           if (profile.role) setRole(profile.role);
-          if (profile.first_name) setFirstName(profile.first_name);
-          if (profile.last_name) setLastName(profile.last_name);
           if (profile.position) setPosition(profile.position);
           if (profile.city) setCity(profile.city);
           if (profile.state) setStateVal(profile.state);
@@ -175,8 +201,6 @@ export default function Onboarding() {
         .upsert(
           {
             user_id: user.id,
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),
@@ -271,8 +295,6 @@ export default function Onboarding() {
           {
             user_id: user.id,
             role: "coach",
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),
@@ -346,8 +368,6 @@ export default function Onboarding() {
           {
             user_id: user.id,
             role: "admin",
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),
@@ -406,8 +426,6 @@ export default function Onboarding() {
             user_id: user.id,
             role: "admin",
             program_id: (program as any).id,
-            first_name: firstName.trim(),
-            last_name: lastName.trim(),
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),
@@ -469,18 +487,18 @@ export default function Onboarding() {
           <div>
             <h1 style={{ marginTop: 0, marginBottom: 6 }}>Finish setup</h1>
             <p style={{ opacity: 0.8, margin: 0 }}>
-              Two quick steps: your background, then your training access.
+              Two quick steps: your background, then connect to your program!
             </p>
           </div>
 
           <div className="ts-stepper" aria-label="Onboarding steps">
             <div className={"ts-step " + (step === 0 ? "isActive" : step > 0 ? "isDone" : "")}>
               <span className="ts-stepDot" />
-              <span className="ts-stepLabel">Background</span>
+              <span className="ts-stepLabel"></span>
             </div>
             <div className={"ts-step " + (step === 1 ? "isActive" : "")}>
               <span className="ts-stepDot" />
-              <span className="ts-stepLabel">Training</span>
+              <span className="ts-stepLabel"></span>
             </div>
           </div>
         </div>
@@ -491,20 +509,14 @@ export default function Onboarding() {
           <div style={{ display: "grid", gap: 14 }}>
             <h2 style={{ margin: 0 }}>Background</h2>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <label className="ts-field">
-                <span>First name</span>
-                <input value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-              </label>
-              <label className="ts-field">
-                <span>Last name</span>
-                <input value={lastName} onChange={(e) => setLastName(e.target.value)} />
-              </label>
-            </div>
-
             <label className="ts-field">
-              <span>Position (Head Coach, Strength Coach, etc.)</span>
-              <input value={position} onChange={(e) => setPosition(e.target.value)} />
+              <span>Position</span>
+              <select value={position} onChange={(e) => setPosition(e.target.value)}>
+                <option value="">Select a position…</option>
+                {(role === "admin" ? ADMIN_POSITIONS : COACH_POSITIONS).map((p) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
             </label>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
@@ -514,21 +526,18 @@ export default function Onboarding() {
               </label>
               <label className="ts-field">
                 <span>State</span>
-                <input value={stateVal} onChange={(e) => setStateVal(e.target.value)} placeholder="NC" />
+                <select value={stateVal} onChange={(e) => setStateVal(e.target.value)}>
+                  <option value="">Select a state…</option>
+                  {US_STATES.map(([abbr, name]) => (
+                    <option key={abbr} value={abbr}>{name}</option>
+                  ))}
+                </select>
               </label>
             </div>
 
             <label className="ts-field">
               <span>Date of birth</span>
               <input type="date" value={dob} onChange={(e) => setDob(e.target.value)} />
-            </label>
-
-            <label className="ts-field">
-              <span>Role</span>
-              <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                <option value="coach">Coach</option>
-                <option value="admin">Admin</option>
-              </select>
             </label>
 
             {error ? <div className="ts-error">{error}</div> : null}
@@ -552,7 +561,7 @@ export default function Onboarding() {
             {role === "coach" ? (
               <>
                 <p style={{ marginTop: -2, opacity: 0.8 }}>
-                  Enter your 6-digit program code, then choose your core team.
+                  Enter your 6-digit program code.
                 </p>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "end" }}>
@@ -634,23 +643,28 @@ export default function Onboarding() {
                   Admins can create a new program (recommended) or join an existing program code.
                 </p>
 
-                <div className="ts-pillRow">
-                  <button
-                    type="button"
-                    className={"ts-pill " + (adminMode === "create" ? "isActive" : "")}
-                    onClick={() => setAdminMode("create")}
-                    disabled={busy}
-                  >
-                    Create program
-                  </button>
-                  <button
-                    type="button"
-                    className={"ts-pill " + (adminMode === "join" ? "isActive" : "")}
-                    onClick={() => setAdminMode("join")}
-                    disabled={busy}
-                  >
-                    Join existing
-                  </button>
+                <div>
+                  <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 8, fontWeight: 600, letterSpacing: 0.3, textTransform: "uppercase" }}>
+                    Program setup
+                  </div>
+                  <div className="ts-pillRow">
+                    <button
+                      type="button"
+                      className={"ts-pill " + (adminMode === "create" ? "isActive" : "")}
+                      onClick={() => setAdminMode("create")}
+                      disabled={busy}
+                    >
+                      Create program
+                    </button>
+                    <button
+                      type="button"
+                      className={"ts-pill " + (adminMode === "join" ? "isActive" : "")}
+                      onClick={() => setAdminMode("join")}
+                      disabled={busy}
+                    >
+                      Join existing
+                    </button>
+                  </div>
                 </div>
 
                 {adminMode === "join" ? (
@@ -687,7 +701,7 @@ export default function Onboarding() {
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                       <label className="ts-field">
                         <span>Program name</span>
-                        <input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="Duke Football" />
+                        <input value={programName} onChange={(e) => setProgramName(e.target.value)} placeholder="Trench Sports" />
                       </label>
 
                       <label className="ts-field">
@@ -718,7 +732,7 @@ export default function Onboarding() {
                     </div>
 
                     <label className="ts-field">
-                      <span>Core team name</span>
+                      <span>Team name</span>
                       <input value={coreTeamName} onChange={(e) => setCoreTeamName(e.target.value)} placeholder="Varsity" />
                     </label>
 

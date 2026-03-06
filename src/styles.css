@@ -1,5 +1,4 @@
 /* src/styles */
-
 :root {
     font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
     line-height: 1.4;
@@ -657,6 +656,30 @@ code {
     backdrop-filter: blur(10px);
     font-weight: 700;
     letter-spacing: 0.2px;
+    cursor: pointer;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.ts-pill:hover:not(.isActive) {
+    background: rgba(180, 0, 255, 0.12);
+    border-color: rgba(180, 0, 255, 0.55);
+}
+
+.ts-pill.isActive {
+    background: rgba(180, 0, 255, 0.95);
+    border-color: rgba(180, 0, 255, 0.95);
+    color: #000;
+    box-shadow: 0 0 18px rgba(180, 0, 255, 0.45);
+}
+
+.ts-pillRow {
+    display: flex;
+    gap: 8px;
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    width: fit-content;
 }
 
 .ts-dot {
@@ -2065,4 +2088,190 @@ code {
     display: flex;
     flex-direction: column;
     gap: 16px;
+}
+
+/* =========================
+   Profile Header  (ts-profileHeader)
+   ========================= */
+
+.ts-profileHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 16px 20px;
+    margin-bottom: 18px;
+    border-radius: 20px;
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    backdrop-filter: blur(14px);
+    position: relative;
+    overflow: hidden;
+}
+
+/* Subtle purple sweep behind the card */
+.ts-profileHeader::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+        115deg,
+        rgba(180, 0, 255, 0.08) 0%,
+        transparent 55%
+    );
+    pointer-events: none;
+}
+
+.ts-profileHeader__left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+    position: relative;
+}
+
+/* Avatar */
+.ts-profileHeader__avatar {
+    position: relative;
+    flex: 0 0 auto;
+    width: 54px;
+    height: 54px;
+}
+
+.ts-profileHeader__avatar img {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 2px solid rgba(180, 0, 255, 0.40);
+    display: block;
+}
+
+.ts-profileHeader__avatarFallback {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    font-weight: 950;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.30), rgba(180, 0, 255, 0.60));
+    border: 2px solid rgba(180, 0, 255, 0.40);
+    color: #fff;
+}
+
+/* Soft purple glow ring behind avatar */
+.ts-profileHeader__avatarGlow {
+    position: absolute;
+    inset: -5px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(180, 0, 255, 0.22) 0%, transparent 70%);
+    pointer-events: none;
+    z-index: -1;
+}
+
+/* Meta (name + pills) */
+.ts-profileHeader__meta {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.ts-profileHeader__nameRow {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.ts-profileHeader__name {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 950;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ts-profileHeader__viewLink {
+    font-size: 12px;
+    font-weight: 800;
+    opacity: 0.62;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: opacity 160ms ease;
+}
+
+.ts-profileHeader__viewLink:hover {
+    opacity: 1;
+    color: var(--accent);
+}
+
+/* Pills row */
+.ts-profileHeader__pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.ts-profileHeader__pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    white-space: nowrap;
+}
+
+/* Role pill — purple tint */
+.ts-profileHeader__pill--role {
+    background: rgba(180, 0, 255, 0.14);
+    border: 1px solid rgba(180, 0, 255, 0.32);
+    color: var(--text);
+}
+
+/* Location pill — neutral */
+.ts-profileHeader__pill--location {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--panel-border);
+    color: var(--muted);
+}
+
+/* Program pill — cyan tint */
+.ts-profileHeader__pill--program {
+    background: rgba(0, 220, 255, 0.10);
+    border: 1px solid rgba(0, 220, 255, 0.24);
+    color: var(--text);
+}
+
+/* Actions */
+.ts-profileHeader__actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    position: relative;
+}
+
+/* Responsive: stack on small screens */
+@media (max-width: 560px) {
+    .ts-profileHeader {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 14px;
+    }
+
+    .ts-profileHeader__actions {
+        width: 100%;
+    }
+
+    .ts-profileHeader__actions .ts-btn {
+        flex: 1;
+    }
 }

@@ -1,4 +1,7 @@
+// src/pages/dashboard.tsx
 import React, { useEffect, useMemo, useState } from "react";
+import ProfileHeader, { Profile } from "../components/profileHeader";
+import { supabase } from "../supabaseClient";
 
 type Stat = { label: string; value: string; sub?: string };
 type Insight = { title: string; body: string; tag: "Power" | "Accuracy" | "Tempo" | "Recovery" };
@@ -15,6 +18,37 @@ function formatTime(ms: number) {
 }
 
 export default function Dashboard() {
+  // ---------- profile ----------
+  const [profile, setProfile] = useState<Profile | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    async function fetchProfile() {
+      const { data: userData } = await supabase!.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+
+      // Single round-trip: join programs table to get the program name
+      const { data, error } = await supabase!
+        .from("profiles")
+        .select("first_name, last_name, role, city, state, programs(name)")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (error || !data) return;
+
+      setProfile({
+        name:     [data.first_name, data.last_name].filter(Boolean).join(" ") || "—",
+        role:     data.role ?? "",
+        location: [data.city, data.state].filter(Boolean).join(", "),
+        program:  (data.programs as any)?.name ?? "",
+      });
+    }
+
+    fetchProfile();
+  }, []);
+
   // ---------- lightweight "demo" state ----------
   const [connected, setConnected] = useState(false);
   const [listening, setListening] = useState(false);
@@ -41,7 +75,6 @@ export default function Dashboard() {
     if (!connected || !listening) return;
 
     const t = setInterval(() => {
-      // fake an "impact" sometimes when sessionActive
       const shouldHit = sessionActive && Math.random() < 0.28;
       if (!shouldHit) return;
 
@@ -89,7 +122,7 @@ export default function Dashboard() {
         title: peak > 45 ? "Peak power is strong" : "Build peak power",
         body:
           peak > 45
-            ? "You’re hitting high peaks. Maintain form and focus on consistency between sets."
+            ? "You're hitting high peaks. Maintain form and focus on consistency between sets."
             : "Try shorter, snappier combinations and increase rest quality between bursts.",
       },
       {
@@ -105,7 +138,7 @@ export default function Dashboard() {
         title: trend > 2 ? "Output trending up" : trend < -2 ? "Output dropping" : "Output steady",
         body:
           trend > 2
-            ? "You’re ramping intensity. Keep breathing controlled to avoid accuracy drop."
+            ? "You're ramping intensity. Keep breathing controlled to avoid accuracy drop."
             : trend < -2
             ? "Power drop detected. Consider longer rest or switch to technique focus."
             : "Stable output. Good time to push precision and reduce wasted movement.",
@@ -152,6 +185,13 @@ export default function Dashboard() {
 
   return (
     <div className="ts-dash">
+      {/* PROFILE HEADER — null while fetching, populates once Supabase responds */}
+      <ProfileHeader
+        profile={profile}
+        onEdit={() => alert("Open edit profile")}
+        onShare={() => alert("Open share sheet")}
+      />
+
       <div className="ts-dashTop">
         <div className="ts-dashHead">
           <h1 className="ts-dashTitle">Dashboard</h1>
@@ -212,7 +252,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Simple “chart” placeholder */}
           <div className="ts-miniChart" aria-label="Force chart placeholder">
             {series.map((v, i) => (
               <div
@@ -245,7 +284,7 @@ export default function Dashboard() {
           </div>
 
           <div className="ts-cardHint">
-            Placeholder — later you’ll map (row,col) frequencies and intensity to cell color.
+            Placeholder — later you'll map (row,col) frequencies and intensity to cell color.
           </div>
         </div>
 
@@ -269,7 +308,7 @@ export default function Dashboard() {
           </div>
 
           <div className="ts-cardHint">
-            Next: wire in “session summary” generation (peak/avg, strike clusters, fatigue trend, recommended drills).
+            Next: wire in "session summary" generation (peak/avg, strike clusters, fatigue trend, recommended drills).
           </div>
         </div>
 
