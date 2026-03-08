@@ -26,14 +26,26 @@
 	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Trench needs Bluetooth to connect to the adapter.</string>
+
+	<!-- ✅ FIX 1: arm64 replaces armv7. All iPhones since 2013 are arm64.     -->
+	<!-- armv7 would block modern devices and cause App Store warnings.         -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<!-- ✅ FIX 2: Light status bar text/icons (white) for your dark UI.        -->
+	<!-- UIViewControllerBasedStatusBarAppearance = false lets this key take    -->
+	<!-- effect globally. Capacitor's WKWebView will respect it.               -->
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<false/>
+	<key>UIStatusBarStyle</key>
+	<string>UIStatusBarStyleLightContent</string>
+
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
-	<key>UIRequiredDeviceCapabilities</key>
-	<array>
-		<string>armv7</string>
-	</array>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
@@ -47,7 +59,5 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
-	<key>UIViewControllerBasedStatusBarAppearance</key>
-	<true/>
 </dict>
 </plist>

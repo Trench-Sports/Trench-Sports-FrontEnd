@@ -7,6 +7,12 @@
     --accent-soft: rgba(180, 0, 255, 0.18);
     /* Theme tokens (default = dark) */
     --bg: #07070a;
+    --bg-gradient:
+        radial-gradient(ellipse 110% 70% at 20% -12%, rgba(180, 0, 255, 0.30) 0%, transparent 58%),
+        radial-gradient(ellipse 80% 50% at 78% -5%,  rgba(120, 0, 220, 0.14) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 45% at 82% 108%, rgba(110, 0, 200, 0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 55% 40% at 50% 48%,  rgba(180, 0, 255, 0.04) 0%, transparent 70%),
+        #07070a;
     --panel: rgba(255, 255, 255, 0.06);
     --panel-border: rgba(255, 255, 255, 0.10);
     --text: rgba(255, 255, 255, 0.92);
@@ -17,6 +23,12 @@
 
 :root[data-theme="light"] {
     --bg: #f7f7fb;
+    --bg-gradient:
+        radial-gradient(ellipse 110% 70% at 18% -10%, rgba(180, 0, 255, 0.13) 0%, transparent 58%),
+        radial-gradient(ellipse 80% 50% at 80% -5%,  rgba(140, 0, 220, 0.07) 0%, transparent 55%),
+        radial-gradient(ellipse 70% 45% at 88% 105%, rgba(140, 0, 220, 0.06) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 35% at 50% 50%,  rgba(180, 0, 255, 0.02) 0%, transparent 70%),
+        #f7f7fb;
     --panel: rgba(20, 20, 40, 0.04);
     --panel-border: rgba(20, 20, 40, 0.10);
     --text: rgba(20, 20, 40, 0.92);
@@ -32,8 +44,10 @@ body {
 
 body {
     margin: 0;
-    background: var(--bg);
+    background: var(--bg-gradient);
+    background-attachment: fixed;
     color: var(--text);
+    transition: background 400ms ease;
 }
 
 a {
@@ -346,6 +360,28 @@ code {
     margin: 0 auto;
 }
 
+/* ── Public page top glow (login, and any page without ts-hero) ── */
+/* Applied as a wrapper to pages that need the hero-style glow      */
+/* but don't use the ts-hero section (e.g. login).                  */
+
+.ts-publicGlow {
+    position: relative;
+    min-height: calc(100dvh - 72px);
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    overflow: hidden;
+}
+
+.ts-publicGlow::before {
+    content: none;
+}
+
+.ts-publicGlow > * {
+    position: relative;
+    z-index: 1;
+}
+
 
 /* Bottom tab bar */
 
@@ -617,13 +653,7 @@ code {
 }
 
 .ts-hero::before {
-    content: "";
-    position: absolute;
-    inset: -200px -200px auto -200px;
-    height: 520px;
-    background: radial-gradient(circle at 30% 40%, rgba(180, 0, 255, 0.35), transparent 55%), radial-gradient(circle at 70% 30%, rgba(0, 220, 255, 0.20), transparent 55%), radial-gradient(circle at 55% 70%, rgba(255, 255, 255, 0.10), transparent 55%);
-    filter: blur(12px);
-    pointer-events: none;
+    content: none;
 }
 
 .ts-heroInner {
@@ -1153,9 +1183,17 @@ code {
 .ts-signupPage {
     min-height: 100vh;
     padding: 24px 14px 40px;
+    position: relative;
+    overflow: hidden;
+}
+
+.ts-signupPage::before {
+    content: none;
 }
 
 .ts-signupWrap {
+    position: relative;
+    z-index: 1;
     max-width: 980px;
     margin: 0 auto;
     display: grid;
@@ -2274,4 +2312,149 @@ code {
     .ts-profileHeader__actions .ts-btn {
         flex: 1;
     }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   PLATFORM-AWARE CSS  — append this block to your existing styles.css
+   ─────────────────────────────────────────────────────────────────────────────
+
+   Selectors work via the data-platform attribute set by platform.ts:
+
+     html[data-platform="native-ios"]      → Capacitor on iPhone/iPad
+     html[data-platform="native-android"]  → Capacitor on Android
+     html[data-platform="mobile-browser"]  → phone browser (no shell)
+     html[data-platform="web"]             → desktop browser
+     html.is-native                        → any native (ios OR android)
+
+   ───────────────────────────────────────────────────────────────────────────── */
+
+
+/* ── 1. Native shell: extend into status bar + respect safe areas ──────────── */
+
+html.is-native body {
+    /* Stretch content under the status bar */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* iOS-specific: slightly larger status bar compensation */
+html[data-platform="native-ios"] body {
+    padding-top: max(env(safe-area-inset-top), 44px);
+}
+
+
+/* ── 2. TopBar: on native, pin it under the status bar ─────────────────────── */
+
+html.is-native .topBar {
+    position: sticky;
+    top: env(safe-area-inset-top);
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
+    margin-bottom: 0;
+}
+
+html[data-platform="native-ios"] .topBar {
+    top: max(env(safe-area-inset-top), 44px);
+}
+
+
+/* ── 3. Bottom nav: show on native, hide on web ─────────────────────────────── */
+
+html.is-native .mBottomNav {
+    display: flex; /* overrides display:none from base styles */
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding-bottom: max(env(safe-area-inset-bottom), 12px);
+}
+
+/* Ensure main content doesn't hide behind fixed bottom nav on native */
+html.is-native .mMain,
+html.is-native .appMain,
+html.is-native .mobileMain {
+    padding-bottom: calc(80px + env(safe-area-inset-bottom));
+}
+
+
+/* ── 4. Cards/hover: disable hover lift on touch native (no mouse) ──────────── */
+
+html.is-native .card:hover,
+html.is-native button:hover:not(:disabled),
+html.is-native .appSidebarLinks a:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* Use :active instead for touch feedback */
+html.is-native .card:active {
+    transform: scale(0.985);
+    transition: transform 80ms ease;
+}
+
+html.is-native button:active:not(:disabled) {
+    transform: scale(0.96);
+    transition: transform 80ms ease;
+}
+
+
+/* ── 5. Sidebar: hide on native (use bottom nav instead) ────────────────────── */
+
+html.is-native .appSidebar {
+    display: none !important;
+}
+
+html.is-native .appBody {
+    grid-template-columns: 1fr !important;
+}
+
+
+/* ── 6. Desktop-only UI: hide on native ─────────────────────────────────────── */
+
+html.is-native .ts-desktopOnly {
+    display: none !important;
+}
+
+html[data-platform="web"] .ts-nativeOnly {
+    display: none !important;
+}
+
+
+/* ── 7. iOS rubber-band scroll: let it work naturally ───────────────────────── */
+
+html[data-platform="native-ios"] {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+}
+
+
+/* ── 8. Prevent text selection highlights on native (feels more app-like) ───── */
+
+html.is-native button,
+html.is-native .card,
+html.is-native .topBar,
+html.is-native .mBottomNav {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+
+/* ── 9. Utility classes you can use anywhere ─────────────────────────────────── */
+
+/* Show only on native apps */
+.ts-nativeOnly {
+    display: none;
+}
+html.is-native .ts-nativeOnly {
+    display: revert;
+}
+
+/* Show only on web (desktop/browser) */
+.ts-webOnly {
+    display: revert;
+}
+html.is-native .ts-webOnly {
+    display: none !important;
 }

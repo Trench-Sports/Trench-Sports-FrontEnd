@@ -283,18 +283,16 @@ export default function Onboarding() {
         return;
       }
 
-      // 1) Attach user to program (recommended RPC for security checks)
-      const code = onlyDigits(programCode).slice(0, 6);
-      const { error: joinErr } = await supabase.rpc("join_program_by_code", { code });
-      if (joinErr) throw joinErr;
+      // 1) Attach user to program via direct profile upsert
+      if (!programHit?.id) throw new Error("No program selected.");
 
-      // 2) Ensure profile has role + basics (program_id is set by RPC)
       const { error: upsertErr } = await supabase
         .from("profiles")
         .upsert(
           {
             user_id: user.id,
             role: "coach",
+            program_id: programHit.id,
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),
@@ -359,8 +357,14 @@ export default function Onboarding() {
         return;
       }
 
-      const { error: joinErr } = await supabase.rpc("join_program_by_code", { code });
-      if (joinErr) throw joinErr;
+      // Look up program by code, then attach via direct profile upsert
+      const { data: joinProgram, error: progErr } = await supabase
+        .from("programs")
+        .select("id")
+        .eq("onboarding_code", code)
+        .maybeSingle();
+      if (progErr) throw progErr;
+      if (!joinProgram) throw new Error("No program found for that code.");
 
       const { error: upsertErr } = await supabase
         .from("profiles")
@@ -368,6 +372,7 @@ export default function Onboarding() {
           {
             user_id: user.id,
             role: "admin",
+            program_id: joinProgram.id,
             position: position.trim(),
             city: city.trim(),
             state: stateVal.trim(),

@@ -1,3 +1,4 @@
+// src/pages/mobile/dashboard.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import ProfileHeader from "../components/profileHeader.jsx";
 

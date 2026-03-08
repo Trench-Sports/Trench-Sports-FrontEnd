@@ -1,3 +1,4 @@
+// src/pages/mobile/layout.tsx
 import React from "react";
 import { Outlet, NavLink } from "react-router-dom";
 import TopBar from "../../components/topBar.js";

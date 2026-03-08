@@ -1,6 +1,7 @@
-// src/pages/Landing.tsx
+// src/pages/landing.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import HitSimulator from "../components/hitSimulator";
 
 type Stat = { label: string; value: string; sub?: string };
 
@@ -17,7 +18,7 @@ export default function Landing() {
 
   const [active, setActive] = useState<0 | 1 | 2>(0);
 
-  // Simple “auto-rotate” showcase
+  // Auto-rotate showcase tabs
   useEffect(() => {
     const t = setInterval(() => setActive((p) => ((p + 1) % 3) as 0 | 1 | 2), 5500);
     return () => clearInterval(t);
@@ -26,20 +27,17 @@ export default function Landing() {
   const showcases = [
     {
       title: "AI-Driven. Data Dominance.",
-      body:
-        "Turn every rep into measurable performance. Trench Sports captures impact location, force, and tempo — then converts it into actionable insights.",
+      body: "Turn every rep into measurable performance. Trench Sports captures impact location, force, and tempo — then converts it into actionable insights.",
       bullets: ["Force + speed analytics", "Heatmaps & trend tracking", "Session summaries"],
     },
     {
       title: "Built for the grind.",
-      body:
-        "Designed for athletes and coaches: fast setup, consistent reads, and clean UI. The system stays out of the way — and shows up when it matters.",
+      body: "Designed for athletes and coaches: fast setup, consistent reads, and clean UI. The system stays out of the way — and shows up when it matters.",
       bullets: ["Fast connect workflow", "Reliable logging", "Coach-friendly outputs"],
     },
     {
       title: "Realtime feedback loop.",
-      body:
-        "Listen mode stays efficient. Burst mode spikes sampling when impact is detected, capturing the full hit profile in high resolution.",
+      body: "Listen mode stays efficient. Burst mode spikes sampling when impact is detected, capturing the full hit profile in high resolution.",
       bullets: ["Trigger-based burst capture", "High-frequency scanning", "Low overhead idle"],
     },
   ] as const;
@@ -47,13 +45,15 @@ export default function Landing() {
   return (
     <div className="ts-landing">
 
-      {/* HERO */}
+      {/* ── HERO ─────────────────────────────────────────────── */}
       <section className="ts-hero">
         <div className="ts-heroInner">
+
+          {/* Left: copy + CTAs */}
           <div className="ts-heroLeft">
             <div className="ts-pill">
               <span className="ts-dot" />
-              Trench Sports Platform
+              Trench Sports
             </div>
 
             <h1 className="ts-h1">
@@ -92,56 +92,15 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* Right visual: “interactive” cards */}
+          {/* Right: interactive simulator */}
           <div className="ts-heroRight">
-            <div className="ts-glass">
-              <div className="ts-glassTop">
-                <div className="ts-glassTitle">Live Impact Snapshot</div>
-                <div className="ts-glassBadge">SIM</div>
-              </div>
-
-              <div className="ts-gridViz">
-                {Array.from({ length: 96 }).map((_, i) => {
-                  // deterministic “pulse hotspot”
-                  const hotspot = (i + active * 7) % 23 === 0 || (i + active * 11) % 41 === 0;
-                  return <div key={i} className={`ts-cell ${hotspot ? "hot" : ""}`} />;
-                })}
-              </div>
-
-              <div className="ts-glassFooter">
-                <div className="ts-kpi">
-                  <span className="ts-kpiLabel">Force</span>
-                  <span className="ts-kpiVal">{active === 0 ? "28.4 lb" : active === 1 ? "31.7 lb" : "24.9 lb"}</span>
-                </div>
-                <div className="ts-kpi">
-                  <span className="ts-kpiLabel">Speed</span>
-                  <span className="ts-kpiVal">{active === 0 ? "7.2 m/s" : active === 1 ? "8.1 m/s" : "6.6 m/s"}</span>
-                </div>
-                <div className="ts-kpi">
-                  <span className="ts-kpiLabel">Zone</span>
-                  <span className="ts-kpiVal">{active === 0 ? "C4-R7" : active === 1 ? "C6-R5" : "C3-R9"}</span>
-                </div>
-              </div>
-            </div>
-
-            <div className="ts-floatCard">
-              <div className="ts-floatTitle">Session Insight</div>
-              <div className="ts-floatBody">
-                {active === 0 && "Power trending up — keep tempo consistent for 3 more sets."}
-                {active === 1 && "Strike placement drifting right — adjust stance alignment."}
-                {active === 2 && "Peak force stable — push speed focus to improve snap."}
-              </div>
-              <div className="ts-floatBar">
-                <div className={`ts-floatDot ${active === 0 ? "on" : ""}`} />
-                <div className={`ts-floatDot ${active === 1 ? "on" : ""}`} />
-                <div className={`ts-floatDot ${active === 2 ? "on" : ""}`} />
-              </div>
-            </div>
+            <HitSimulator />
           </div>
+
         </div>
       </section>
 
-      {/* STATS */}
+      {/* ── STATS ─────────────────────────────────────────────── */}
       <section className="ts-section">
         <div className="ts-container">
           <div className="ts-sectionTitleRow">
@@ -161,7 +120,7 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* SHOWCASE */}
+      {/* ── SHOWCASE ──────────────────────────────────────────── */}
       <section className="ts-section">
         <div className="ts-container">
           <div className="ts-showcase">
@@ -199,13 +158,15 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* FOOTER */}
+      {/* ── FOOTER ────────────────────────────────────────────── */}
       <footer className="ts-footer">
         <div className="ts-container ts-footerRow">
           <div className="ts-footerBrand">Trench Sports</div>
           <div className="ts-footerLinks">
             <Link to="/signup">Signup</Link>
             <Link to="/dashboard">Dashboard</Link>
+            <Link to="/contact">Contact</Link>
+            <Link to="/privacy">Privacy</Link>
           </div>
           <div className="ts-footerCopy">© {new Date().getFullYear()} Trench Sports</div>
         </div>

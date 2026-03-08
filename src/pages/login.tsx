@@ -20,6 +20,7 @@ export default function LoginPage() {
   const [form, setForm] = useState<LoginForm>({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [noAccount, setNoAccount] = useState(false);
   const [showPw, setShowPw] = useState(false);
 
   function update<K extends keyof LoginForm>(k: K, v: LoginForm[K]) {
@@ -29,6 +30,7 @@ export default function LoginPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
+    setNoAccount(false);
 
     const email = form.email.trim();
     const password = form.password;
@@ -46,7 +48,20 @@ export default function LoginPage() {
       });
 
       if (error) {
-        setErr(error.message || "Unable to sign in.");
+        const msg = error.message || "";
+        const isInvalidCreds =
+          msg.toLowerCase().includes("invalid login credentials") ||
+          msg.toLowerCase().includes("invalid credentials") ||
+          msg.toLowerCase().includes("user not found") ||
+          error.status === 400;
+
+        if (isInvalidCreds) {
+          setNoAccount(true);
+          setErr("No account found with that email.");
+          setTimeout(() => nav(`/signup?email=${encodeURIComponent(form.email.trim())}`), 2500);
+        } else {
+          setErr(msg || "Unable to sign in.");
+        }
         return;
       }
 
@@ -90,14 +105,24 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{ minHeight: "calc(100dvh - 72px)", display: "grid", placeItems: "center", padding: 24 }}>
+    <div className="ts-publicGlow">
       <div style={{ width: "min(520px, 100%)" }}>
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontWeight: 950, fontSize: 28, letterSpacing: "-0.02em" }}>Welcome back</div>
           <div style={{ opacity: 0.75, marginTop: 6 }}>Log in to view your dashboard and sessions.</div>
         </div>
 
-        {err ? <div className="ts-error">{err}</div> : null}
+        {noAccount ? (
+          <div className="ts-error">
+            No account found with that email.{" "}
+            <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
+              Create one now →
+            </Link>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Redirecting you to sign up…</div>
+          </div>
+        ) : err ? (
+          <div className="ts-error">{err}</div>
+        ) : null}
 
         <form onSubmit={onSubmit} style={{ display: "grid", gap: 12, marginTop: 12 }}>
           <div style={{ display: "grid", gap: 6 }}>

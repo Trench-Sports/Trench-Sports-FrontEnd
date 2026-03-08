@@ -1,3 +1,4 @@
+// src/components/mobilelayour.tsx
 import React from "react";
 import { Outlet } from "react-router-dom";
 import TopBar from "./topBar.js"; // if this errors: import { TopBar } from "./topBar.jsx";

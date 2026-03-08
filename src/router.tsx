@@ -1,4 +1,4 @@
-// src/router.tsx
+// src/router.tsx — updated with /contact route
 import React, { useEffect, useState } from "react";
 import { createBrowserRouter, useNavigate } from "react-router-dom";
 import AppLayout from "./components/appLayout";
@@ -7,6 +7,9 @@ import Signup from "./pages/signup";
 import Login from "./pages/login";
 import Dashboard from "./pages/dashboard";
 import Onboarding from "./pages/onboarding";
+import Contact from "./pages/contact";          // ← add this import
+import Privacy from "./pages/privacy";          // ← add this import
+import Terms from "./pages/terms";             // ← add this import
 import { supabase } from "./supabaseClient";
 
 const REQUIRED_FIELDS = ["first_name", "last_name", "position", "city", "state", "date_of_birth"] as const;
@@ -32,7 +35,6 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
     async function run() {
       try {
         if (!supabase) {
-          // If supabase is missing, allow rendering (dev mode)
           if (alive) setReady(true);
           return;
         }
@@ -60,15 +62,12 @@ function RequireOnboarding({ children }: { children: React.ReactNode }) {
 
         if (alive) setReady(true);
       } catch {
-        // fail closed -> send to onboarding
         navigate("/onboarding", { replace: true });
       }
     }
 
     run();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [navigate]);
 
   if (!ready) return null;
@@ -79,11 +78,17 @@ export const router = createBrowserRouter([
   {
     element: <AppLayout />,
     children: [
-      { path: "/", element: <Landing /> },
-      { path: "/signup", element: <Signup /> },
-      { path: "/login", element: <Login /> },
-      { path: "/onboarding", element: <Onboarding /> },
-      { path: "/dashboard", element: <RequireOnboarding><Dashboard /></RequireOnboarding> },
+      { path: "/",          element: <Landing /> },
+      { path: "/signup",    element: <Signup /> },
+      { path: "/login",     element: <Login /> },
+      { path: "/onboarding",element: <Onboarding /> },
+      { path: "/contact",   element: <Contact /> },   // ← add this route
+      { path: "/privacy",   element: <Privacy /> },   // ← add this route
+      { path: "/terms",     element: <Terms /> },     // ← add this route
+      {
+        path: "/dashboard",
+        element: <RequireOnboarding><Dashboard /></RequireOnboarding>,
+      },
     ],
   },
 ]);

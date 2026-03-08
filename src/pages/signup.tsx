@@ -1,3 +1,4 @@
+// src/pages/signup.tsx
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
@@ -214,8 +215,8 @@ export default function Signup() {
             <label className="ts-checkRow">
               <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} />
               <span>
-                I agree to the <span className="ts-linkish">Terms</span> and{" "}
-                <span className="ts-linkish">Privacy</span>.
+                I agree to the <Link to="/terms" className="ts-linkish">Terms</Link> and{" "}
+                <Link to="/privacy" className="ts-linkish">Privacy</Link>.
               </span>
             </label>
 

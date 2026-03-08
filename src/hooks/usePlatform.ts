@@ -1,12 +1,14 @@
-// src/app.tsx
+// src/hooks/usePlatform.ts
 // ─────────────────────────────────────────────────────────────────────────────
-// Import platform FIRST so data-platform is set on <html> before any render.
+// React hook wrapping the platform utility.
+// Returns the same shape as `platform` but is React-friendly.
+//
+// Usage:
+//   const { isNative, isIos, isWeb } = usePlatform();
 // ─────────────────────────────────────────────────────────────────────────────
-import "./platform"; // side-effect: sets data-platform + .is-native on <html>
 
-import { RouterProvider } from "react-router-dom";
-import { router } from "./router";
+import { platform } from "../platform";
 
-export default function App() {
-  return <RouterProvider router={router} />;
+export function usePlatform() {
+  return platform; // static — won't change during a session
 }
