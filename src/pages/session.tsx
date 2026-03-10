@@ -496,7 +496,7 @@ async function uploadSession(opts: {
 // ─── ImpactRipple (identical to hitSimulator) ────────────────────────────────
 function ImpactRipple({
   x, y, color, id, onDone,
-}: { x: number; y: number; color: string; id: number; onDone: () => void }) {
+}: { x: number | string; y: number | string; color: string; id: number; onDone: () => void }) {
   useEffect(() => {
     const t = setTimeout(onDone, 900);
     return () => clearTimeout(t);
@@ -505,7 +505,8 @@ function ImpactRipple({
   return (
     <div style={{
       position: "absolute",
-      left: `${x}%`, top: `${y}%`,
+      left: typeof x === "number" ? `${x}%` : x,
+      top:  typeof y === "number" ? `${y}%` : y,
       transform: "translate(-50%,-50%)",
       pointerEvents: "none", zIndex: 10,
     }}>
@@ -622,7 +623,7 @@ export default function Session() {
   const [grid,    setGrid]    = useState<GridState>(new Map());
   const [now,     setNow]     = useState(Date.now());
   const [peakMv,  setPeakMv]  = useState(0);
-  const [ripples, setRipples] = useState<Array<{ id: number; x: number; y: number; color: string }>>([]);
+  const [ripples, setRipples] = useState<Array<{ id: number; x: number | string; y: number | string; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
   type FeedItem = { row: number; col: number; mv: number; key: string };
@@ -754,11 +755,18 @@ export default function Session() {
       return next;
     });
 
-    // Spawn ripples
+    // Spawn ripples — match the mirrored grid: data C8 at visual-left, data C1 at visual-right.
+    // (ESP32 numbers columns from the opposite side; display is flipped to show C1 on viewer's left.)
+    // Rows: R12 top, R1 bottom. Padding: 28px top, 6px bottom/sides.
+    const gridPadTop    = 28;
+    const gridPadBottom = 6;
+    const gridPadSide   = 6;
     const newRipples = hits.map(([r, c, mv]) => {
-      const xPct = ((c - 0.5) / NUM_COLS) * 100;
-      const yPct = ((r - 0.5) / NUM_ROWS) * 100;
-      return { id: ++rippleIdRef.current, x: xPct, y: yPct, color: mvToColor(mv) };
+      const ri   = NUM_ROWS - r;                   // visual row: 0=top(R12), 11=bottom(R1)
+      const ci   = NUM_COLS - c;                   // visual col: 0=left(C8 data), 7=right(C1 data)
+      const xPct = `calc(${gridPadSide}px + (100% - ${gridPadSide * 2}px) * ${(ci + 0.5) / NUM_COLS})`;
+      const yPct = `calc(${gridPadTop}px + (100% - ${gridPadTop + gridPadBottom}px) * ${(ri + 0.5) / NUM_ROWS})`;
+      return { id: ++rippleIdRef.current, x: xPct as any, y: yPct as any, color: mvToColor(mv) };
     });
     setRipples(prev => [...prev, ...newRipples].slice(-24));
 
@@ -1276,7 +1284,7 @@ export default function Session() {
               }}>
                 {Array.from({ length: NUM_ROWS }, (_, ri) =>
                   Array.from({ length: NUM_COLS }, (_, ci) => {
-                    const key   = cellKey(NUM_ROWS - ri, ci + 1);
+                    const key   = cellKey(NUM_ROWS - ri, NUM_COLS - ci);
                     const cell  = grid.get(key);
                     const age   = cell ? now - cell.ts : Infinity;
                     const alive = age < FADE_TTL_MS;
