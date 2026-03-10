@@ -1,4 +1,4 @@
-// src/visualization/contacts.ts
+// src/tools/contacts.ts
 export type GridSize = { cols: number; rows: number };
 
 export type Cell = {

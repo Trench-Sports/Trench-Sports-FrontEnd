@@ -1,6 +1,5 @@
 // src/components/profileHeader.tsx
 import React from "react";
-import { Link } from "react-router-dom";
 
 export type Profile = {
   name?: string;
@@ -14,9 +13,10 @@ export type ProfileHeaderProps = {
   profile?: Profile | null;
   onEdit: () => void;
   onShare: () => void;
+  onViewProgram?: () => void;
 };
 
-export default function ProfileHeader({ profile, onEdit, onShare }: ProfileHeaderProps): JSX.Element {
+export default function ProfileHeader({ profile, onEdit, onShare, onViewProgram }: ProfileHeaderProps): JSX.Element {
   const name      = profile?.name      ?? "Your Name";
   const role      = profile?.role      ?? "";
   const location  = profile?.location  ?? "";
@@ -49,9 +49,15 @@ export default function ProfileHeader({ profile, onEdit, onShare }: ProfileHeade
         <div className="ts-profileHeader__meta">
           <div className="ts-profileHeader__nameRow">
             <h2 className="ts-profileHeader__name">{name}</h2>
-            <Link className="ts-profileHeader__viewLink" to="/profile">
-              View profile
-            </Link>
+            {role === "admin" && onViewProgram && (
+              <button
+                type="button"
+                className="ts-profileHeader__viewLink"
+                onClick={onViewProgram}
+              >
+                View Program
+              </button>
+            )}
           </div>
 
           <div className="ts-profileHeader__pills">
@@ -83,9 +89,6 @@ export default function ProfileHeader({ profile, onEdit, onShare }: ProfileHeade
 
       {/* Right: actions */}
       <div className="ts-profileHeader__actions">
-        <button type="button" className="ts-btn ts-btnGhost" onClick={onShare}>
-          Share
-        </button>
         <button type="button" className="ts-btn ts-btnPrimary" onClick={onEdit}>
           Edit profile
         </button>

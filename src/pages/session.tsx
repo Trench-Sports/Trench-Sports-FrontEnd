@@ -1,0 +1,1538 @@
+// src/pages/session.tsx
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { supabase } from "../supabaseClient";
+
+// ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
+const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const NUS_TX_CHAR      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // ESP32 → app (notify)
+const NUS_RX_CHAR      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // app → ESP32 (write)
+
+const NUM_ROWS    = 12;
+const NUM_COLS    = 8;
+const FADE_TTL_MS = 400;
+const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
+
+// ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
+const MODES = ["standard", "accuracy", "reaction"] as const;
+type SessionMode = typeof MODES[number];
+
+const MODE_META: Record<SessionMode, { icon: string; label: string; color: string; glow: string; desc: string }> = {
+  standard: {
+    icon: "💥", label: "Standard",
+    color: "#b400ff", glow: "rgba(180,0,255,0.55)",
+    desc: "Strike any zone. Every impact is captured — force and placement logged in real time.",
+  },
+  accuracy: {
+    icon: "🎯", label: "Accuracy",
+    color: "#00dcff", glow: "rgba(0,220,255,0.55)",
+    desc: "Precision mode. Each strike is scored by how close you land to the bullseye.",
+  },
+  reaction: {
+    icon: "⚡️", label: "Reaction",
+    color: "#ffcc00", glow: "rgba(255,200,0,0.55)",
+    desc: "Wait for the HIT! signal, then strike as fast as you can. Reaction time measured to impact.",
+  },
+};
+
+// ─── ReactionOverlay ──────────────────────────────────────────────────────────
+function ReactionOverlay({ phase, reactionMs }: { phase: string; reactionMs: number | null }) {
+  if (phase === "waiting") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(0,0,0,0.62)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: 3, textTransform: "uppercase", marginBottom: 16 }}>
+        Get ready…
+      </div>
+      <div style={{
+        width: 52, height: 52, borderRadius: "50%",
+        border: "3px solid rgba(255,255,255,0.15)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        animation: "tsPulseWait 1.1s ease-in-out infinite",
+      }}>
+        <div style={{ width: 14, height: 14, borderRadius: "50%", background: "rgba(255,255,255,0.25)" }} />
+      </div>
+    </div>
+  );
+
+  if (phase === "signal") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(255,200,0,0.18)", borderRadius: 16, pointerEvents: "none",
+      animation: "tsFlashIn 0.15s ease-out",
+    }}>
+      <div style={{
+        fontSize: 38, fontWeight: 900, color: "#ffcc00",
+        textShadow: "0 0 24px #ffcc00, 0 0 48px rgba(255,200,0,0.6)",
+        letterSpacing: 2, animation: "tsSignalPop 0.2s ease-out",
+      }}>HIT!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,200,0,0.7)", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
+        Strike now
+      </div>
+    </div>
+  );
+
+  if (phase === "result" && reactionMs !== null) return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(0,0,0,0.50)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,200,0,0.7)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+        Reaction Time
+      </div>
+      <div style={{
+        fontSize: 42, fontWeight: 900,
+        color: reactionMs < 300 ? "#00ff88" : reactionMs < 500 ? "#ffcc00" : "#ff6060",
+        textShadow: `0 0 20px ${reactionMs < 300 ? "#00ff88" : reactionMs < 500 ? "#ffcc00" : "#ff6060"}`,
+        animation: "tsResultPop 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+        fontVariantNumeric: "tabular-nums",
+      }}>
+        {reactionMs}ms
+      </div>
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
+        {reactionMs < 250 ? "Elite ⚡" : reactionMs < 350 ? "Sharp 🔥" : reactionMs < 500 ? "Good 👍" : "Keep Training 💪"}
+      </div>
+    </div>
+  );
+
+  if (phase === "early") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(255,60,60,0.18)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 900, color: "#ff6060" }}>Too Early!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,100,100,0.7)", marginTop: 6, letterSpacing: 1 }}>Wait for the signal</div>
+    </div>
+  );
+
+  return null;
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+type BleStatus = "idle" | "scanning" | "connected" | "disconnected" | "unsupported";
+type SaveState = "idle" | "saving" | "saved" | "error";
+
+type Athlete = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  position: string | null;
+  sport: string | null;
+  core_team_id: string;
+};
+
+// One raw BLE frame — maps to one row in `events`
+type BleFrame = {
+  event_id: string;                          // e.g. "ses_…_e00042"
+  t_device_ms: number;                       // ESP32 device uptime ms (`t` field)
+  epoch_ms: number;                          // wall-clock ms when received
+  hits: Array<[number, number, number]>;     // [row, col, mv]
+  raw: object;                               // original parsed JSON from ESP32
+};
+
+type CellState = { mv: number; ts: number };
+type GridState  = Map<string, CellState>;    // key = "r,c"
+
+// ─── Chunk reassembler (mirrors ChunkAssembler in ble_connect.py) ────────────
+class ChunkAssembler {
+  private total: number | null = null;
+  private parts: Record<number, string> = {};
+  private lastTs = Date.now();
+
+  push(text: string): string | null {
+    const m = CHUNK_RE.exec(text);
+    if (!m) { this.reset(); return text; }
+    const idx     = parseInt(m[1], 10);
+    const total   = parseInt(m[2], 10);
+    const payload = text.slice(m[0].length);
+    if (this.total !== total) { this.total = total; this.parts = {}; }
+    this.parts[idx] = payload;
+    this.lastTs = Date.now();
+    if (Object.keys(this.parts).length === total) {
+      const out = Array.from({ length: total }, (_, i) => this.parts[i + 1] ?? "").join("");
+      this.reset();
+      return out;
+    }
+    return null;
+  }
+
+  maybeTimeout(ms = 2000) {
+    if (this.total !== null && Date.now() - this.lastTs > ms) this.reset();
+  }
+
+  private reset() { this.total = null; this.parts = {}; }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function cellKey(r: number, c: number) { return `${r},${c}`; }
+
+function mvToColor(mv: number): string {
+  const v = mv / 1000;
+  if (v >= 0.5) return "#b400ff";
+  if (v >= 0.2) return "#ffcc00";
+  return "rgba(255,255,255,0.55)";
+}
+
+function mvToGlow(mv: number): string {
+  const v = mv / 1000;
+  if (v >= 0.5) return "rgba(180,0,255,0.70)";
+  if (v >= 0.2) return "rgba(255,200,0,0.60)";
+  return "rgba(255,255,255,0.35)";
+}
+
+function formatTime(ms: number) {
+  const s  = Math.floor(ms / 1000);
+  const mm = String(Math.floor(s / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return `${mm}:${ss}`;
+}
+
+function genSessionId() {
+  return `ses_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function hexAlpha(fraction: number) {
+  return Math.round(Math.max(0, Math.min(1, fraction)) * 255)
+    .toString(16).padStart(2, "0");
+}
+
+// ─── Supabase upload ──────────────────────────────────────────────────────────
+/**
+ * Writes a completed session to Supabase in four sequential steps:
+ *   1. sessions          — one row
+ *   2. events            — one row per BLE frame, enriched with iei, angle, strength_index
+ *   3. event_cells       — one row per cell hit per frame (chunked)
+ *   4. session_summaries — one fully computed summary row
+ *
+ * Per-event computed fields (no calibration needed):
+ *   • iei_prev_ms   — wall-clock gap since previous event
+ *   • angle_deg     — direction of hit centroid from grid center (0° = right, CCW+)
+ *   • quality.strength_index (0–1000):
+ *       speed component  (40%) — normalised IEI: fast cadence scores higher
+ *       voltage component (60%) — normalised peak mv: harder hits score higher
+ *       formula: (speedNorm × 0.4 + voltNorm × 0.6) × 1000  [voltNorm = mv / 3300]
+ */
+
+// ── helpers (module-level, no closure deps) ──────────────────────────────────
+function statSummary(vals: number[]): { mean: number; min: number; max: number; std: number } | null {
+  if (!vals.length) return null;
+  const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const min  = Math.min(...vals);
+  const max  = Math.max(...vals);
+  const std  = Math.sqrt(vals.reduce((a, b) => a + (b - mean) ** 2, 0) / vals.length);
+  return { mean: +mean.toFixed(3), min: +min.toFixed(3), max: +max.toFixed(3), std: +std.toFixed(3) };
+}
+
+function eventAngleDeg(hits: Array<[number, number, number]>): number | null {
+  if (!hits.length) return null;
+  // Centroid of all hit cells in this frame (weighted by mv)
+  const totalMv = hits.reduce((s, [,, mv]) => s + mv, 0);
+  const centerR = (NUM_ROWS + 1) / 2;   // 6.5
+  const centerC = (NUM_COLS + 1) / 2;   // 4.5
+  const cR = hits.reduce((s, [r,, mv]) => s + r * mv, 0) / totalMv;
+  const cC = hits.reduce((s, [, c, mv]) => s + c * mv, 0) / totalMv;
+  const angleDeg = Math.atan2(cR - centerR, cC - centerC) * (180 / Math.PI);
+  return +angleDeg.toFixed(1);
+}
+
+function strengthIndex(iei: number | null, peakMv: number): number {
+  // Speed: IEI ≤ 100ms = maximum (rapid bursts), IEI ≥ 2000ms = zero (resting pace)
+  const MIN_IEI = 100;
+  const MAX_IEI = 2000;
+  const speedNorm = iei == null
+    ? 0.5  // first event of session — neutral speed
+    : Math.max(0, Math.min(1, 1 - (iei - MIN_IEI) / (MAX_IEI - MIN_IEI)));
+
+  // Voltage: 3300 mv = 3.3V = full sensor range → full score
+  const voltNorm = Math.max(0, Math.min(1, peakMv / 3300));
+
+  return Math.round((speedNorm * 0.4 + voltNorm * 0.6) * 1000);
+}
+
+async function uploadSession(opts: {
+  sessionId:    string;
+  programId:    string;
+  athleteId:    string;
+  coreTeamId:   string | null;
+  createdBy:    string;
+  frames:       BleFrame[];
+  startedAtMs:  number;
+  endedAtMs:    number;
+  mode?:        string;
+  deviceModel?: string;
+  samplingHz?:  number;
+  // reaction mode live stats
+  rxBestMs?:    number | null;
+  rxAvgMs?:     number | null;
+  rxAttempts?:  number;
+  // accuracy mode live stats
+  accHitsCount?: number;
+  accScoreSum?:  number;
+}) {
+  if (!supabase) throw new Error("Supabase client not initialised");
+
+  const {
+    sessionId, programId, athleteId, coreTeamId,
+    createdBy, frames, startedAtMs, endedAtMs, mode = "standard",
+    deviceModel = "TSII", samplingHz = 25,
+    rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
+    accHitsCount = 0, accScoreSum = 0,
+  } = opts;
+
+  const CHUNK = 500;
+
+  // ── 1. sessions ────────────────────────────────────────────────────────────
+  const { error: sessErr } = await supabase.from("sessions").insert({
+    id:            sessionId,
+    program_id:    programId,
+    athlete_id:    athleteId,
+    ...(coreTeamId ? { core_team_id: coreTeamId } : {}),
+    created_by:    createdBy,
+    started_at_ms: startedAtMs,
+    ended_at_ms:   endedAtMs,
+    grid_rows:     NUM_ROWS,
+    grid_cols:     NUM_COLS,
+    device_model:  deviceModel,
+    sampling_hz:   samplingHz,
+    mode,
+    raw:           frames.map(f => f.raw),
+  });
+  if (sessErr) throw new Error(`sessions: ${sessErr.message}`);
+  if (frames.length === 0) return;
+
+  // ── 2. events — enriched ──────────────────────────────────────────────────
+  // Pre-compute per-event derived values in one pass
+  type EventDerived = {
+    iei:    number | null;   // ms since previous event (wall-clock)
+    angle:  number | null;   // degrees from grid center
+    si:     number;          // strength index 0–1000
+    peakMv: number;
+  };
+
+  const derived: EventDerived[] = frames.map((f, i) => {
+    const iei    = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
+    const peakMv = f.hits.reduce((m, [,, mv]) => Math.max(m, mv), 0);
+    return {
+      iei,
+      angle:  eventAngleDeg(f.hits),
+      si:     strengthIndex(iei, peakMv),
+      peakMv,
+    };
+  });
+
+  const eventRows = frames.map((f, i) => ({
+    event_id:    f.event_id,
+    session_id:  sessionId,
+    t_start_ms:  f.t_device_ms,
+    t_end_ms:    f.t_device_ms,
+    duration_ms: 0,           // firmware doesn't yet send per-strike duration
+    iei_prev_ms: derived[i].iei,
+    angle_deg:   derived[i].angle,
+    quality:     { strength_index: derived[i].si },
+    raw:         f.raw,
+  }));
+
+  for (let i = 0; i < eventRows.length; i += CHUNK) {
+    const { error } = await supabase.from("events").insert(eventRows.slice(i, i + CHUNK));
+    if (error) throw new Error(`events (chunk ${i}): ${error.message}`);
+  }
+
+  // ── 3. event_cells ─────────────────────────────────────────────────────────
+  const cellRows: object[] = [];
+  for (const f of frames) {
+    for (const [r, c, mv] of f.hits) {
+      cellRows.push({
+        event_id:   f.event_id,
+        r, c,
+        samples:    1,
+        v_min:      mv / 1000,
+        p_max_kpa:  null,   // requires force calibration
+        t_first_ms: f.t_device_ms,
+        t_last_ms:  f.t_device_ms,
+      });
+    }
+  }
+  for (let i = 0; i < cellRows.length; i += CHUNK) {
+    const { error } = await supabase.from("event_cells").insert(cellRows.slice(i, i + CHUNK));
+    if (error) throw new Error(`event_cells (chunk ${i}): ${error.message}`);
+  }
+
+  // ── 4. session_summaries ───────────────────────────────────────────────────
+  const durationS = (endedAtMs - startedAtMs) / 1000;
+  const cadenceHz = durationS > 0 ? frames.length / durationS : 0;
+
+  // IEI — wall-clock gaps between consecutive events
+  const ieiVals = derived.slice(1).map(d => d.iei as number);  // first is null
+
+  // Angles across all events
+  const angleVals = derived.map(d => d.angle).filter((a): a is number => a !== null);
+
+  // Strength index across all events
+  const siVals = derived.map(d => d.si);
+
+  // Heatmap: cumulative mv per cell
+  const heatmap: Record<string, number> = {};
+  for (const f of frames) {
+    for (const [r, c, mv] of f.hits) {
+      const k = `${r},${c}`;
+      heatmap[k] = (heatmap[k] ?? 0) + mv;
+    }
+  }
+
+  // Most-contacted cell (by cumulative mv)
+  let topCell: string | null = null;
+  let topVal  = -Infinity;
+  for (const [k, v] of Object.entries(heatmap)) {
+    if (v > topVal) { topVal = v; topCell = k; }
+  }
+  const [topR, topC] = topCell ? topCell.split(",").map(Number) : [null, null];
+
+  // Center of mass — mv-weighted centroid across all cell hits
+  const allHits = frames.flatMap(f => f.hits);
+  let comR = 0, comC = 0, comW = 0;
+  for (const [r, c, mv] of allHits) { comR += r * mv; comC += c * mv; comW += mv; }
+  const centerOfMass = comW > 0
+    ? { r: +(comR / comW).toFixed(2), c: +(comC / comW).toFixed(2) }
+    : null;
+
+  // Peak mv across all cells
+  const allMv  = allHits.map(h => h[2]);
+  const peakMv = allMv.length ? Math.max(...allMv) : 0;
+  const avgMv  = allMv.length ? allMv.reduce((a, b) => a + b, 0) / allMv.length : 0;
+
+  // Accuracy stats (computed from live refs passed in)
+  const accuracyQuality = mode === "accuracy" && accHitsCount > 0
+    ? {
+        accuracy_pct:    +(accScoreSum / accHitsCount).toFixed(1),
+        avg_offset_cells: +(accHitsCount > 0
+          // offset_cells ≈ inverse of the normalised score × half-grid-size
+          ? ((100 - accScoreSum / accHitsCount) / 100) * Math.min(NUM_ROWS, NUM_COLS) / 2
+          : 0
+        ).toFixed(2),
+      }
+    : null;
+
+  // Reaction stats (from live refs passed in)
+  const reactionQuality = mode === "reaction"
+    ? {
+        best_reaction_ms: rxBestMs,
+        avg_reaction_ms:  rxAvgMs,
+        attempts:         rxAttempts,
+      }
+    : null;
+
+  const { error: sumErr } = await supabase.from("session_summaries").insert({
+    session_id:          sessionId,
+    program_id:          programId,
+    ...(coreTeamId ? { core_team_id: coreTeamId } : {}),
+    athlete_id:          athleteId,
+    mode,
+    num_events:          frames.length,
+    session_duration_ms: endedAtMs - startedAtMs,
+    cadence_hz_avg:      +cadenceHz.toFixed(3),
+    cadence_hz_median:   +cadenceHz.toFixed(3),
+    longest_pause_ms:    ieiVals.length ? Math.max(...ieiVals) : 0,
+
+    // IEI — full stats object (mean replaces old avg key)
+    iei_ms: ieiVals.length
+      ? { ...statSummary(ieiVals), values: ieiVals }
+      : null,
+
+    // Angle stats across all events
+    angles_deg: angleVals.length ? statSummary(angleVals) : null,
+
+    // Voltage-only force proxy (force in N requires calibration, deferred)
+    peak_force_stats: {
+      peak_mv: peakMv,
+      avg_mv:  +avgMv.toFixed(2),
+      peak_v:  +(peakMv / 1000).toFixed(3),
+      avg_v:   +(avgMv  / 1000).toFixed(3),
+      note:    "N conversion requires sensor calibration",
+    },
+
+    // quality — all keys flat so dashboard reads them directly:
+    //   strength_index  → always present
+    //   accuracy_pct, avg_offset_cells  → accuracy mode only
+    //   best_reaction_ms, avg_reaction_ms, attempts  → reaction mode only
+    quality: {
+      strength_index: statSummary(siVals),
+      ...(accuracyQuality ?? {}),
+      ...(reactionQuality ?? {}),
+    },
+
+    heatmap,
+    most_contacted_cell_rc: topR !== null ? { r: topR, c: topC } : null,
+    center_of_mass_mm:       centerOfMass,   // in grid units until mm/cell calibrated
+    date_of_record:          new Date().toISOString(),
+  });
+  if (sumErr) throw new Error(`session_summaries: ${sumErr.message}`);
+}
+
+// ─── ImpactRipple (identical to hitSimulator) ────────────────────────────────
+function ImpactRipple({
+  x, y, color, id, onDone,
+}: { x: number; y: number; color: string; id: number; onDone: () => void }) {
+  useEffect(() => {
+    const t = setTimeout(onDone, 900);
+    return () => clearTimeout(t);
+  }, [onDone]);
+
+  return (
+    <div style={{
+      position: "absolute",
+      left: `${x}%`, top: `${y}%`,
+      transform: "translate(-50%,-50%)",
+      pointerEvents: "none", zIndex: 10,
+    }}>
+      <div style={{
+        width: 12, height: 12, borderRadius: "50%",
+        background: color,
+        boxShadow: `0 0 16px 6px ${color}`,
+        animation: "tsCorePulse 0.9s ease-out forwards",
+      }} />
+      <div style={{
+        position: "absolute", left: "50%", top: "50%",
+        width: 12, height: 12, borderRadius: "50%",
+        border: `2px solid ${color}`,
+        animation: "tsRipple 0.9s ease-out forwards",
+      }} />
+    </div>
+  );
+}
+
+// ─── Main Page Component ──────────────────────────────────────────────────────
+export default function Session() {
+  const navigate = useNavigate();
+
+  // ── Auth / profile ──────────────────────────────────────────────────────────
+  const [userId,    setUserId]    = useState<string | null>(null);
+  const [programId, setProgramId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+    (async () => {
+      const { data: userData } = await supabase!.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+      setUserId(user.id);
+      const { data } = await supabase!
+        .from("profiles")
+        .select("program_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (data) setProgramId(data.program_id ?? null);
+    })();
+  }, []);
+
+  // ── Athletes ─────────────────────────────────────────────────────────────────
+  const [athletes,        setAthletes]        = useState<Athlete[]>([]);
+  const [athleteFilter,   setAthleteFilter]   = useState("");
+  const [selectedAthlete, setSelectedAthlete] = useState<Athlete | null>(null);
+  const [athletesLoading, setAthletesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!programId || !supabase) return;
+    setAthletesLoading(true);
+    (async () => {
+      const { data } = await supabase!
+        .from("athletes")
+        .select("id, first_name, last_name, position, sport, core_team_id")
+        .eq("program_id", programId)
+        .order("last_name");
+      setAthletes((data as Athlete[]) ?? []);
+      setAthletesLoading(false);
+    })();
+  }, [programId]);
+
+  const filteredAthletes = athletes.filter(a => {
+    const q = athleteFilter.toLowerCase();
+    return (
+      a.first_name.toLowerCase().includes(q) ||
+      a.last_name.toLowerCase().includes(q)  ||
+      (a.position ?? "").toLowerCase().includes(q)
+    );
+  });
+
+  // ── BLE ──────────────────────────────────────────────────────────────────────
+  const [bleStatus,    setBleStatus]    = useState<BleStatus>("idle");
+  const [bleSupported, setBleSupported] = useState(true);
+  const deviceRef    = useRef<BluetoothDevice | null>(null);
+  const rxCharRef    = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
+  const assemblerRef = useRef(new ChunkAssembler());
+
+  useEffect(() => {
+    if (!("bluetooth" in navigator)) {
+      setBleSupported(false);
+      setBleStatus("unsupported");
+    }
+  }, []);
+
+  // ── Session state ────────────────────────────────────────────────────────────
+  const [sessionMode,   setSessionMode]   = useState<SessionMode>("standard");
+  const [sessionActive, setSessionActive] = useState(false);
+  const [saveState,     setSaveState]     = useState<SaveState>("idle");
+  const [saveError,     setSaveError]     = useState<string | null>(null);
+  const [elapsedMs,     setElapsedMs]     = useState(0);
+  const startTimeRef  = useRef<number | null>(null);
+  const sessionIdRef  = useRef("");
+
+  // ── Reaction mode state ───────────────────────────────────────────────────────
+  const [rxPhase,   setRxPhase]   = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
+  const [rxTime,    setRxTime]    = useState<number | null>(null);
+  const [rxBestMs,  setRxBestMs]  = useState<number | null>(null);
+  const [rxAttempts, setRxAttempts] = useState(0);
+  const [rxAvgMs,   setRxAvgMs]   = useState<number | null>(null);
+  const rxSignalAt  = useRef<number | null>(null);
+  const rxTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const rxSumMs     = useRef(0);
+
+  // ── Accuracy mode state ───────────────────────────────────────────────────────
+  const [avgAccuracy, setAvgAccuracy] = useState<number | null>(null);
+  const accHitsRef = useRef(0);
+  const accSumRef  = useRef(0);
+
+  // ── Grid / data ──────────────────────────────────────────────────────────────
+  const [grid,    setGrid]    = useState<GridState>(new Map());
+  const [now,     setNow]     = useState(Date.now());
+  const [peakMv,  setPeakMv]  = useState(0);
+  const [ripples, setRipples] = useState<Array<{ id: number; x: number; y: number; color: string }>>([]);
+  const rippleIdRef = useRef(0);
+
+  type FeedItem = { row: number; col: number; mv: number; key: string };
+  const [feed, setFeed] = useState<FeedItem[]>([]);
+  const feedCounter = useRef(0);
+
+  // Raw frames accumulated during session — written to Supabase on save
+  const framesRef  = useRef<BleFrame[]>([]);
+  const frameIndex = useRef(0);
+
+  // captureRef tracks sessionActive without closure staleness
+  const captureRef = useRef(false);
+
+  // Stable refs so handleNotify (memoised with []) can read current values
+  const sessionModeRef  = useRef<SessionMode>("standard");
+  const rxPhaseRef      = useRef<string>("idle");
+  const rxAttemptsRef   = useRef(0);
+
+  // Keep refs in sync with state
+  useEffect(() => { sessionModeRef.current = sessionMode; }, [sessionMode]);
+  useEffect(() => { rxPhaseRef.current = rxPhase; }, [rxPhase]);
+  useEffect(() => { rxAttemptsRef.current = rxAttempts; }, [rxAttempts]);
+
+  // ── Reaction mode sequence ────────────────────────────────────────────────────
+  const scheduleNextReaction = useCallback(() => {
+    if (!captureRef.current) return;
+    const delay = 1500 + Math.random() * 2500;
+    setRxPhase("waiting");
+    rxPhaseRef.current = "waiting";
+    rxTimer.current = setTimeout(() => {
+      if (!captureRef.current) return;
+      setRxPhase("signal");
+      rxPhaseRef.current = "signal";
+      rxSignalAt.current = performance.now();
+    }, delay);
+  }, []);
+
+  // Fade tick
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60);
+    return () => clearInterval(id);
+  }, []);
+
+  // Timer
+  useEffect(() => {
+    if (!sessionActive) return;
+    const id = setInterval(() => {
+      setElapsedMs(Date.now() - (startTimeRef.current ?? Date.now()));
+    }, 250);
+    return () => clearInterval(id);
+  }, [sessionActive]);
+
+  // ── BLE notify handler ────────────────────────────────────────────────────────
+  const handleNotify = useCallback((event: Event) => {
+    const value = (event.target as BluetoothRemoteGATTCharacteristic).value;
+    if (!value) return;
+    const text = new TextDecoder().decode(value).trim();
+
+    assemblerRef.current.maybeTimeout();
+    const maybeJson = assemblerRef.current.push(text);
+    if (!maybeJson) return;
+
+    let obj: any;
+    try { obj = JSON.parse(maybeJson); } catch { return; }
+
+    const hits: Array<[number, number, number]> = obj.hits ?? [];
+    if (!hits.length) return;
+
+    const epochMs = Date.now();
+    const frameT: number = obj.t ?? 0;
+
+    // ── Reaction mode: first incoming hit resolves the current phase ──────────
+    if (captureRef.current && sessionModeRef.current === "reaction") {
+      const phase = rxPhaseRef.current;
+      if (phase === "waiting") {
+        // Hit before signal — too early penalty
+        if (rxTimer.current) clearTimeout(rxTimer.current);
+        setRxPhase("early");
+        rxPhaseRef.current = "early";
+        setTimeout(() => scheduleNextReaction(), 1800);
+        return;
+      }
+      if (phase === "signal" && rxSignalAt.current !== null) {
+        const rt = Math.round(performance.now() - rxSignalAt.current);
+        setRxTime(rt);
+        setRxPhase("result");
+        rxPhaseRef.current = "result";
+        setRxAttempts(a => a + 1);
+        rxSumMs.current += rt;
+        setRxBestMs(prev => prev === null ? rt : Math.min(prev, rt));
+        setRxAvgMs(Math.round((rxSumMs.current + rt) / (rxAttemptsRef.current + 1)));
+        setTimeout(() => scheduleNextReaction(), 2200);
+        // Fall through to still display the hit on the grid
+      }
+    }
+
+    // ── Accuracy scoring ──────────────────────────────────────────────────────
+    // Grid center (1-indexed): cx = 4.5, cy = 6.5
+    const ACC_CX = (NUM_COLS + 1) / 2;  // 4.5
+    const ACC_CY = (NUM_ROWS + 1) / 2;  // 6.5
+
+    if (captureRef.current && sessionModeRef.current === "accuracy") {
+      for (const [r, c] of hits) {
+        const dx = (c - ACC_CX) / (NUM_COLS / 2);
+        const dy = (r - ACC_CY) / (NUM_ROWS / 2);
+        const dist = Math.min(Math.sqrt(dx * dx + dy * dy), 1);
+        const score = Math.round((1 - dist) * 100);
+        accHitsRef.current += 1;
+        accSumRef.current  += score;
+        setAvgAccuracy(Math.round(accSumRef.current / accHitsRef.current));
+      }
+    }
+
+    // Accumulate frame for Supabase
+    if (captureRef.current) {
+      const idx = frameIndex.current++;
+      framesRef.current.push({
+        event_id:    `${sessionIdRef.current}_e${String(idx).padStart(5, "0")}`,
+        t_device_ms: frameT,
+        epoch_ms:    epochMs,
+        hits,
+        raw:         obj,
+      });
+    }
+
+    // Update grid (display)
+    setGrid(prev => {
+      const next = new Map(prev);
+      for (const [r, c, mv] of hits) next.set(cellKey(r, c), { mv, ts: epochMs });
+      return next;
+    });
+
+    // Spawn ripples
+    const newRipples = hits.map(([r, c, mv]) => {
+      const xPct = ((c - 0.5) / NUM_COLS) * 100;
+      const yPct = ((r - 0.5) / NUM_ROWS) * 100;
+      return { id: ++rippleIdRef.current, x: xPct, y: yPct, color: mvToColor(mv) };
+    });
+    setRipples(prev => [...prev, ...newRipples].slice(-24));
+
+    // Update feed
+    const newItems: FeedItem[] = hits.map(([row, col, mv]) => ({
+      row, col, mv, key: String(feedCounter.current++),
+    }));
+    setFeed(prev => [...newItems, ...prev].slice(0, 60));
+
+    setPeakMv(prev => Math.max(prev, ...hits.map(h => h[2])));
+  }, []);
+
+  // ── BLE connect / disconnect ──────────────────────────────────────────────────
+  const connectBle = useCallback(async () => {
+    if (!bleSupported) return;
+    setBleStatus("scanning");
+    try {
+      const device = await (navigator as any).bluetooth.requestDevice({
+        filters: [{ name: "MPY ESP32" }],
+        optionalServices: [NUS_SERVICE_UUID],
+      });
+      deviceRef.current = device;
+      device.addEventListener("gattserverdisconnected", () => {
+        setBleStatus("disconnected");
+        captureRef.current = false;
+        rxCharRef.current  = null;
+        setSessionActive(false);
+      });
+      const server  = await device.gatt!.connect();
+      const service = await server.getPrimaryService(NUS_SERVICE_UUID);
+
+      // TX — ESP32 → app (notifications)
+      const txChar  = await service.getCharacteristic(NUS_TX_CHAR);
+      await txChar.startNotifications();
+      txChar.addEventListener("characteristicvaluechanged", handleNotify as EventListener);
+
+      // RX — app → ESP32 (commands)
+      rxCharRef.current = await service.getCharacteristic(NUS_RX_CHAR);
+
+      setBleStatus("connected");
+    } catch (err: any) {
+      setBleStatus(err?.name === "NotFoundError" ? "idle" : "disconnected");
+    }
+  }, [bleSupported, handleNotify]);
+
+  const disconnectBle = useCallback(() => {
+    captureRef.current = false;
+    rxCharRef.current  = null;
+    deviceRef.current?.gatt?.disconnect();
+    setBleStatus("disconnected");
+    setSessionActive(false);
+  }, []);
+
+  const removeRipple = useCallback((id: number) => {
+    setRipples(prev => prev.filter(r => r.id !== id));
+  }, []);
+
+  // ── BLE command sender ────────────────────────────────────────────────────────
+  // Encodes a JSON command and writes it to the ESP32 NUS RX characteristic.
+  // Uses writeValueWithoutResponse so it never blocks the UI.
+  const sendCommand = useCallback(async (cmd: "start" | "stop") => {
+    if (!rxCharRef.current) return;
+    try {
+      const bytes = new TextEncoder().encode(JSON.stringify({ cmd }));
+      await rxCharRef.current.writeValueWithoutResponse(bytes);
+      console.log(`[BLE] sent cmd=${cmd}`);
+    } catch (err) {
+      console.warn("[BLE] sendCommand failed:", err);
+    }
+  }, []);
+
+  // ── Session controls ──────────────────────────────────────────────────────────
+  const startSession = async () => {
+    sessionIdRef.current = genSessionId();
+    framesRef.current    = [];
+    frameIndex.current   = 0;
+    feedCounter.current  = 0;
+    // Reset accuracy
+    accHitsRef.current = 0;
+    accSumRef.current  = 0;
+    setAvgAccuracy(null);
+    // Reset reaction
+    if (rxTimer.current) clearTimeout(rxTimer.current);
+    setRxPhase("idle");
+    rxPhaseRef.current = "idle";
+    setRxTime(null);
+    setRxBestMs(null);
+    setRxAttempts(0);
+    setRxAvgMs(null);
+    rxSumMs.current = 0;
+    rxAttemptsRef.current = 0;
+
+    setGrid(new Map());
+    setFeed([]);
+    setRipples([]);
+    setPeakMv(0);
+    setElapsedMs(0);
+    setSaveState("idle");
+    setSaveError(null);
+    startTimeRef.current = Date.now();
+    captureRef.current   = true;
+    setSessionActive(true);
+    await sendCommand("start");
+
+    // Kick off reaction sequence immediately
+    if (sessionMode === "reaction") {
+      scheduleNextReaction();
+    }
+  };
+
+  const stopSession = async () => {
+    captureRef.current = false;
+    if (rxTimer.current) clearTimeout(rxTimer.current);
+    setRxPhase("idle");
+    rxPhaseRef.current = "idle";
+    setSessionActive(false);
+    await sendCommand("stop");
+  };
+
+  // ── Save to Supabase ──────────────────────────────────────────────────────────
+  const saveSession = async () => {
+    if (!supabase || !selectedAthlete || !userId || !programId) return;
+    if (framesRef.current.length === 0) return;
+
+    setSaveState("saving");
+    setSaveError(null);
+
+    try {
+      await uploadSession({
+        sessionId:   sessionIdRef.current,
+        programId,
+        athleteId:   selectedAthlete.id,
+        coreTeamId:  selectedAthlete.core_team_id ?? null,
+        createdBy:   userId,
+        frames:      framesRef.current,
+        startedAtMs: startTimeRef.current ?? Date.now(),
+        endedAtMs:   Date.now(),
+        mode:        sessionMode,
+        deviceModel: "TSII",
+        samplingHz:  25,
+        // reaction live stats
+        rxBestMs:    rxBestMs,
+        rxAvgMs:     rxAvgMs,
+        rxAttempts:  rxAttemptsRef.current,
+        // accuracy live stats
+        accHitsCount: accHitsRef.current,
+        accScoreSum:  accSumRef.current,
+      });
+      setSaveState("saved");
+    } catch (err: any) {
+      console.error("Session save failed:", err);
+      setSaveError(err.message ?? "Unknown error");
+      setSaveState("error");
+    }
+  };
+
+  // ── Derived stats ─────────────────────────────────────────────────────────────
+  const [frameCount, setFrameCount] = useState(0);
+  // Periodically sync frame count for display (ref doesn't trigger re-render)
+  useEffect(() => {
+    if (!sessionActive) return;
+    const id = setInterval(() => setFrameCount(framesRef.current.length), 500);
+    return () => clearInterval(id);
+  }, [sessionActive]);
+
+  // ── Status config ─────────────────────────────────────────────────────────────
+  const statusConfig = {
+    idle:        { dot: "var(--muted)",            label: "No device",       color: "var(--text)" },
+    scanning:    { dot: "#ffcc00",                label: "Scanning…",       color: "#ffcc00" },
+    connected:   { dot: "#00ff88",                label: "Connected",       color: "#00ff88" },
+    disconnected:{ dot: "#ff4444",                label: "Disconnected",    color: "#ff4444" },
+    unsupported: { dot: "#ff4444",                label: "BLE Unsupported", color: "#ff4444" },
+  }[bleStatus];
+
+  const canSave = !sessionActive && framesRef.current.length > 0 && saveState !== "saved";
+
+  const saveBtnStyle: Record<SaveState, { bg: string; border: string; color: string; label: string }> = {
+    idle:   { bg: "var(--accent)",           border: "rgba(180,0,255,0.55)", color: "#000",      label: "Save Session" },
+    saving: { bg: "rgba(180,0,255,0.20)",    border: "rgba(180,0,255,0.35)", color: "rgba(180,0,255,0.9)", label: "Saving…" },
+    saved:  { bg: "rgba(0,255,136,0.12)",    border: "rgba(0,255,136,0.30)", color: "#00ff88",   label: "✓  Saved" },
+    error:  { bg: "rgba(255,80,80,0.12)",    border: "rgba(255,80,80,0.28)", color: "#ff8080",   label: "Retry Save" },
+  };
+
+  // ── Pre-compute mode-specific stats for the stats panel ──────────────────────
+  type StatItem = { label: string; value: string; sub?: string; color?: string };
+  const statsItems: StatItem[] = sessionMode === "reaction"
+    ? [
+        { label: "Time",     value: formatTime(elapsedMs) },
+        { label: "Attempts", value: String(rxAttempts),  color: MODE_META.reaction.color },
+        { label: "Best RT",  value: rxBestMs ? String(rxBestMs) : "—", sub: rxBestMs ? "ms" : "",
+          color: rxBestMs ? (rxBestMs < 300 ? "#00ff88" : rxBestMs < 500 ? "#ffcc00" : "#ff6060") : undefined },
+        { label: "Avg RT",   value: rxAvgMs  ? String(rxAvgMs)  : "—", sub: rxAvgMs  ? "ms" : "" },
+      ]
+    : sessionMode === "accuracy"
+    ? [
+        { label: "Time",     value: formatTime(elapsedMs) },
+        { label: "Events",   value: String(sessionActive ? frameCount : framesRef.current.length) },
+        { label: "Accuracy", value: avgAccuracy != null ? String(avgAccuracy) : "—", sub: avgAccuracy != null ? "%" : "",
+          color: avgAccuracy != null ? (avgAccuracy >= 70 ? "#00ff88" : avgAccuracy >= 45 ? "#00dcff" : "#ffcc00") : undefined },
+        { label: "Peak",     value: peakMv ? (peakMv / 1000).toFixed(3) : "—", sub: peakMv ? "V" : "" },
+      ]
+    : [
+        { label: "Time",   value: formatTime(elapsedMs) },
+        { label: "Events", value: String(sessionActive ? frameCount : framesRef.current.length), color: MODE_META.standard.color },
+        { label: "Hits",   value: String(feed.length) },
+        { label: "Peak",   value: peakMv ? (peakMv / 1000).toFixed(3) : "—", sub: peakMv ? "V" : "", color: MODE_META.standard.color },
+      ];
+
+  return (
+    <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 20px" }}>
+
+      {/* ── Page header ─────────────────────────────────────────────────────── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 28 }}>
+        <button
+          onClick={() => navigate("/dashboard")}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 38, height: 38, borderRadius: 10,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.04)",
+            color: "var(--text)", cursor: "pointer", flexShrink: 0,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M10 13L5 8l5-5" stroke="currentColor" strokeWidth="1.8"
+              strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: 0.1 }}>New Session</h1>
+          <p style={{ margin: "2px 0 0", fontSize: 13, color: "var(--muted)" }}>
+            Select an athlete, connect the bag, and record impacts live.
+          </p>
+        </div>
+      </div>
+
+      {/* ── 3-col layout ────────────────────────────────────────────────────── */}
+      <div className="ts-ses-layout">
+
+        {/* ════ LEFT — Athlete + BLE ════ */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+          {/* Athlete card */}
+          <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12 }}>
+              Athlete
+            </div>
+
+            {/* Search */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
+                <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.6" />
+                <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+              </svg>
+              <input
+                value={athleteFilter}
+                onChange={e => setAthleteFilter(e.target.value)}
+                placeholder="Search athletes…"
+                style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13 }}
+              />
+              {athleteFilter && (
+                <button onClick={() => setAthleteFilter("")} style={{ background: "none", border: "none", color: "var(--text)", opacity: 0.4, cursor: "pointer", padding: "0 2px", fontSize: 12, lineHeight: 1 }}>✕</button>
+              )}
+            </div>
+
+            {/* List */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+              {athletesLoading ? (
+                <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>Loading…</div>
+              ) : filteredAthletes.length === 0 ? (
+                <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
+                  {athleteFilter ? "No results" : "No athletes found"}
+                </div>
+              ) : filteredAthletes.map(a => {
+                const sel      = selectedAthlete?.id === a.id;
+                const initials = `${a.first_name[0]}${a.last_name[0]}`.toUpperCase();
+                return (
+                  <div
+                    key={a.id}
+                    onClick={() => { setSelectedAthlete(sel ? null : a); if (sel) stopSession(); }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "9px 11px", borderRadius: 11, cursor: "pointer",
+                      border: sel ? "1px solid rgba(180,0,255,0.50)" : "1px solid rgba(255,255,255,0.06)",
+                      background: sel ? "rgba(180,0,255,0.10)" : "rgba(255,255,255,0.02)",
+                      transition: "all 140ms ease",
+                    }}
+                  >
+                    <div style={{
+                      width: 34, height: 34, borderRadius: "50%", flexShrink: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 12, fontWeight: 800,
+                      background: sel ? "linear-gradient(135deg, rgba(180,0,255,0.45), rgba(180,0,255,0.20))" : "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
+                      border: sel ? "1px solid rgba(180,0,255,0.55)" : "1px solid rgba(180,0,255,0.22)",
+                      color: sel ? "rgba(220,150,255,1)" : "rgba(200,120,255,0.85)",
+                    }}>{initials}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {a.first_name} {a.last_name}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
+                        {[a.position, a.sport].filter(Boolean).join(" · ") || "—"}
+                      </div>
+                    </div>
+                    {sel && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, boxShadow: "0 0 6px 2px rgba(180,0,255,0.55)" }} />}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* BLE card */}
+          {selectedAthlete && (
+            <div style={{
+              background: "var(--panel)",
+              border: bleStatus === "connected" ? "1px solid rgba(0,255,136,0.28)" : "1px solid var(--panel-border)",
+              borderRadius: 16, padding: 16,
+              animation: "tsSlideUp 0.22s ease-out",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12 }}>
+                Bag Connection
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+                <div style={{
+                  width: 8, height: 8, borderRadius: "50%", background: statusConfig.dot, flexShrink: 0,
+                  boxShadow: bleStatus === "connected" ? "0 0 6px 3px rgba(0,255,136,0.45)"
+                           : bleStatus === "scanning"   ? "0 0 6px 3px rgba(255,200,0,0.45)" : "none",
+                  animation: bleStatus === "scanning" ? "tsBlink 1s ease-in-out infinite" : "none",
+                }} />
+                <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600 }}>{statusConfig.label}</span>
+              </div>
+
+              {/* Mode selector — visible once connected, locked during active session */}
+              {bleStatus === "connected" && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 8 }}>
+                    Mode
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {MODES.map(m => {
+                      const meta = MODE_META[m];
+                      const active = sessionMode === m;
+                      const locked = sessionActive;
+                      return (
+                        <button
+                          key={m}
+                          onClick={() => !locked && setSessionMode(m)}
+                          disabled={locked}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 10,
+                            padding: "9px 12px", borderRadius: 10, width: "100%",
+                            cursor: locked ? "default" : "pointer",
+                            border: active ? `1px solid ${meta.color}66` : "1px solid rgba(255,255,255,0.07)",
+                            background: active ? `${meta.color}14` : "rgba(255,255,255,0.02)",
+                            transition: "all 150ms ease",
+                            opacity: locked && !active ? 0.4 : 1,
+                          }}
+                        >
+                          <span style={{ fontSize: 16, lineHeight: 1 }}>{meta.icon}</span>
+                          <div style={{ textAlign: "left", flex: 1 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: active ? meta.color : "var(--text)" }}>
+                              {meta.label}
+                            </div>
+                            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 1, lineHeight: 1.4 }}>
+                              {meta.desc}
+                            </div>
+                          </div>
+                          {active && (
+                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: meta.color, flexShrink: 0, boxShadow: `0 0 6px 2px ${meta.glow}` }} />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {bleStatus !== "connected" ? (
+                <button
+                  onClick={connectBle}
+                  disabled={!bleSupported || bleStatus === "scanning"}
+                  style={{
+                    width: "100%", padding: "10px 0", borderRadius: 11,
+                    fontWeight: 700, fontSize: 13, cursor: "pointer",
+                    background: "var(--accent)", border: "1px solid rgba(180,0,255,0.55)", color: "#000",
+                    opacity: bleStatus === "scanning" ? 0.65 : 1, transition: "all 160ms ease",
+                  }}
+                >
+                  {bleStatus === "scanning" ? "Scanning…" : "Connect to Bag"}
+                </button>
+              ) : (
+                <button
+                  onClick={disconnectBle}
+                  style={{
+                    width: "100%", padding: "10px 0", borderRadius: 11,
+                    fontWeight: 700, fontSize: 13, cursor: "pointer",
+                    background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)",
+                    color: "var(--text)", transition: "all 160ms ease",
+                  }}
+                >
+                  Disconnect
+                </button>
+              )}
+              {!bleSupported && (
+                <p style={{ fontSize: 12, color: "#ff6060", margin: "10px 0 0", lineHeight: 1.5 }}>
+                  Web Bluetooth is not supported. Use Chrome or Edge on desktop.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ════ CENTER — Live bag grid (matches hitSimulator aesthetic) ════ */}
+        <div>
+
+          {/* Bag wrap — identical structure to ts-sim-bagWrap */}
+          <div
+            className="ts-ses-bagWrap"
+            style={{
+              boxShadow: bleStatus === "connected"
+                ? `0 0 40px -10px ${MODE_META[sessionMode].glow.replace("0.55","0.35")}, inset 0 0 60px -20px ${MODE_META[sessionMode].glow.replace("0.55","0.12")}`
+                : "none",
+              borderColor: bleStatus === "connected"
+                ? `${MODE_META[sessionMode].color}44`
+                : "var(--panel-border)",
+              transition: "border-color 300ms, box-shadow 300ms",
+            }}
+          >
+            {/* Session controls — overlaid top-right inside bag */}
+            <div style={{
+              position: "absolute", top: 10, right: 10, zIndex: 6,
+              display: "flex", gap: 8,
+            }}>
+              {bleStatus === "connected" && !sessionActive && (
+                <button
+                  onClick={startSession}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 11,
+                    background: MODE_META[sessionMode].color,
+                    border: `1px solid ${MODE_META[sessionMode].glow}`,
+                    color: sessionMode === "reaction" ? "#000" : "#000", cursor: "pointer",
+                    backdropFilter: "blur(8px)",
+                  }}
+                >
+                  {MODE_META[sessionMode].icon} Start
+                </button>
+              )}
+              {sessionActive && (
+                <button
+                  onClick={stopSession}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 11,
+                    background: "rgba(255,80,80,0.18)", border: "1px solid rgba(255,80,80,0.35)",
+                    color: "#ff8080", cursor: "pointer",
+                    backdropFilter: "blur(8px)",
+                  }}
+                >
+                  Stop
+                </button>
+              )}
+            </div>
+
+            {/* Bag label */}
+            <div style={{
+              position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
+              fontSize: 9, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase",
+              opacity: 0.30, pointerEvents: "none", zIndex: 4, whiteSpace: "nowrap",
+            }}>
+              Heavy Bag — {NUM_ROWS} × {NUM_COLS} Grid
+            </div>
+
+            {/* Accuracy rings overlay */}
+            {sessionMode === "accuracy" && (
+              <div style={{
+                position: "absolute", inset: 0, pointerEvents: "none",
+                display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3,
+              }}>
+                {[
+                  { size: "20%",  color: "rgba(0,255,120,0.60)" },
+                  { size: "40%",  color: "rgba(0,220,255,0.38)" },
+                  { size: "62%",  color: "rgba(255,160,0,0.28)" },
+                  { size: "84%",  color: "rgba(255,60,60,0.20)" },
+                ].map((r, i) => (
+                  <div key={i} style={{
+                    position: "absolute",
+                    width: r.size, paddingBottom: r.size,
+                    borderRadius: "50%",
+                    border: `1px solid ${r.color}`,
+                    left: "50%", top: "50%",
+                    transform: "translate(-50%, -50%)",
+                  }} />
+                ))}
+                <div style={{
+                  position: "absolute", width: 10, height: 10, borderRadius: "50%",
+                  background: "rgba(0,255,120,0.9)",
+                  boxShadow: "0 0 10px 4px rgba(0,255,120,0.5)",
+                }} />
+              </div>
+            )}
+
+            {/* Reaction overlay */}
+            {sessionMode === "reaction" && sessionActive && (
+              <ReactionOverlay phase={rxPhase} reactionMs={rxTime} />
+            )}
+
+            {/* Hit grid — fills the bag */}
+            <div style={{ position: "absolute", inset: 0 }}>
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${NUM_COLS}, 1fr)`,
+                gridTemplateRows: `repeat(${NUM_ROWS}, 1fr)`,
+                gap: 3,
+                padding: "28px 6px 6px",
+                width: "100%",
+                height: "100%",
+                boxSizing: "border-box",
+              }}>
+                {Array.from({ length: NUM_ROWS }, (_, ri) =>
+                  Array.from({ length: NUM_COLS }, (_, ci) => {
+                    const key   = cellKey(NUM_ROWS - ri, ci + 1);
+                    const cell  = grid.get(key);
+                    const age   = cell ? now - cell.ts : Infinity;
+                    const alive = age < FADE_TTL_MS;
+                    const fade  = alive ? Math.max(0.07, 1 - age / FADE_TTL_MS) : 0;
+                    const color = alive ? mvToColor(cell!.mv) : null;
+
+                    return (
+                      <div
+                        key={key}
+                        className="ts-sim-cell ts-ses-cell"
+                        style={{
+                          position: "relative",
+                          borderRadius: 4,
+                          background: alive
+                            ? `${color}${hexAlpha(fade * 0.72)}`
+                            : "rgba(255,255,255,0.03)",
+                          boxShadow: alive
+                            ? `0 0 10px 2px ${mvToGlow(cell!.mv)}${hexAlpha(fade * 0.8)}`
+                            : "none",
+                          border: alive
+                            ? `1px solid ${color}${hexAlpha(fade * 0.6)}`
+                            : undefined,
+                          transform: alive && fade > 0.7 ? "scale(1.06)" : "scale(1)",
+                          transition: "background 60ms, box-shadow 60ms, transform 80ms, border-color 60ms",
+                          overflow: "hidden",
+                        }}
+                      >
+                        {/* Live voltage label */}
+                        {alive && cell && fade > 0.2 && (
+                          <div style={{
+                            position: "absolute", inset: 0,
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            fontSize: 8, fontWeight: 800,
+                            color: color!,
+                            opacity: Math.min(1, fade * 1.4),
+                            pointerEvents: "none",
+                            fontVariantNumeric: "tabular-nums",
+                            letterSpacing: "-0.02em",
+                            textShadow: `0 0 6px ${mvToGlow(cell.mv)}`,
+                          }}>
+                            {(cell.mv / 1000).toFixed(2)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Impact ripples */}
+            {ripples.map(r => (
+              <ImpactRipple
+                key={r.id}
+                id={r.id}
+                x={r.x}
+                y={r.y}
+                color={r.color}
+                onDone={() => removeRipple(r.id)}
+              />
+            ))}
+
+            {/* Bottom glow edge */}
+            <div style={{
+              position: "absolute", inset: 0, pointerEvents: "none",
+              background: "radial-gradient(ellipse at 50% 100%, rgba(180,0,255,0.18) 0%, transparent 65%)",
+              transition: "opacity 500ms",
+              opacity: bleStatus === "connected" ? 1 : 0.3,
+            }} />
+
+            {/* Overlay — no athlete or not connected */}
+            {(!selectedAthlete || bleStatus === "idle" || bleStatus === "disconnected" || bleStatus === "unsupported") && (
+              <div style={{
+                position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+                alignItems: "center", justifyContent: "center",
+                background: "rgba(7,7,10,0.78)", backdropFilter: "blur(6px)",
+                borderRadius: 16, zIndex: 5, pointerEvents: "none",
+              }}>
+                {!selectedAthlete ? (
+                  <>
+                    <div style={{ fontSize: 30, marginBottom: 10, opacity: 0.28 }}>👤</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Select an athlete to begin</div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{
+                      width: 52, height: 52, borderRadius: "50%",
+                      border: "2px solid rgba(180,0,255,0.28)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      marginBottom: 12, opacity: 0.38,
+                    }}>
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+                        <path d="M8.5 12.5c2-2 5-2 7 0" stroke="rgba(255,255,255,0.7)" strokeWidth="1.8" strokeLinecap="round"/>
+                        <path d="M5.5 9.5c4-4 9-4 13 0" stroke="rgba(255,255,255,0.4)" strokeWidth="1.8" strokeLinecap="round"/>
+                        <circle cx="12" cy="16" r="1.5" fill="rgba(255,255,255,0.6)" />
+                      </svg>
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Connect bag to see impacts</div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ════ RIGHT — Stats + feed ════ */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+          {/* Stats */}
+          <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12 }}>
+              {MODE_META[sessionMode].icon} {MODE_META[sessionMode].label} Session
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {statsItems.map(s => (
+                <div key={s.label} style={{ padding: "10px 12px", borderRadius: 11, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 4 }}>{s.label}</div>
+                  <div style={{ fontSize: 20, fontWeight: 900, lineHeight: 1, color: s.color ?? "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                    {s.value}
+                    {s.sub && <span style={{ fontSize: 11, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>{s.sub}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Save */}
+            {canSave && (
+              <button
+                onClick={saveSession}
+                disabled={saveState === "saving" || saveState === "saved"}
+                style={{
+                  width: "100%", marginTop: 12, padding: "10px 0",
+                  borderRadius: 10, fontWeight: 700, fontSize: 13,
+                  background: saveBtnStyle[saveState].bg,
+                  border:     `1px solid ${saveBtnStyle[saveState].border}`,
+                  color:      saveBtnStyle[saveState].color,
+                  cursor: saveState === "saving" || saveState === "saved" ? "default" : "pointer",
+                  transition: "all 200ms",
+                }}
+              >
+                {saveBtnStyle[saveState].label}
+              </button>
+            )}
+
+            {saveState === "saved" && !canSave && (
+              <div style={{ marginTop: 12, padding: "10px 0", borderRadius: 10, fontWeight: 700, fontSize: 13, background: "rgba(0,255,136,0.12)", border: "1px solid rgba(0,255,136,0.30)", color: "#00ff88", textAlign: "center" }}>
+                ✓ Saved
+              </div>
+            )}
+
+            {saveState === "error" && saveError && (
+              <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 9, background: "rgba(255,80,80,0.08)", border: "1px solid rgba(255,80,80,0.22)", fontSize: 11, color: "#ff9090", lineHeight: 1.5 }}>
+                <strong>Error:</strong> {saveError}
+              </div>
+            )}
+          </div>
+
+          {/* Impact feed */}
+          <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Impact Feed</span>
+              {feed.length > 0 && <span style={{ fontWeight: 600, color: "var(--accent)", fontSize: 11 }}>{feed.length}</span>}
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 340, overflowY: "auto" }}>
+              {feed.length === 0 ? (
+                <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "20px 0", opacity: 0.7 }}>No impacts yet</div>
+              ) : feed.map((h, i) => (
+                <div
+                  key={h.key}
+                  style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "5px 8px", borderRadius: 8,
+                    background: i === 0 ? "rgba(180,0,255,0.08)" : "rgba(255,255,255,0.02)",
+                    border: i === 0 ? "1px solid rgba(180,0,255,0.20)" : "1px solid transparent",
+                    fontSize: 12,
+                    animation: i === 0 ? "tsImpactIn 0.18s ease" : "none",
+                  }}
+                >
+                  <span style={{ color: "var(--muted)", fontFamily: "monospace", fontSize: 11 }}>
+                    R{String(h.row).padStart(2, "0")} C{String(h.col).padStart(2, "0")}
+                  </span>
+                  <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: mvToColor(h.mv) }}>
+                    {(h.mv / 1000).toFixed(3)}
+                    <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>V</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <style>{`
+        /* ── 3-col layout ── */
+        .ts-ses-layout {
+          display: grid;
+          grid-template-columns: 300px minmax(300px, 1fr) 260px;
+          gap: 16px;
+          align-items: start;
+        }
+        @media (max-width: 1000px) {
+          .ts-ses-layout {
+            grid-template-columns: 300px 1fr;
+          }
+          .ts-ses-layout > :nth-child(3) {
+            grid-column: 1 / -1;
+          }
+        }
+        @media (max-width: 680px) {
+          .ts-ses-layout {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        /* ── Ripple animations (identical to hitSimulator) ── */
+        @keyframes tsCorePulse {
+          0%   { opacity: 1;   transform: scale(1); }
+          60%  { opacity: 0.7; transform: scale(1.6); }
+          100% { opacity: 0;   transform: scale(0.5); }
+        }
+        @keyframes tsRipple {
+          0%   { opacity: 0.9; transform: translate(-50%,-50%) scale(0.5); }
+          100% { opacity: 0;   transform: translate(-50%,-50%) scale(4.5); }
+        }
+        @keyframes tsPulseWait {
+          0%,100% { opacity: 0.4; transform: scale(1); }
+          50%     { opacity: 1;   transform: scale(1.15); }
+        }
+        @keyframes tsFlashIn {
+          0%   { background: rgba(255,200,0,0.45); }
+          100% { background: rgba(255,200,0,0.18); }
+        }
+        @keyframes tsSignalPop {
+          0%   { transform: scale(0.6); opacity: 0; }
+          100% { transform: scale(1);   opacity: 1; }
+        }
+        @keyframes tsResultPop {
+          0%   { transform: scale(0.5); opacity: 0; }
+          100% { transform: scale(1);   opacity: 1; }
+        }
+        @keyframes tsSlideUp {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes tsBlink {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.28; }
+        }
+        @keyframes tsImpactIn {
+          0%   { opacity: 0; transform: translateX(-8px); }
+          100% { opacity: 1; transform: translateX(0); }
+        }
+
+        /* ── Bag wrap — mirrors ts-sim-bagWrap exactly ── */
+        .ts-ses-bagWrap {
+          position: relative;
+          border-radius: 16px;
+          overflow: hidden;
+          border: 1px solid var(--panel-border);
+          background: var(--panel);
+          backdrop-filter: blur(12px);
+          aspect-ratio: 0.72;
+          user-select: none;
+        }
+
+        /* ── Cells — mirrors ts-sim-cell ── */
+        .ts-ses-cell {
+          border: 1px solid rgba(255,255,255,0.12);
+        }
+        :root[data-theme="light"] .ts-ses-cell {
+          border-color: rgba(0,0,0,0.12);
+        }
+
+        /* ── Scrollbar ── */
+
+      `}</style>
+    </div>
+  );
+}

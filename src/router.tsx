@@ -1,4 +1,4 @@
-// src/router.tsx — updated with /contact route
+// src/router.tsx
 import React, { useEffect, useState } from "react";
 import { createBrowserRouter, useNavigate } from "react-router-dom";
 import AppLayout from "./components/appLayout";
@@ -7,9 +7,10 @@ import Signup from "./pages/signup";
 import Login from "./pages/login";
 import Dashboard from "./pages/dashboard";
 import Onboarding from "./pages/onboarding";
-import Contact from "./pages/contact";          // ← add this import
-import Privacy from "./pages/privacy";          // ← add this import
-import Terms from "./pages/terms";             // ← add this import
+import Contact from "./pages/contact";
+import Privacy from "./pages/privacy";
+import Terms from "./pages/terms";
+import Session from "./pages/session";           // ← add this import
 import { supabase } from "./supabaseClient";
 
 const REQUIRED_FIELDS = ["first_name", "last_name", "position", "city", "state", "date_of_birth"] as const;
@@ -78,16 +79,20 @@ export const router = createBrowserRouter([
   {
     element: <AppLayout />,
     children: [
-      { path: "/",          element: <Landing /> },
-      { path: "/signup",    element: <Signup /> },
-      { path: "/login",     element: <Login /> },
-      { path: "/onboarding",element: <Onboarding /> },
-      { path: "/contact",   element: <Contact /> },   // ← add this route
-      { path: "/privacy",   element: <Privacy /> },   // ← add this route
-      { path: "/terms",     element: <Terms /> },     // ← add this route
+      { path: "/",           element: <Landing /> },
+      { path: "/signup",     element: <Signup /> },
+      { path: "/login",      element: <Login /> },
+      { path: "/onboarding", element: <Onboarding /> },
+      { path: "/contact",    element: <Contact /> },
+      { path: "/privacy",    element: <Privacy /> },
+      { path: "/terms",      element: <Terms /> },
       {
         path: "/dashboard",
         element: <RequireOnboarding><Dashboard /></RequireOnboarding>,
+      },
+      {
+        path: "/session",                          // ← new route
+        element: <RequireOnboarding><Session /></RequireOnboarding>,
       },
     ],
   },
