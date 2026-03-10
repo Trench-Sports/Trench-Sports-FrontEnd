@@ -2,21 +2,31 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
-import { usePlatform } from "../hooks/usePlatform";
-
-// Capacitor BLE — only used on native; gracefully absent on web builds.
-// Install: npm install @capacitor-community/bluetooth-le
-let BleClient: any = null;
-try {
-  BleClient = require("@capacitor-community/bluetooth-le").BleClient;
-} catch {
-  // Running on web — Web Bluetooth API is used instead.
-}
+import {
+  connectToAdapter,
+  disconnect as adapterDisconnect,
+  startNotifications as adapterStartNotifications,
+  writeUtf8,
+  getBleConfig,
+  isNativeApp,
+  getBluetoothDiagnostics,
+  type AdapterConnection,
+} from "../bluetooth/adapter";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
+// These are the fallback values used when .env vars are absent.
 const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const NUS_TX_CHAR      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // ESP32 → app (notify)
 const NUS_RX_CHAR      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // app → ESP32 (write)
+
+// Resolved at runtime — prefers .env, falls back to constants above
+function getCharUuids() {
+  const cfg = getBleConfig();
+  return {
+    TX: cfg.CHAR_UUID_TX ?? NUS_TX_CHAR,
+    RX: cfg.CHAR_UUID_RX ?? NUS_RX_CHAR,
+  };
+}
 
 const NUM_ROWS    = 12;
 const NUM_COLS    = 8;
@@ -518,7 +528,6 @@ function ImpactRipple({
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
-  const { isNative } = usePlatform();
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -572,22 +581,18 @@ export default function Session() {
   // ── BLE ──────────────────────────────────────────────────────────────────────
   const [bleStatus,    setBleStatus]    = useState<BleStatus>("idle");
   const [bleSupported, setBleSupported] = useState(true);
-  const deviceRef    = useRef<BluetoothDevice | null>(null);
-  const rxCharRef    = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
+  const connRef      = useRef<AdapterConnection | null>(null);  // active adapter connection
   const assemblerRef = useRef(new ChunkAssembler());
-  // Native (Capacitor) BLE — stores the scanned device id
-  const nativeDeviceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isNative) {
-      // Native always supported via Capacitor BLE
-      setBleSupported(true);
-      setBleStatus("idle");
-    } else if (!("bluetooth" in navigator)) {
-      setBleSupported(false);
-      setBleStatus("unsupported");
+    if (!isNativeApp()) {
+      const diag = getBluetoothDiagnostics();
+      if (!diag.hasRequestDevice) {
+        setBleSupported(false);
+        setBleStatus("unsupported");
+      }
     }
-  }, [isNative]);
+  }, []);
 
   // ── Session state ────────────────────────────────────────────────────────────
   const [sessionMode,   setSessionMode]   = useState<SessionMode>("standard");
@@ -671,9 +676,8 @@ export default function Session() {
   }, [sessionActive]);
 
   // ── BLE notify handler ────────────────────────────────────────────────────────
-  const handleNotify = useCallback((event: Event) => {
-    const value = (event.target as BluetoothRemoteGATTCharacteristic).value;
-    if (!value) return;
+  // Accepts a DataView directly — same signature used by both adapter paths.
+  const handleNotify = useCallback((value: DataView) => {
     const text = new TextDecoder().decode(value).trim();
 
     assemblerRef.current.maybeTimeout();
@@ -771,115 +775,42 @@ export default function Session() {
   const connectBle = useCallback(async () => {
     if (!bleSupported) return;
     setBleStatus("scanning");
-
-    // ── Native path (iOS / Android via @capacitor-community/bluetooth-le) ──────
-    if (isNative && BleClient) {
-      try {
-        await BleClient.initialize();
-
-        // Scan for the first device advertising the NUS service
-        await new Promise<void>((resolve, reject) => {
-          const scanTimeout = setTimeout(() => {
-            BleClient.stopLEScan().catch(() => {});
-            reject(new Error("Scan timed out — make sure the bag is powered on and nearby."));
-          }, 10_000);
-
-          BleClient.requestLEScan(
-            { services: [NUS_SERVICE_UUID] },
-            (result: any) => {
-              clearTimeout(scanTimeout);
-              BleClient.stopLEScan().catch(() => {});
-              nativeDeviceIdRef.current = result.device.deviceId;
-              resolve();
-            }
-          ).catch((err: any) => {
-            clearTimeout(scanTimeout);
-            reject(err);
-          });
-        });
-
-        const deviceId = nativeDeviceIdRef.current!;
-
-        // Connect and set up disconnect listener
-        await BleClient.connect(deviceId, () => {
-          // gattserverdisconnected equivalent
+    try {
+      const conn = await connectToAdapter({
+        onDisconnect: () => {
           setBleStatus("disconnected");
           captureRef.current = false;
-          nativeDeviceIdRef.current = null;
+          connRef.current    = null;
           setSessionActive(false);
-        });
-
-        // Subscribe to TX notifications (ESP32 → app)
-        await BleClient.startNotifications(
-          deviceId,
-          NUS_SERVICE_UUID,
-          NUS_TX_CHAR,
-          (value: DataView) => {
-            // Synthesise a Web Bluetooth-style event so handleNotify is reused
-            const syntheticEvent = {
-              target: { value },
-            } as unknown as Event;
-            handleNotify(syntheticEvent);
-          }
-        );
-
-        setBleStatus("connected");
-      } catch (err: any) {
-        console.error("[BLE Native] connect error:", err);
-        setBleStatus(err?.message?.includes("timed out") ? "idle" : "disconnected");
-      }
-      return;
-    }
-
-    // ── Web path (Chrome / Edge Web Bluetooth API) ────────────────────────────
-    try {
-      const device = await (navigator as any).bluetooth.requestDevice({
-        filters: [{ name: "MPY ESP32" }],
-        optionalServices: [NUS_SERVICE_UUID],
+        },
       });
-      deviceRef.current = device;
-      device.addEventListener("gattserverdisconnected", () => {
-        setBleStatus("disconnected");
-        captureRef.current = false;
-        rxCharRef.current  = null;
-        setSessionActive(false);
-      });
-      const server  = await device.gatt!.connect();
-      const service = await server.getPrimaryService(NUS_SERVICE_UUID);
+      connRef.current = conn;
 
-      // TX — ESP32 → app (notifications)
-      const txChar  = await service.getCharacteristic(NUS_TX_CHAR);
-      await txChar.startNotifications();
-      txChar.addEventListener("characteristicvaluechanged", handleNotify as EventListener);
-
-      // RX — app → ESP32 (commands)
-      rxCharRef.current = await service.getCharacteristic(NUS_RX_CHAR);
+      // Subscribe to TX notifications — handleNotify receives a DataView directly
+      const { TX } = getCharUuids();
+      await adapterStartNotifications(conn, TX, handleNotify);
 
       setBleStatus("connected");
     } catch (err: any) {
-      setBleStatus(err?.name === "NotFoundError" ? "idle" : "disconnected");
+      console.error("[BLE] connect error:", err);
+      // User cancelled the picker → back to idle; actual error → disconnected
+      const msg = err?.message ?? "";
+      setBleStatus(
+        msg.includes("cancelled") || msg.includes("NotFoundError") || msg.includes("User cancelled")
+          ? "idle"
+          : "disconnected"
+      );
     }
-  }, [bleSupported, isNative, handleNotify]);
+  }, [bleSupported, handleNotify]);
 
   const disconnectBle = useCallback(async () => {
     captureRef.current = false;
     setSessionActive(false);
-
-    if (isNative && BleClient && nativeDeviceIdRef.current) {
-      try {
-        await BleClient.stopNotifications(nativeDeviceIdRef.current, NUS_SERVICE_UUID, NUS_TX_CHAR);
-        await BleClient.disconnect(nativeDeviceIdRef.current);
-      } catch (err) {
-        console.warn("[BLE Native] disconnect error:", err);
-      }
-      nativeDeviceIdRef.current = null;
-    } else {
-      rxCharRef.current = null;
-      deviceRef.current?.gatt?.disconnect();
-    }
-
+    const conn = connRef.current;
+    connRef.current = null;
+    await adapterDisconnect(conn);
     setBleStatus("disconnected");
-  }, [isNative]);
+  }, []);
 
   const removeRipple = useCallback((id: number) => {
     setRipples(prev => prev.filter(r => r.id !== id));
@@ -887,28 +818,16 @@ export default function Session() {
 
   // ── BLE command sender ────────────────────────────────────────────────────────
   const sendCommand = useCallback(async (cmd: "start" | "stop") => {
-    const bytes = new TextEncoder().encode(JSON.stringify({ cmd }));
-
-    if (isNative && BleClient && nativeDeviceIdRef.current) {
-      try {
-        // Capacitor BLE expects a DataView
-        const dv = new DataView(bytes.buffer);
-        await BleClient.writeWithoutResponse(nativeDeviceIdRef.current, NUS_SERVICE_UUID, NUS_RX_CHAR, dv);
-        console.log(`[BLE Native] sent cmd=${cmd}`);
-      } catch (err) {
-        console.warn("[BLE Native] sendCommand failed:", err);
-      }
-      return;
-    }
-
-    if (!rxCharRef.current) return;
+    const conn = connRef.current;
+    if (!conn) return;
+    const { RX } = getCharUuids();
     try {
-      await rxCharRef.current.writeValueWithoutResponse(bytes);
-      console.log(`[BLE Web] sent cmd=${cmd}`);
+      await writeUtf8(conn, RX, JSON.stringify({ cmd }));
+      console.log(`[BLE] sent cmd=${cmd}`);
     } catch (err) {
-      console.warn("[BLE Web] sendCommand failed:", err);
+      console.warn("[BLE] sendCommand failed:", err);
     }
-  }, [isNative]);
+  }, []);
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
@@ -1006,11 +925,11 @@ export default function Session() {
 
   // ── Status config ─────────────────────────────────────────────────────────────
   const statusConfig = {
-    idle:        { dot: "var(--muted)",            label: "No device",       color: "var(--text)" },
-    scanning:    { dot: "#ffcc00",                label: isNative ? "Scanning for bag…" : "Scanning…", color: "#ffcc00" },
-    connected:   { dot: "#00ff88",                label: "Connected",       color: "#00ff88" },
-    disconnected:{ dot: "#ff4444",                label: "Disconnected",    color: "#ff4444" },
-    unsupported: { dot: "#ff4444",                label: "BLE Unsupported", color: "#ff4444" },
+    idle:        { dot: "var(--muted)",  label: "No device",       color: "var(--text)" },
+    scanning:    { dot: "#ffcc00",       label: "Scanning…",       color: "#ffcc00" },
+    connected:   { dot: "#00ff88",       label: "Connected",       color: "#00ff88" },
+    disconnected:{ dot: "#ff4444",       label: "Disconnected",    color: "#ff4444" },
+    unsupported: { dot: "#ff4444",       label: "BLE Unsupported", color: "#ff4444" },
   }[bleStatus];
 
   const canSave = !sessionActive && framesRef.current.length > 0 && saveState !== "saved";
