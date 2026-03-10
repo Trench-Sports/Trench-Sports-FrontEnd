@@ -17,9 +17,7 @@ import logoLight from "../images/Trench Sports Logo Power Purple.png";
 // ── Bottom nav tabs — edit labels/icons/routes to match your app ─────────────
 const NAV_TABS = [
   { label: "Dashboard", to: "/dashboard", icon: "⚡" },
-  { label: "Sessions",  to: "/sessions",  icon: "📋" },
-  { label: "Contacts",  to: "/contacts",  icon: "👥" },
-  { label: "Profile",   to: "/profile",   icon: "👤" },
+  { label: "Sessions",  to: "/session",  icon: "📋" },
 ];
 
 export default function AppLayout() {

@@ -2,6 +2,16 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
+import { usePlatform } from "../hooks/usePlatform";
+
+// Capacitor BLE — only used on native; gracefully absent on web builds.
+// Install: npm install @capacitor-community/bluetooth-le
+let BleClient: any = null;
+try {
+  BleClient = require("@capacitor-community/bluetooth-le").BleClient;
+} catch {
+  // Running on web — Web Bluetooth API is used instead.
+}
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
@@ -508,6 +518,7 @@ function ImpactRipple({
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
+  const { isNative } = usePlatform();
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -564,13 +575,19 @@ export default function Session() {
   const deviceRef    = useRef<BluetoothDevice | null>(null);
   const rxCharRef    = useRef<BluetoothRemoteGATTCharacteristic | null>(null);
   const assemblerRef = useRef(new ChunkAssembler());
+  // Native (Capacitor) BLE — stores the scanned device id
+  const nativeDeviceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!("bluetooth" in navigator)) {
+    if (isNative) {
+      // Native always supported via Capacitor BLE
+      setBleSupported(true);
+      setBleStatus("idle");
+    } else if (!("bluetooth" in navigator)) {
       setBleSupported(false);
       setBleStatus("unsupported");
     }
-  }, []);
+  }, [isNative]);
 
   // ── Session state ────────────────────────────────────────────────────────────
   const [sessionMode,   setSessionMode]   = useState<SessionMode>("standard");
@@ -754,6 +771,67 @@ export default function Session() {
   const connectBle = useCallback(async () => {
     if (!bleSupported) return;
     setBleStatus("scanning");
+
+    // ── Native path (iOS / Android via @capacitor-community/bluetooth-le) ──────
+    if (isNative && BleClient) {
+      try {
+        await BleClient.initialize();
+
+        // Scan for the first device advertising the NUS service
+        await new Promise<void>((resolve, reject) => {
+          const scanTimeout = setTimeout(() => {
+            BleClient.stopLEScan().catch(() => {});
+            reject(new Error("Scan timed out — make sure the bag is powered on and nearby."));
+          }, 10_000);
+
+          BleClient.requestLEScan(
+            { services: [NUS_SERVICE_UUID] },
+            (result: any) => {
+              clearTimeout(scanTimeout);
+              BleClient.stopLEScan().catch(() => {});
+              nativeDeviceIdRef.current = result.device.deviceId;
+              resolve();
+            }
+          ).catch((err: any) => {
+            clearTimeout(scanTimeout);
+            reject(err);
+          });
+        });
+
+        const deviceId = nativeDeviceIdRef.current!;
+
+        // Connect and set up disconnect listener
+        await BleClient.connect(deviceId, () => {
+          // gattserverdisconnected equivalent
+          setBleStatus("disconnected");
+          captureRef.current = false;
+          nativeDeviceIdRef.current = null;
+          setSessionActive(false);
+        });
+
+        // Subscribe to TX notifications (ESP32 → app)
+        await BleClient.startNotifications(
+          deviceId,
+          NUS_SERVICE_UUID,
+          NUS_TX_CHAR,
+          (value: DataView) => {
+            // Synthesise a Web Bluetooth-style event so handleNotify is reused
+            const syntheticEvent = {
+              target: { value },
+            } as unknown as Event;
+            handleNotify(syntheticEvent);
+          }
+        );
+
+        setBleStatus("connected");
+      } catch (err: any) {
+        console.error("[BLE Native] connect error:", err);
+        setBleStatus(err?.message?.includes("timed out") ? "idle" : "disconnected");
+      }
+      return;
+    }
+
+    // ── Web path (Chrome / Edge Web Bluetooth API) ────────────────────────────
     try {
       const device = await (navigator as any).bluetooth.requestDevice({
         filters: [{ name: "MPY ESP32" }],
@@ -781,33 +859,56 @@ export default function Session() {
     } catch (err: any) {
       setBleStatus(err?.name === "NotFoundError" ? "idle" : "disconnected");
     }
-  }, [bleSupported, handleNotify]);
+  }, [bleSupported, isNative, handleNotify]);
 
-  const disconnectBle = useCallback(() => {
+  const disconnectBle = useCallback(async () => {
     captureRef.current = false;
-    rxCharRef.current  = null;
-    deviceRef.current?.gatt?.disconnect();
-    setBleStatus("disconnected");
     setSessionActive(false);
-  }, []);
+
+    if (isNative && BleClient && nativeDeviceIdRef.current) {
+      try {
+        await BleClient.stopNotifications(nativeDeviceIdRef.current, NUS_SERVICE_UUID, NUS_TX_CHAR);
+        await BleClient.disconnect(nativeDeviceIdRef.current);
+      } catch (err) {
+        console.warn("[BLE Native] disconnect error:", err);
+      }
+      nativeDeviceIdRef.current = null;
+    } else {
+      rxCharRef.current = null;
+      deviceRef.current?.gatt?.disconnect();
+    }
+
+    setBleStatus("disconnected");
+  }, [isNative]);
 
   const removeRipple = useCallback((id: number) => {
     setRipples(prev => prev.filter(r => r.id !== id));
   }, []);
 
   // ── BLE command sender ────────────────────────────────────────────────────────
-  // Encodes a JSON command and writes it to the ESP32 NUS RX characteristic.
-  // Uses writeValueWithoutResponse so it never blocks the UI.
   const sendCommand = useCallback(async (cmd: "start" | "stop") => {
+    const bytes = new TextEncoder().encode(JSON.stringify({ cmd }));
+
+    if (isNative && BleClient && nativeDeviceIdRef.current) {
+      try {
+        // Capacitor BLE expects a DataView
+        const dv = new DataView(bytes.buffer);
+        await BleClient.writeWithoutResponse(nativeDeviceIdRef.current, NUS_SERVICE_UUID, NUS_RX_CHAR, dv);
+        console.log(`[BLE Native] sent cmd=${cmd}`);
+      } catch (err) {
+        console.warn("[BLE Native] sendCommand failed:", err);
+      }
+      return;
+    }
+
     if (!rxCharRef.current) return;
     try {
-      const bytes = new TextEncoder().encode(JSON.stringify({ cmd }));
       await rxCharRef.current.writeValueWithoutResponse(bytes);
-      console.log(`[BLE] sent cmd=${cmd}`);
+      console.log(`[BLE Web] sent cmd=${cmd}`);
     } catch (err) {
-      console.warn("[BLE] sendCommand failed:", err);
+      console.warn("[BLE Web] sendCommand failed:", err);
     }
-  }, []);
+  }, [isNative]);
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
@@ -906,7 +1007,7 @@ export default function Session() {
   // ── Status config ─────────────────────────────────────────────────────────────
   const statusConfig = {
     idle:        { dot: "var(--muted)",            label: "No device",       color: "var(--text)" },
-    scanning:    { dot: "#ffcc00",                label: "Scanning…",       color: "#ffcc00" },
+    scanning:    { dot: "#ffcc00",                label: isNative ? "Scanning for bag…" : "Scanning…", color: "#ffcc00" },
     connected:   { dot: "#00ff88",                label: "Connected",       color: "#00ff88" },
     disconnected:{ dot: "#ff4444",                label: "Disconnected",    color: "#ff4444" },
     unsupported: { dot: "#ff4444",                label: "BLE Unsupported", color: "#ff4444" },
@@ -1142,7 +1243,7 @@ export default function Session() {
               )}
               {!bleSupported && (
                 <p style={{ fontSize: 12, color: "#ff6060", margin: "10px 0 0", lineHeight: 1.5 }}>
-                  Web Bluetooth is not supported. Use Chrome or Edge on desktop.
+                  Web Bluetooth is not supported in this browser. Use Chrome or Edge on desktop, or open the Trench Sports app on your phone.
                 </p>
               )}
             </div>

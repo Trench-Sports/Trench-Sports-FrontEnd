@@ -75,6 +75,7 @@ type LeaderRow =
     }
   | {
       name: string;
+      athleteId: string;
       metric: "reaction";
       avgReactionMs: number; // ms (lower is better)
       bestReactionMs: number; // ms
@@ -82,11 +83,11 @@ type LeaderRow =
     }
   | {
       name: string;
+      athleteId: string;
       metric: "accuracy";
       accuracyPct: number; // %
       avgOffsetCm: number; // cm (lower is better)
-      onTargetHits: number;
-      totalHits: number;
+      sessions: number;
     };
 
 export default function Dashboard() {
@@ -675,10 +676,10 @@ export default function Dashboard() {
         // Fetch standard sessions with athlete names joined — scoped by role
         let query = supabase!
           .from("session_summaries")
-          .select("athlete_id, quality, num_events, athletes(first_name, last_name)")
+          .select("athlete_id, quality, peak_force_stats, num_events, athletes(first_name, last_name)")
           .eq("program_id", programId)
           .eq("mode", "standard")
-          .not("quality", "is", null);
+          .not("peak_force_stats", "is", null);
 
         if (userRole === "coach" && coreTeamId) {
           query = query.eq("core_team_id", coreTeamId);
@@ -687,7 +688,8 @@ export default function Dashboard() {
         const { data, error } = await query;
         if (error || !data) return;
 
-        // Aggregate per athlete across all their sessions
+        // Aggregate per athlete across all their sessions.
+        // Prefer quality.strength_index if populated; fall back to peak_force_stats (avg_mv / peak_mv).
         type Agg = {
           name: string;
           peakIndex: number;
@@ -700,10 +702,26 @@ export default function Dashboard() {
         for (const row of data as any[]) {
           const athleteId = row.athlete_id;
           if (!athleteId) continue;
+
+          // Try quality.strength_index first, then fall back to peak_force_stats (stored in mV → scale to 0-1000)
           const si = row.quality?.strength_index;
-          if (!si) continue;
-          const siMax  = typeof si.max  === "number" ? si.max  : null;
-          const siMean = typeof si.mean === "number" ? si.mean : null;
+          let siMax: number | null  = null;
+          let siMean: number | null = null;
+
+          if (si && typeof si.max === "number" && typeof si.mean === "number") {
+            siMax  = si.max;
+            siMean = si.mean;
+          } else {
+            const pfs = row.peak_force_stats;
+            // peak_mv / avg_mv are in mV (e.g. 3320 = max). Scale to 0–1000 index.
+            const peakMv = pfs?.peak_mv ?? pfs?.peak_v != null ? (pfs.peak_mv ?? pfs.peak_v * 1000) : null;
+            const avgMv  = pfs?.avg_mv  ?? pfs?.avg_v  != null ? (pfs.avg_mv  ?? pfs.avg_v  * 1000) : null;
+            if (peakMv != null && avgMv != null) {
+              siMax  = Math.round((peakMv / 3320) * 1000);
+              siMean = Math.round((avgMv  / 3320) * 1000);
+            }
+          }
+
           if (siMax == null || siMean == null) continue;
 
           const name = row.athletes
@@ -741,10 +759,178 @@ export default function Dashboard() {
     })();
   }, [programId, userRole, coreTeamId]);
 
+  // ---------- Reaction leaderboard ----------
+  const [reactionRows, setReactionRows] = useState<Extract<LeaderRow, { metric: "reaction" }>[]>([]);
+  const [reactionLoading, setReactionLoading] = useState(false);
+
+  useEffect(() => {
+    if (!programId || !userRole || !supabase) return;
+    if (userRole === "coach" && coreTeamId === null) return;
+
+    setReactionLoading(true);
+    setReactionRows([]);
+
+    (async () => {
+      try {
+        let query = supabase!
+          .from("session_summaries")
+          .select("athlete_id, num_events, iei_ms, peak_force_stats, athletes(first_name, last_name)")
+          .eq("program_id", programId)
+          .eq("mode", "reaction");
+
+        if (userRole === "coach" && coreTeamId) {
+          query = query.eq("core_team_id", coreTeamId);
+        }
+
+        const { data, error } = await query;
+        if (error || !data) return;
+
+        type RAgg = { name: string; bestMs: number; sumAvgMs: number; count: number; attempts: number };
+        const aggMap = new Map<string, RAgg>();
+
+        for (const row of data as any[]) {
+          const athleteId = row.athlete_id;
+          if (!athleteId) continue;
+
+          // iei_ms shape: { avg, values: [...] }  (your actual schema)
+          // Also accept mean/min keys in case schema evolves
+          const ieiMs  = row.iei_ms;
+          const avgMs  = ieiMs?.avg  ?? ieiMs?.mean;
+          // Best = smallest non-zero IEI from values array, or explicit min/best key
+          let minMs: number | null = ieiMs?.min ?? ieiMs?.best ?? null;
+          if (minMs == null && Array.isArray(ieiMs?.values) && ieiMs.values.length > 0) {
+            const nonZero = (ieiMs.values as number[]).filter(v => v > 0);
+            minMs = nonZero.length > 0 ? Math.min(...nonZero) : null;
+          }
+
+          if (avgMs == null) continue;
+          const resolvedMin = minMs ?? avgMs; // fall back to avg if no min available
+
+          const name = row.athletes
+            ? `${row.athletes.first_name} ${row.athletes.last_name}`
+            : "Unknown Athlete";
+
+          const existing = aggMap.get(athleteId);
+          if (existing) {
+            existing.bestMs    = Math.min(existing.bestMs, resolvedMin);
+            existing.sumAvgMs += avgMs;
+            existing.count    += 1;
+            existing.attempts += row.num_events ?? 0;
+          } else {
+            aggMap.set(athleteId, { name, bestMs: resolvedMin, sumAvgMs: avgMs, count: 1, attempts: row.num_events ?? 0 });
+          }
+        }
+
+        const rows: Extract<LeaderRow, { metric: "reaction" }>[] = [];
+        for (const [athleteId, agg] of aggMap.entries()) {
+          rows.push({
+            metric:        "reaction",
+            athleteId,
+            name:          agg.name,
+            avgReactionMs: Math.round(agg.sumAvgMs / agg.count),
+            bestReactionMs: Math.round(agg.bestMs),
+            attempts:      agg.attempts,
+          });
+        }
+
+        rows.sort((a, b) => a.avgReactionMs - b.avgReactionMs); // lower = better
+        setReactionRows(rows.slice(0, 5));
+      } finally {
+        setReactionLoading(false);
+      }
+    })();
+  }, [programId, userRole, coreTeamId]);
+
+  // ---------- Accuracy leaderboard ----------
+  const [accuracyRows, setAccuracyRows] = useState<Extract<LeaderRow, { metric: "accuracy" }>[]>([]);
+  const [accuracyLoading, setAccuracyLoading] = useState(false);
+
+  useEffect(() => {
+    if (!programId || !userRole || !supabase) return;
+    if (userRole === "coach" && coreTeamId === null) return;
+
+    setAccuracyLoading(true);
+    setAccuracyRows([]);
+
+    (async () => {
+      try {
+        let query = supabase!
+          .from("session_summaries")
+          .select("athlete_id, quality, peak_force_stats, num_events, iei_ms, athletes(first_name, last_name)")
+          .eq("program_id", programId)
+          .eq("mode", "accuracy");
+
+        if (userRole === "coach" && coreTeamId) {
+          query = query.eq("core_team_id", coreTeamId);
+        }
+
+        const { data, error } = await query;
+        if (error || !data) return;
+
+        type AAgg = { name: string; sumPct: number; sumOffset: number; offsetCount: number; sessions: number };
+        const aggMap = new Map<string, AAgg>();
+
+        for (const row of data as any[]) {
+          const athleteId = row.athlete_id;
+          if (!athleteId) continue;
+
+          // Prefer quality fields if populated
+          let pct    = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+          const offset = row.quality?.avg_offset_mm ?? row.quality?.avg_offset_cm ?? row.quality?.avg_offset_cells ?? null;
+
+          // Fallback: derive a rough accuracy score from peak_force_stats avg_mv as % of max (3320 mV)
+          if (pct == null) {
+            const avgMv = row.peak_force_stats?.avg_mv ?? (row.peak_force_stats?.avg_v != null ? row.peak_force_stats.avg_v * 1000 : null);
+            if (avgMv == null) continue;
+            pct = Math.min(100, Math.round((avgMv / 3320) * 100 * 10) / 10);
+          }
+
+          const name = row.athletes
+            ? `${row.athletes.first_name} ${row.athletes.last_name}`
+            : "Unknown Athlete";
+
+          const existing = aggMap.get(athleteId);
+          if (existing) {
+            existing.sumPct    += Number(pct);
+            existing.sessions  += 1;
+            if (offset != null) { existing.sumOffset += Number(offset); existing.offsetCount += 1; }
+          } else {
+            aggMap.set(athleteId, {
+              name,
+              sumPct: Number(pct),
+              sumOffset: offset != null ? Number(offset) : 0,
+              offsetCount: offset != null ? 1 : 0,
+              sessions: 1,
+            });
+          }
+        }
+
+        const rows: Extract<LeaderRow, { metric: "accuracy" }>[] = [];
+        for (const [athleteId, agg] of aggMap.entries()) {
+          rows.push({
+            metric:      "accuracy",
+            athleteId,
+            name:        agg.name,
+            accuracyPct: Math.round((agg.sumPct / agg.sessions) * 10) / 10,
+            avgOffsetCm: agg.offsetCount > 0 ? Math.round((agg.sumOffset / agg.offsetCount) * 10) / 10 : 0,
+            sessions:    agg.sessions,
+          });
+        }
+
+        rows.sort((a, b) => b.accuracyPct - a.accuracyPct); // higher = better
+        setAccuracyRows(rows.slice(0, 5));
+      } finally {
+        setAccuracyLoading(false);
+      }
+    })();
+  }, [programId, userRole, coreTeamId]);
+
   const leaderboardData = useMemo<LeaderRow[]>(() => {
     if (leaderMetric === "strength") return strengthRows;
+    if (leaderMetric === "reaction") return reactionRows;
+    if (leaderMetric === "accuracy") return accuracyRows;
     return [];
-  }, [leaderMetric, strengthRows]);
+  }, [leaderMetric, strengthRows, reactionRows, accuracyRows]);
 
   // Most Improved — will be wired to Supabase once reaction/accuracy have enough sessions
   const mostImproved = useMemo(() => {
@@ -1125,11 +1311,17 @@ export default function Dashboard() {
 
                       {/* Impact ripples */}
                       {heatmapRipples.map(ripple => {
-                        const xPct = ((ripple.c - 0.5) / 8) * 100;
-                        const yPct = ((ripple.r - 0.5) / 12) * 100;
+                        // Grid renders rows top→bottom as R12→R1 with padding: "28px 6px 6px".
+                        // ri = visual row index (0 = top = R12), so ri = 12 - ripple.r
+                        const gridPadTop    = 28; // matches padding "28px 6px 6px"
+                        const gridPadBottom = 6;
+                        const gridPadSide   = 6;
+                        const ri = 12 - ripple.r; // 0-based from top
+                        const leftVal = `calc(${gridPadSide}px + (100% - ${gridPadSide * 2}px) * ${(ripple.c - 0.5) / 8})`;
+                        const topVal  = `calc(${gridPadTop}px + (100% - ${gridPadTop + gridPadBottom}px) * ${(ri + 0.5) / 12})`;
                         return (
                           <div key={ripple.id} style={{
-                            position: "absolute", left: `${xPct}%`, top: `${yPct}%`,
+                            position: "absolute", left: leftVal, top: topVal,
                             transform: "translate(-50%,-50%)", pointerEvents: "none", zIndex: 10,
                           }}>
                             <div style={{
@@ -1290,17 +1482,19 @@ export default function Dashboard() {
               <div className="ts-cardMeta">
                 {leaderMetric === "strength"
                   ? strengthLoading ? "Loading…" : `${strengthRows.length} athletes · live`
-                  : "coming soon"}
+                  : leaderMetric === "reaction"
+                  ? reactionLoading ? "Loading…" : reactionRows.length > 0 ? `${reactionRows.length} athletes · live` : "no data yet"
+                  : accuracyLoading ? "Loading…" : accuracyRows.length > 0 ? `${accuracyRows.length} athletes · live` : "no data yet"}
               </div>
             </div>
 
             <div className="ts-leaderTop">
               <div className="ts-leaderNote">
                 {leaderMetric === "strength"
-                  ? "Top 5 athletes by Strength Index (0–1000). Peak = best single event. Avg = mean across all events."
+                  ? "Top 5 athletes by Strength Index (0–1000), derived from peak & avg force. Higher = more powerful."
                   : leaderMetric === "reaction"
-                  ? "Top 5 athletes by Reaction Time — lower is better. Wired to Supabase once enough sessions exist."
-                  : "Top 5 athletes by Accuracy Score. Wired to Supabase once enough sessions exist."}
+                  ? "Top 5 athletes by average inter-event interval — lower is better. Best = fastest single response."
+                  : "Top 5 athletes by Accuracy Score (0–100%). Derived from avg impact force until quality data is available."}
               </div>
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="leaderMetric">Mode</label>
@@ -1335,7 +1529,7 @@ export default function Dashboard() {
                   </>
                 ) : (
                   <>
-                    <div className="ts-leaderCell" role="columnheader">Accuracy</div>
+                    <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
                     <div className="ts-leaderCell" role="columnheader">Avg Offset</div>
                     <div className="ts-leaderCell" role="columnheader">Sessions</div>
                   </>
@@ -1369,14 +1563,99 @@ export default function Dashboard() {
                     <div className="ts-leaderCell" role="cell">{row.sessions}</div>
                   </div>
                 ))
+              ) : leaderMetric === "reaction" ? (
+                reactionLoading ? (
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
+                    Loading leaderboard…
+                  </div>
+                ) : reactionRows.length === 0 ? (
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
+                    No reaction sessions recorded yet
+                  </div>
+                ) : (
+                  <>
+                    {reactionRows.map((row, idx) => (
+                      <div key={row.athleteId} className="ts-leaderRow" role="row">
+                        <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                        <div className="ts-leaderCell name" role="cell">
+                          <div className="ts-leaderName">{row.name}</div>
+                          <div className="ts-leaderSub">Reaction profile</div>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">
+                          <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs}</span>
+                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms avg</span>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">
+                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs}</span>
+                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms best</span>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">{row.attempts}</div>
+                      </div>
+                    ))}
+                    {/* Pad to 5 rows with ghost placeholders if fewer athletes exist */}
+                    {Array.from({ length: Math.max(0, 5 - reactionRows.length) }, (_, i) => (
+                      <div key={`ghost-r-${i}`} className="ts-leaderRow" role="row" style={{ opacity: 0.25 }}>
+                        <div className="ts-leaderCell rank" role="cell">{reactionRows.length + i + 1}</div>
+                        <div className="ts-leaderCell name" role="cell">
+                          <div className="ts-leaderName">—</div>
+                          <div className="ts-leaderSub">no data</div>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                      </div>
+                    ))}
+                  </>
+                )
               ) : (
-                <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                  No {leaderMetric} sessions recorded yet
-                </div>
+                // accuracy
+                accuracyLoading ? (
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
+                    Loading leaderboard…
+                  </div>
+                ) : accuracyRows.length === 0 ? (
+                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
+                    No accuracy sessions recorded yet
+                  </div>
+                ) : (
+                  <>
+                    {accuracyRows.map((row, idx) => (
+                      <div key={row.athleteId} className="ts-leaderRow" role="row">
+                        <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                        <div className="ts-leaderCell name" role="cell">
+                          <div className="ts-leaderName">{row.name}</div>
+                          <div className="ts-leaderSub">Accuracy profile</div>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">
+                          <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{row.accuracyPct}</span>
+                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">
+                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgOffsetCm > 0 ? row.avgOffsetCm : "—"}</span>
+                          {row.avgOffsetCm > 0 && <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>offset</span>}
+                        </div>
+                        <div className="ts-leaderCell" role="cell">{row.sessions}</div>
+                      </div>
+                    ))}
+                    {/* Pad to 5 rows with ghost placeholders if fewer athletes exist */}
+                    {Array.from({ length: Math.max(0, 5 - accuracyRows.length) }, (_, i) => (
+                      <div key={`ghost-a-${i}`} className="ts-leaderRow" role="row" style={{ opacity: 0.25 }}>
+                        <div className="ts-leaderCell rank" role="cell">{accuracyRows.length + i + 1}</div>
+                        <div className="ts-leaderCell name" role="cell">
+                          <div className="ts-leaderName">—</div>
+                          <div className="ts-leaderSub">no data</div>
+                        </div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                        <div className="ts-leaderCell" role="cell">—</div>
+                      </div>
+                    ))}
+                  </>
+                )
               )}
             </div>
 
-            <div className="ts-cardHint">Reaction Time and Accuracy leaderboards will be wired to Supabase once enough sessions are recorded.</div>
+            <div className="ts-cardHint">Strength index scaled from peak_force_stats (0–3320 mV = 0–1000). Accuracy score derived from avg force until the quality column is populated by your processing pipeline. Reaction best time derived from the minimum value in iei_ms.values.</div>
           </div>
 
           {/* Most Improved */}
