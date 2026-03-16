@@ -2144,23 +2144,13 @@ export default function Dashboard() {
         <div className="ts-dashHead">
           <h1 className="ts-dashTitle">Dashboard</h1>
 
-          {/* TABS + Add Athlete action on the right */}
+          {/* TABS */}
           <div className="ts-tabsRow" role="tablist" aria-label="Dashboard sections">
             <div className="ts-tabs">
               {tabBtn("recent", "Recent Session")}
               {tabBtn("insights", "Insights and Analysis")}
               {tabBtn("athletes", "Individual Athletes")}
             </div>
-            <button
-              type="button"
-              className="ts-btn ts-btnSecondary ts-addAthleteBtn"
-              onClick={() => setShowCreateAthlete(true)}
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
-                <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-              Add Athlete
-            </button>
           </div>
 
           <p className="ts-dashSub">Realtime training metrics + AI-ready analysis.</p>
@@ -2169,6 +2159,16 @@ export default function Dashboard() {
         <div className="ts-dashActions">
           <button className="ts-btn ts-btnGhost" onClick={() => navigate("/session")}>
             New Session
+          </button>
+          <button
+            type="button"
+            className="ts-btn ts-btnSecondary ts-addAthleteBtn"
+            onClick={() => setShowCreateAthlete(true)}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+              <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            Add Athlete
           </button>
         </div>
       </div>
@@ -2179,7 +2179,7 @@ export default function Dashboard() {
           {/* MAIN GRID */}
           <div className="ts-dashGrid ts-dashMain">
             {/* Recent Sessions */}
-            <div className="ts-card ts-span2">
+            <div className="ts-card">
               <div className="ts-cardTop">
                 <div className="ts-cardTitle">Recent Sessions</div>
                 <div className="ts-cardMeta">
@@ -2292,7 +2292,7 @@ export default function Dashboard() {
                               whiteSpace: "nowrap",
                             }}
                           >
-                            {icon && <span style={{ fontSize: 11, lineHeight: 1 }}>{icon}</span>}
+                            {icon && <span className="ts-filterModeIcon" style={{ fontSize: 11, lineHeight: 1 }}>{icon}</span>}
                             {label}
                           </button>
                         );
@@ -2501,30 +2501,28 @@ export default function Dashboard() {
                         >
                           {session.athleteFirstName[0]}{session.athleteLastName[0]}
                         </div>
+                        {/* Info: desktop = [text | mode-pill] row; mobile = stacked */}
                         <div className="ts-recentSessionInfo">
-                          <div className="ts-recentSessionAthlete">
-                            {session.athleteFirstName} {session.athleteLastName}
+                          <div className="ts-recentSessionText">
+                            <div className="ts-recentSessionAthlete">
+                              {session.athleteFirstName} {session.athleteLastName}
+                            </div>
+                            <div className="ts-recentSessionMeta">{formatSessionTime(session.timestamp)}</div>
                           </div>
-                          <div className="ts-recentSessionMeta">{formatSessionTime(session.timestamp)}</div>
-                        </div>
-                        <div
-                          className="ts-recentSessionMode"
-                          style={(() => {
-                            const m = (session.mode ?? "standard").toLowerCase();
-                            const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
-                            return {
-                              background: `${color}14`,
-                              border: `1px solid ${color}44`,
-                              color,
-                            };
-                          })()}
-                        >
-                          {(() => {
-                            const m = (session.mode ?? "standard").toLowerCase();
-                            const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
-                            const label = m.charAt(0).toUpperCase() + m.slice(1);
-                            return `${icon} ${label}`;
-                          })()}
+                          <div
+                            className="ts-recentSessionMode"
+                            style={(() => {
+                              const m = (session.mode ?? "standard").toLowerCase();
+                              const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
+                              return { background: `${color}14`, border: `1px solid ${color}44`, color };
+                            })()}
+                          >
+                            {(() => {
+                              const m = (session.mode ?? "standard").toLowerCase();
+                              const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
+                              return `${icon} ${m.charAt(0).toUpperCase() + m.slice(1)}`;
+                            })()}
+                          </div>
                         </div>
                         <div className="ts-recentSessionChevron">
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -3118,7 +3116,7 @@ export default function Dashboard() {
             </div>
 
             {/* AI Insights */}
-            <div className="ts-card ts-span2" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div className="ts-card" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
               <div className="ts-cardTop">
                 <div className="ts-cardTitle">Coaching Insights</div>
                 <div className="ts-cardMeta">
@@ -3594,7 +3592,7 @@ export default function Dashboard() {
             </div>
 
             {/* Charts & Graphs */}
-            <div className="ts-card ts-span2" style={{ gridColumn: "1 / -1" }}>
+            <div className="ts-card ts-span2 ts-chartsCard" style={{ gridColumn: "1 / -1" }}>
               <div className="ts-cardTop">
                 <div className="ts-cardTitle">Charts & Graphs</div>
                 <div className="ts-cardMeta">
@@ -3687,10 +3685,10 @@ export default function Dashboard() {
                 return (
                   <div>
                     {/* ── Controls row ── */}
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 16 }}>
+                    <div className="ts-chartControls" style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 16 }}>
 
                       {/* Metric pills */}
-                      <div style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
+                      <div className="ts-chartPillGroup" style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
                         {(["strength","accuracy","reaction","volume"] as ChartMetric[]).map(m => {
                           const isActive = chartMetric === m;
                           const accentC  = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : m === "volume" ? "rgba(80,220,160,0.95)" : "#b400ff";
@@ -3711,12 +3709,12 @@ export default function Dashboard() {
                       </div>
 
                       {/* Compare mode pills */}
-                      <div style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
+                      <div className="ts-chartPillGroup" style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
                         {([
-                          { v: "athlete-athlete", label: "Athlete vs Athlete" },
-                          { v: "athlete-team",    label: "Athlete vs Team" },
-                          { v: "team-team",       label: "Team vs Team" },
-                        ] as { v: CompareMode; label: string }[]).map(({ v, label }) => {
+                          { v: "athlete-athlete", label: "Athlete vs Athlete", shortLabel: "Ath vs Ath" },
+                          { v: "athlete-team",    label: "Athlete vs Team",    shortLabel: "Ath vs Team" },
+                          { v: "team-team",       label: "Team vs Team",       shortLabel: "Team vs Team" },
+                        ] as { v: CompareMode; label: string; shortLabel: string }[]).map(({ v, label, shortLabel }) => {
                           const isActive = compareMode === v;
                           return (
                             <button key={v} type="button" onClick={() => setCompareMode(v)} style={{
@@ -3726,14 +3724,17 @@ export default function Dashboard() {
                               color: isActive ? `rgba(${ink},0.90)` : `rgba(${ink},0.45)`,
                               font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer",
                               transition: "all 140ms ease", whiteSpace: "nowrap",
-                            }}>{label}</button>
+                            }}>
+                              <span className="ts-chartLabelFull">{label}</span>
+                              <span className="ts-chartLabelShort">{shortLabel}</span>
+                            </button>
                           );
                         })}
                       </div>
                     </div>
 
                     {/* ── Entity selectors ── */}
-                    <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
+                    <div className="ts-chartEntityRow" style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
                       {(["A","B"] as const).map(slot => {
                         const entity   = slot === "A" ? chartEntityA : chartEntityB;
                         const setEntity= slot === "A" ? setChartEntityA : setChartEntityB;
@@ -3742,7 +3743,7 @@ export default function Dashboard() {
                         const isAthleteSlot = compareMode === "athlete-athlete" || (compareMode === "athlete-team" && slot === "A");
                         const slotLabel = compareMode === "athlete-team" ? (slot === "A" ? "Athlete" : "Team") : compareMode === "team-team" ? "Team" : "Athlete";
                         return (
-                          <div key={slot} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          <div key={slot} className="ts-chartEntityItem" style={{ display: "flex", alignItems: "center", gap: 7 }}>
                             {/* Color swatch */}
                             <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}88` }} />
                             <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
@@ -3754,6 +3755,7 @@ export default function Dashboard() {
                                 }
                               </svg>
                               <select
+                                className="ts-chartEntitySelect"
                                 value={entity?.id ?? ""}
                                 onChange={e => {
                                   const id  = e.target.value;
@@ -3798,7 +3800,7 @@ export default function Dashboard() {
                       })}
 
                       {/* Description */}
-                      <span style={{ fontSize: 11, opacity: 0.38, marginLeft: 4 }}>{meta.description} · {meta.mode}</span>
+                      <span className="ts-chartDesc" style={{ fontSize: 11, opacity: 0.38, marginLeft: 4 }}>{meta.description} · {meta.mode}</span>
                     </div>
 
                     {/* ── Chart area ── */}
@@ -4751,44 +4753,46 @@ export default function Dashboard() {
                             </div>
 
                             {/* Progress badge */}
-                            {progress ? (
-                              <div style={{
-                                display: "flex", flexDirection: "column", alignItems: "flex-end",
-                                gap: 3, flexShrink: 0, marginLeft: 4,
-                              }}>
+                            <div className="ts-athleteTrendBadge">
+                              {progress ? (
+                                <div style={{
+                                  display: "flex", flexDirection: "column", alignItems: "flex-end",
+                                  gap: 3, flexShrink: 0, marginLeft: 4,
+                                }}>
+                                  <div style={{
+                                    display: "inline-flex", alignItems: "center", gap: 5,
+                                    padding: "4px 9px", borderRadius: 999,
+                                    background: trendBg, border: `1px solid ${trendBdr}`,
+                                    color: trendColor,
+                                    fontSize: 11, fontWeight: 800, letterSpacing: "0.02em",
+                                    whiteSpace: "nowrap",
+                                  }}>
+                                    <span style={{ fontSize: 13, lineHeight: 1 }}>{trendIcon}</span>
+                                    {trendLabel}
+                                  </div>
+                                  <div style={{
+                                    fontSize: 10, opacity: 0.42, whiteSpace: "nowrap",
+                                    textAlign: "right", paddingRight: 2,
+                                  }}>
+                                    {metricIcon} {progress.metric} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
+                                  </div>
+                                </div>
+                              ) : athleteProgressLoading ? (
+                                <div style={{ width: 80, height: 28, borderRadius: 999, background: `rgba(${ink},0.05)`, flexShrink: 0 }} />
+                              ) : (
                                 <div style={{
                                   display: "inline-flex", alignItems: "center", gap: 5,
                                   padding: "4px 9px", borderRadius: 999,
-                                  background: trendBg, border: `1px solid ${trendBdr}`,
-                                  color: trendColor,
-                                  fontSize: 11, fontWeight: 800, letterSpacing: "0.02em",
-                                  whiteSpace: "nowrap",
+                                  background: `rgba(${ink},0.04)`,
+                                  border: `1px solid rgba(${ink},0.10)`,
+                                  color: `rgba(${ink},0.30)`,
+                                  fontSize: 11, fontWeight: 700,
+                                  whiteSpace: "nowrap", flexShrink: 0,
                                 }}>
-                                  <span style={{ fontSize: 13, lineHeight: 1 }}>{trendIcon}</span>
-                                  {trendLabel}
+                                  — no data
                                 </div>
-                                <div style={{
-                                  fontSize: 10, opacity: 0.42, whiteSpace: "nowrap",
-                                  textAlign: "right", paddingRight: 2,
-                                }}>
-                                  {metricIcon} {progress.metric} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
-                                </div>
-                              </div>
-                            ) : athleteProgressLoading ? (
-                              <div style={{ width: 80, height: 28, borderRadius: 999, background: `rgba(${ink},0.05)`, flexShrink: 0 }} />
-                            ) : (
-                              <div style={{
-                                display: "inline-flex", alignItems: "center", gap: 5,
-                                padding: "4px 9px", borderRadius: 999,
-                                background: `rgba(${ink},0.04)`,
-                                border: `1px solid rgba(${ink},0.10)`,
-                                color: `rgba(${ink},0.30)`,
-                                fontSize: 11, fontWeight: 700,
-                                whiteSpace: "nowrap", flexShrink: 0,
-                              }}>
-                                — no data
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </div>
                         );
                       })}
@@ -4892,6 +4896,228 @@ export default function Dashboard() {
 
       {/* Tiny scoped styles so we don't disturb your existing design system */}
       <style>{`
+
+        /* ─────────────────────────────────────────────
+           STRUCTURAL LAYOUT — mobile-first responsive
+           These classes are referenced in JSX but live
+           in the global stylesheet. We re-declare them
+           here so the dashboard is fully self-contained.
+        ───────────────────────────────────────────── */
+
+        /* Root wrapper */
+        .ts-dash {
+          padding: 24px 32px 48px;
+          box-sizing: border-box;
+          width: 100%;
+        }
+
+        /* Top bar: title/tabs on left, action button on right */
+        .ts-dashTop {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 24px;
+          flex-wrap: wrap;
+        }
+        .ts-dashHead {
+          flex: 1;
+          min-width: 0;
+        }
+        .ts-dashTitle {
+          font-size: 26px;
+          font-weight: 800;
+          margin: 0 0 4px;
+          letter-spacing: -0.01em;
+        }
+        .ts-dashSub {
+          font-size: 13px;
+          opacity: 0.50;
+          margin: 6px 0 0;
+        }
+        .ts-dashActions {
+          display: flex;
+          flex-direction: column;
+          align-items: stretch;
+          gap: 8px;
+          flex-shrink: 0;
+          padding-top: 4px;
+          min-width: 130px;
+        }
+
+        /* Buttons */
+        .ts-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 9px 18px;
+          border-radius: 12px;
+          font: inherit;
+          font-size: 13px;
+          font-weight: 700;
+          cursor: pointer;
+          border: 1px solid transparent;
+          transition: background 140ms ease, border-color 140ms ease,
+                      transform 100ms ease, box-shadow 140ms ease;
+          white-space: nowrap;
+        }
+        .ts-btn:active { transform: translateY(1px); }
+        .ts-btnGhost {
+          background: rgba(255,255,255,0.05);
+          border-color: rgba(255,255,255,0.14);
+          color: inherit;
+        }
+        .ts-btnGhost:hover {
+          background: rgba(255,255,255,0.09);
+          border-color: rgba(255,255,255,0.22);
+          transform: translateY(-1px);
+        }
+        .ts-btnSecondary {
+          background: rgba(180,0,255,0.14);
+          border-color: rgba(180,0,255,0.38);
+          color: rgba(210,140,255,0.95);
+        }
+        .ts-btnSecondary:hover {
+          background: rgba(180,0,255,0.22);
+          border-color: rgba(180,0,255,0.55);
+          transform: translateY(-1px);
+          box-shadow: 0 4px 16px rgba(180,0,255,0.18);
+        }
+        :root[data-theme="light"] .ts-btnGhost {
+          background: rgba(20,20,40,0.05);
+          border-color: rgba(20,20,40,0.16);
+        }
+        :root[data-theme="light"] .ts-btnGhost:hover {
+          background: rgba(20,20,40,0.09);
+        }
+
+        /* 2-column dashboard grid */
+        .ts-dashGrid {
+          display: grid;
+          gap: 16px;
+        }
+        .ts-dashMain {
+          grid-template-columns: 1fr 1fr;
+        }
+        .ts-span2 {
+          grid-column: span 2;
+        }
+
+        /* Card */
+        .ts-card {
+          background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.09);
+          border-radius: 20px;
+          padding: 20px 22px;
+          box-sizing: border-box;
+          min-width: 0;
+        }
+        :root[data-theme="light"] .ts-card {
+          background: rgba(255,255,255,0.75);
+          border-color: rgba(20,20,40,0.10);
+          box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+        }
+        .ts-cardTop {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 14px;
+          flex-wrap: wrap;
+        }
+        .ts-cardTitle {
+          font-size: 16px;
+          font-weight: 800;
+          letter-spacing: -0.01em;
+        }
+
+        /* ── Mobile overrides ── */
+
+        /* Tablet: single-column grid */
+        @media (max-width: 860px) {
+          .ts-dashMain {
+            grid-template-columns: 1fr;
+          }
+          .ts-span2 {
+            grid-column: span 1;
+          }
+          .ts-dash {
+            padding: 20px 20px 40px;
+          }
+        }
+
+        /* Phone: tighter padding, stacked top bar */
+        @media (max-width: 600px) {
+          .ts-dash {
+            padding: 16px 14px 36px;
+          }
+          .ts-dashTop {
+            flex-direction: column;
+            gap: 12px;
+            margin-bottom: 18px;
+          }
+          .ts-dashActions {
+            width: 100%;
+          }
+          .ts-dashActions .ts-btn {
+            width: 100%;
+            justify-content: center;
+          }
+          .ts-dashTitle {
+            font-size: 22px;
+          }
+          .ts-card {
+            padding: 16px 16px;
+            border-radius: 16px;
+          }
+          .ts-dashGrid {
+            gap: 12px;
+          }
+        }
+
+        /* Small phone */
+        @media (max-width: 400px) {
+          .ts-dash {
+            padding: 12px 10px 32px;
+          }
+          .ts-card {
+            padding: 14px 12px;
+            border-radius: 14px;
+          }
+          .ts-dashTitle {
+            font-size: 20px;
+          }
+        }
+
+        /* ── Recent Sessions card specific ── */
+
+        /* Filter row wraps on mobile */
+        @media (max-width: 600px) {
+          .ts-cardTop {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 6px;
+          }
+        }
+
+        /* Hide mode filter emojis on mobile so the pill group fits within the card */
+        @media (max-width: 600px) {
+          .ts-filterModeIcon {
+            display: none;
+          }
+        }
+
+        /* ── Charts & Graphs — hidden on mobile ── */
+        @media (max-width: 860px) {
+          .ts-chartsCard {
+            display: none;
+          }
+        }
+
+        /* ─────────────────────────────────────────────
+           END STRUCTURAL LAYOUT
+        ───────────────────────────────────────────── */
+
         .ts-tabsRow{
           display:flex;
           align-items:center;
@@ -5250,6 +5476,14 @@ export default function Dashboard() {
           gap:6px;
           flex-shrink:0;
         }
+        .ts-athleteTrendBadge{
+          flex-shrink:0;
+        }
+        @media (max-width: 600px) {
+          .ts-athleteTrendBadge {
+            display: none;
+          }
+        }
         .ts-athletePill{
           display:inline-flex;
           align-items:center;
@@ -5429,6 +5663,7 @@ export default function Dashboard() {
           background:rgba(255,255,255,0.02);
           transition:background 150ms ease, border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
           cursor:pointer;
+          min-height: 52px;
         }
         .ts-recentSessionRow:hover{
           background:rgba(180,0,255,0.07);
@@ -5469,7 +5704,16 @@ export default function Dashboard() {
           letter-spacing:0.02em;
           transition:background 150ms ease, border-color 150ms ease;
         }
+        /* Info column: grows to fill available width */
         .ts-recentSessionInfo{
+          flex:1;
+          min-width:0;
+          display:flex;
+          align-items:center;
+          gap:10px;
+        }
+        /* Text block: name + timestamp */
+        .ts-recentSessionText{
           flex:1;
           min-width:0;
         }
@@ -5503,6 +5747,57 @@ export default function Dashboard() {
         .ts-recentSessionRow.isSelected .ts-recentSessionChevron{
           opacity:0.70;
           transform:translateX(2px);
+        }
+
+        /* ── Session row: mobile responsive ── */
+        @media (max-width: 600px) {
+          /* Stack info column vertically: name on top, meta + mode pill below */
+          .ts-recentSessionInfo {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+          }
+          .ts-recentSessionText {
+            width: 100%;
+          }
+          .ts-recentSessionAthlete {
+            font-size: 13px;
+            white-space: nowrap;
+          }
+          .ts-recentSessionMeta {
+            font-size: 11px;
+            margin-top: 0;
+          }
+          /* Mode pill tucks under the name */
+          .ts-recentSessionMode {
+            font-size: 10px;
+            padding: 2px 8px;
+            letter-spacing: 0.04em;
+          }
+          .ts-recentSessionRow {
+            gap: 10px;
+            padding: 10px 10px;
+            align-items: center;
+          }
+          /* Disable hover lift on touch devices */
+          .ts-recentSessionRow:hover {
+            transform: none;
+          }
+        }
+
+        @media (max-width: 400px) {
+          .ts-recentSessionAvatar {
+            width: 32px;
+            height: 32px;
+            font-size: 11px;
+          }
+          .ts-recentSessionAthlete {
+            font-size: 12px;
+          }
+          .ts-recentSessionRow {
+            padding: 9px 8px;
+            gap: 8px;
+          }
         }
 
         /* Heatmap card */
@@ -5773,309 +6068,6 @@ export default function Dashboard() {
         @keyframes tsRipple {
           0%   { opacity:0.9; transform:translate(-50%,-50%) scale(0.5); }
           100% { opacity:0;   transform:translate(-50%,-50%) scale(4.5); }
-        }
-
-        /* ═══════════════════════════════════════════════════════════════
-           RESPONSIVE — Mobile · Tablet · Desktop
-           Breakpoints:
-             ≤ 480px  → mobile (sm)
-             ≤ 768px  → tablet (md)
-             ≤ 1024px → large tablet / small desktop (lg)
-        ═══════════════════════════════════════════════════════════════ */
-
-        /* ── Shared: prevent horizontal overflow on the root wrapper ── */
-        .ts-dash {
-          overflow-x: hidden;
-        }
-
-        /* ── Dashboard top header bar ── */
-        .ts-dashTop {
-          display: flex;
-          align-items: flex-start;
-          justify-content: space-between;
-          gap: 12px;
-          flex-wrap: wrap;
-        }
-        .ts-dashHead {
-          flex: 1;
-          min-width: 0;
-        }
-
-        /* ── Tabs row: stack tabs above Add Athlete on small screens ── */
-        @media (max-width: 768px) {
-          .ts-tabsRow {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 10px;
-          }
-          .ts-tabs {
-            width: 100%;
-          }
-          .ts-tabBtn {
-            font-size: 13px;
-            padding: 7px 11px;
-          }
-          .ts-addAthleteBtn {
-            align-self: flex-start;
-          }
-          .ts-dashTitle {
-            font-size: clamp(20px, 5vw, 28px);
-          }
-          .ts-dashSub {
-            font-size: 13px;
-          }
-          .ts-dashTop {
-            flex-direction: column;
-          }
-          .ts-dashActions {
-            width: 100%;
-          }
-          .ts-dashActions .ts-btn {
-            width: 100%;
-            justify-content: center;
-          }
-        }
-
-        @media (max-width: 480px) {
-          .ts-tabs {
-            gap: 6px;
-          }
-          .ts-tabBtn {
-            font-size: 12px;
-            padding: 6px 10px;
-          }
-        }
-
-        /* ── Main 2-column dashboard grid → single column on tablet/mobile ── */
-        .ts-dashGrid.ts-dashMain {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 16px;
-        }
-        .ts-dashGrid.ts-dashMain .ts-span2 {
-          grid-column: span 2;
-        }
-
-        @media (max-width: 900px) {
-          .ts-dashGrid.ts-dashMain {
-            grid-template-columns: 1fr;
-          }
-          .ts-dashGrid.ts-dashMain .ts-span2 {
-            grid-column: span 1;
-          }
-        }
-
-        /* ── Cards: reduce padding on smaller screens ── */
-        @media (max-width: 768px) {
-          .ts-card {
-            padding: 16px !important;
-          }
-          .ts-cardTop {
-            flex-wrap: wrap;
-            gap: 8px;
-          }
-          .ts-cardTitle {
-            font-size: 15px;
-          }
-        }
-        @media (max-width: 480px) {
-          .ts-card {
-            padding: 12px !important;
-            border-radius: 14px !important;
-          }
-        }
-
-        /* ── Leaderboard table: progressive column hiding ── */
-        @media (max-width: 640px) {
-          .ts-leaderRow {
-            grid-template-columns: 32px 1fr 1fr;
-            gap: 8px;
-            padding: 10px 10px;
-          }
-          /* Hide 4th and 5th columns */
-          .ts-leaderRow > .ts-leaderCell:nth-child(4),
-          .ts-leaderRow > .ts-leaderCell:nth-child(5) {
-            display: none;
-          }
-          .ts-leaderName { font-size: 13px; }
-          .ts-leaderSub  { font-size: 11px; }
-        }
-        @media (max-width: 400px) {
-          .ts-leaderRow {
-            grid-template-columns: 28px 1fr 1fr;
-          }
-        }
-
-        /* ── Most Improved rows: stack on mobile ── */
-        @media (max-width: 640px) {
-          .ts-mostRow {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 10px;
-          }
-          .ts-miLabel,
-          .ts-miBody {
-            min-width: 0;
-            width: 100%;
-          }
-          .ts-miBody {
-            flex-wrap: wrap;
-          }
-          .ts-miName { min-width: 0; }
-        }
-
-        /* ── Athlete rows: hide pills on very small screens ── */
-        @media (max-width: 520px) {
-          .ts-athleteRow {
-            gap: 10px;
-            padding: 10px 12px;
-          }
-          .ts-athletePills {
-            display: none;
-          }
-          .ts-athleteName {
-            font-size: 14px;
-          }
-        }
-        @media (max-width: 380px) {
-          .ts-athleteRow {
-            flex-wrap: wrap;
-          }
-          .ts-athleteInfo {
-            flex-basis: calc(100% - 54px);
-          }
-        }
-
-        /* ── Team rows: compress on mobile ── */
-        @media (max-width: 520px) {
-          .ts-teamRow {
-            gap: 8px;
-            padding: 10px 10px;
-          }
-          .ts-teamBadge {
-            display: none;
-          }
-          .ts-teamName { font-size: 13px; }
-        }
-
-        /* ── Recent session rows ── */
-        @media (max-width: 520px) {
-          .ts-recentSessionRow {
-            gap: 8px;
-            padding: 8px 10px;
-          }
-          .ts-recentSessionMode {
-            display: none;
-          }
-          .ts-recentSessionAthlete {
-            font-size: 13px;
-          }
-        }
-
-        /* ── Heatmap / session detail card: already has 560px breakpoint;
-              extend to stack earlier on tablet ── */
-        @media (max-width: 768px) {
-          .ts-heatmapBody {
-            flex-direction: column;
-          }
-          .ts-heatmapBagCol,
-          .ts-heatmapStatsCol {
-            flex: none;
-            width: 100%;
-          }
-          /* Constrain bag width so it doesn't become huge */
-          .ts-dash-bagWrap {
-            max-width: 280px;
-            margin: 0 auto;
-          }
-        }
-
-        /* ── Replay controls: wrap on narrow screens ── */
-        @media (max-width: 520px) {
-          .ts-replayControls {
-            gap: 6px;
-          }
-          .ts-replayBtn {
-            font-size: 11px;
-            padding: 5px 8px;
-          }
-          .ts-replaySpeed {
-            margin-left: 0;
-          }
-        }
-
-        /* ── Insight / coach insight cards: full-width on mobile ── */
-        @media (max-width: 768px) {
-          .ts-insightCard,
-          .ts-coachInsightCard {
-            padding: 14px !important;
-          }
-        }
-
-        /* ── Leaderboard controls row: stack on mobile ── */
-        @media (max-width: 560px) {
-          .ts-leaderTop {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 10px;
-          }
-          .ts-leaderNote { font-size: 13px; }
-          .ts-leaderControls { flex-wrap: wrap; }
-          .ts-select {
-            font-size: 13px;
-            padding: 6px 10px;
-          }
-        }
-
-        /* ── Summary stats: two-column pill grid on mobile ── */
-        @media (max-width: 480px) {
-          .ts-summaryList {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 6px;
-          }
-          .ts-summaryRow {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 3px;
-            padding: 8px 10px;
-          }
-          .ts-summaryRowLabel { white-space: normal; }
-        }
-
-        /* ── Session filter dropdowns: full width on small screens ── */
-        @media (max-width: 520px) {
-          .ts-sessionFilters {
-            flex-direction: column;
-            gap: 8px;
-          }
-          .ts-sessionFilters .ts-select {
-            width: 100%;
-          }
-        }
-
-        /* ── Min touch target: ensure tap targets are ≥ 44px tall ── */
-        @media (max-width: 768px) {
-          .ts-tabBtn,
-          .ts-btn,
-          .ts-replayBtn,
-          .ts-replaySpeedBtn,
-          .ts-select {
-            min-height: 44px;
-          }
-          .ts-tabBtn,
-          .ts-btn {
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-          }
-        }
-
-        /* ── Typography scale for small screens ── */
-        @media (max-width: 480px) {
-          .ts-dashTitle  { font-size: clamp(18px, 6vw, 24px); }
-          .ts-cardTitle  { font-size: 14px; }
-          .ts-miTitle    { font-size: 14px; }
         }
       `}</style>
     </div>
