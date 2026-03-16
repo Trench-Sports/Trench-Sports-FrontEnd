@@ -5774,6 +5774,309 @@ export default function Dashboard() {
           0%   { opacity:0.9; transform:translate(-50%,-50%) scale(0.5); }
           100% { opacity:0;   transform:translate(-50%,-50%) scale(4.5); }
         }
+
+        /* ═══════════════════════════════════════════════════════════════
+           RESPONSIVE — Mobile · Tablet · Desktop
+           Breakpoints:
+             ≤ 480px  → mobile (sm)
+             ≤ 768px  → tablet (md)
+             ≤ 1024px → large tablet / small desktop (lg)
+        ═══════════════════════════════════════════════════════════════ */
+
+        /* ── Shared: prevent horizontal overflow on the root wrapper ── */
+        .ts-dash {
+          overflow-x: hidden;
+        }
+
+        /* ── Dashboard top header bar ── */
+        .ts-dashTop {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+        .ts-dashHead {
+          flex: 1;
+          min-width: 0;
+        }
+
+        /* ── Tabs row: stack tabs above Add Athlete on small screens ── */
+        @media (max-width: 768px) {
+          .ts-tabsRow {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 10px;
+          }
+          .ts-tabs {
+            width: 100%;
+          }
+          .ts-tabBtn {
+            font-size: 13px;
+            padding: 7px 11px;
+          }
+          .ts-addAthleteBtn {
+            align-self: flex-start;
+          }
+          .ts-dashTitle {
+            font-size: clamp(20px, 5vw, 28px);
+          }
+          .ts-dashSub {
+            font-size: 13px;
+          }
+          .ts-dashTop {
+            flex-direction: column;
+          }
+          .ts-dashActions {
+            width: 100%;
+          }
+          .ts-dashActions .ts-btn {
+            width: 100%;
+            justify-content: center;
+          }
+        }
+
+        @media (max-width: 480px) {
+          .ts-tabs {
+            gap: 6px;
+          }
+          .ts-tabBtn {
+            font-size: 12px;
+            padding: 6px 10px;
+          }
+        }
+
+        /* ── Main 2-column dashboard grid → single column on tablet/mobile ── */
+        .ts-dashGrid.ts-dashMain {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 16px;
+        }
+        .ts-dashGrid.ts-dashMain .ts-span2 {
+          grid-column: span 2;
+        }
+
+        @media (max-width: 900px) {
+          .ts-dashGrid.ts-dashMain {
+            grid-template-columns: 1fr;
+          }
+          .ts-dashGrid.ts-dashMain .ts-span2 {
+            grid-column: span 1;
+          }
+        }
+
+        /* ── Cards: reduce padding on smaller screens ── */
+        @media (max-width: 768px) {
+          .ts-card {
+            padding: 16px !important;
+          }
+          .ts-cardTop {
+            flex-wrap: wrap;
+            gap: 8px;
+          }
+          .ts-cardTitle {
+            font-size: 15px;
+          }
+        }
+        @media (max-width: 480px) {
+          .ts-card {
+            padding: 12px !important;
+            border-radius: 14px !important;
+          }
+        }
+
+        /* ── Leaderboard table: progressive column hiding ── */
+        @media (max-width: 640px) {
+          .ts-leaderRow {
+            grid-template-columns: 32px 1fr 1fr;
+            gap: 8px;
+            padding: 10px 10px;
+          }
+          /* Hide 4th and 5th columns */
+          .ts-leaderRow > .ts-leaderCell:nth-child(4),
+          .ts-leaderRow > .ts-leaderCell:nth-child(5) {
+            display: none;
+          }
+          .ts-leaderName { font-size: 13px; }
+          .ts-leaderSub  { font-size: 11px; }
+        }
+        @media (max-width: 400px) {
+          .ts-leaderRow {
+            grid-template-columns: 28px 1fr 1fr;
+          }
+        }
+
+        /* ── Most Improved rows: stack on mobile ── */
+        @media (max-width: 640px) {
+          .ts-mostRow {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 10px;
+          }
+          .ts-miLabel,
+          .ts-miBody {
+            min-width: 0;
+            width: 100%;
+          }
+          .ts-miBody {
+            flex-wrap: wrap;
+          }
+          .ts-miName { min-width: 0; }
+        }
+
+        /* ── Athlete rows: hide pills on very small screens ── */
+        @media (max-width: 520px) {
+          .ts-athleteRow {
+            gap: 10px;
+            padding: 10px 12px;
+          }
+          .ts-athletePills {
+            display: none;
+          }
+          .ts-athleteName {
+            font-size: 14px;
+          }
+        }
+        @media (max-width: 380px) {
+          .ts-athleteRow {
+            flex-wrap: wrap;
+          }
+          .ts-athleteInfo {
+            flex-basis: calc(100% - 54px);
+          }
+        }
+
+        /* ── Team rows: compress on mobile ── */
+        @media (max-width: 520px) {
+          .ts-teamRow {
+            gap: 8px;
+            padding: 10px 10px;
+          }
+          .ts-teamBadge {
+            display: none;
+          }
+          .ts-teamName { font-size: 13px; }
+        }
+
+        /* ── Recent session rows ── */
+        @media (max-width: 520px) {
+          .ts-recentSessionRow {
+            gap: 8px;
+            padding: 8px 10px;
+          }
+          .ts-recentSessionMode {
+            display: none;
+          }
+          .ts-recentSessionAthlete {
+            font-size: 13px;
+          }
+        }
+
+        /* ── Heatmap / session detail card: already has 560px breakpoint;
+              extend to stack earlier on tablet ── */
+        @media (max-width: 768px) {
+          .ts-heatmapBody {
+            flex-direction: column;
+          }
+          .ts-heatmapBagCol,
+          .ts-heatmapStatsCol {
+            flex: none;
+            width: 100%;
+          }
+          /* Constrain bag width so it doesn't become huge */
+          .ts-dash-bagWrap {
+            max-width: 280px;
+            margin: 0 auto;
+          }
+        }
+
+        /* ── Replay controls: wrap on narrow screens ── */
+        @media (max-width: 520px) {
+          .ts-replayControls {
+            gap: 6px;
+          }
+          .ts-replayBtn {
+            font-size: 11px;
+            padding: 5px 8px;
+          }
+          .ts-replaySpeed {
+            margin-left: 0;
+          }
+        }
+
+        /* ── Insight / coach insight cards: full-width on mobile ── */
+        @media (max-width: 768px) {
+          .ts-insightCard,
+          .ts-coachInsightCard {
+            padding: 14px !important;
+          }
+        }
+
+        /* ── Leaderboard controls row: stack on mobile ── */
+        @media (max-width: 560px) {
+          .ts-leaderTop {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 10px;
+          }
+          .ts-leaderNote { font-size: 13px; }
+          .ts-leaderControls { flex-wrap: wrap; }
+          .ts-select {
+            font-size: 13px;
+            padding: 6px 10px;
+          }
+        }
+
+        /* ── Summary stats: two-column pill grid on mobile ── */
+        @media (max-width: 480px) {
+          .ts-summaryList {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+          }
+          .ts-summaryRow {
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 3px;
+            padding: 8px 10px;
+          }
+          .ts-summaryRowLabel { white-space: normal; }
+        }
+
+        /* ── Session filter dropdowns: full width on small screens ── */
+        @media (max-width: 520px) {
+          .ts-sessionFilters {
+            flex-direction: column;
+            gap: 8px;
+          }
+          .ts-sessionFilters .ts-select {
+            width: 100%;
+          }
+        }
+
+        /* ── Min touch target: ensure tap targets are ≥ 44px tall ── */
+        @media (max-width: 768px) {
+          .ts-tabBtn,
+          .ts-btn,
+          .ts-replayBtn,
+          .ts-replaySpeedBtn,
+          .ts-select {
+            min-height: 44px;
+          }
+          .ts-tabBtn,
+          .ts-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+          }
+        }
+
+        /* ── Typography scale for small screens ── */
+        @media (max-width: 480px) {
+          .ts-dashTitle  { font-size: clamp(18px, 6vw, 24px); }
+          .ts-cardTitle  { font-size: 14px; }
+          .ts-miTitle    { font-size: 14px; }
+        }
       `}</style>
     </div>
   );
