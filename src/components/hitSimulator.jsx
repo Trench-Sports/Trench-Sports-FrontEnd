@@ -32,6 +32,24 @@ const MODE_META = {
   },
 };
 
+// ─── Strength Index ───────────────────────────────────────────────────────────
+// Mirrors the formula in session.tsx:
+//   speed component  (40%) — normalised IEI: fast cadence scores higher
+//   force component  (60%) — normalised force against sensor ceiling
+//   result: 0–1000 integer
+
+const MAX_FORCE_LB = 45; // simulated ceiling — maps to voltNorm = 1.0
+const MIN_IEI_MS   = 100;
+const MAX_IEI_MS   = 2000;
+
+function strengthIndex(forceOrMv, ieiMs) {
+  const speedNorm = ieiMs == null
+    ? 0.5  // first hit of session — neutral
+    : Math.max(0, Math.min(1, 1 - (ieiMs - MIN_IEI_MS) / (MAX_IEI_MS - MIN_IEI_MS)));
+  const forceNorm = Math.max(0, Math.min(1, forceOrMv / MAX_FORCE_LB));
+  return Math.round((speedNorm * 0.4 + forceNorm * 0.6) * 1000);
+}
+
 // ─── Sub-component: ImpactRipple ──────────────────────────────────────────────
 
 function ImpactRipple({ x, y, color, id, onDone }) {
@@ -81,8 +99,13 @@ function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneC
     return { i, row, col };
   });
 
-  const cx = (COLS - 1) / 2;
-  const cy = (ROWS - 1) / 2;
+  const cx = (COLS - 1) / 2; // 2.5
+  const cy = (ROWS - 1) / 2; // 4.5
+  // Max possible distance from center to a corner cell-centre (used for normalisation)
+  const MAX_DIST = Math.sqrt(cx * cx + cy * cy); // ≈ 5.148 grid units
+
+  // Half-cell radius of the 2×2 bullseye block from the grid centre
+  const BULLSEYE_DIST = Math.sqrt(0.5 * 0.5 + 0.5 * 0.5); // ≈ 0.707 grid units
 
   return (
     <div style={{
@@ -94,18 +117,25 @@ function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneC
       height: "100%",
     }}>
       {cells.map(({ i, row, col }) => {
-        // distance from center (normalized 0-1)
-        const dx = (col - cx) / cx;
-        const dy = (row - cy) / cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        // Raw distance from grid centre in grid units
+        const dx = col - cx;
+        const dy = row - cy;
+        const rawDist = Math.sqrt(dx * dx + dy * dy);
 
-        // accuracy mode ring color
+        // Cells whose centre falls within the 2×2 bullseye block score 100%
+        // (the 4 centre cells: rows 4-5, cols 2-3 on a 10×6 grid)
+        const isBullseye = rawDist <= BULLSEYE_DIST;
+
+        // Normalise: bullseye → 0, outer corner → 1
+        const dist = isBullseye ? 0 : Math.min(1, (rawDist - BULLSEYE_DIST) / (MAX_DIST - BULLSEYE_DIST));
+
+        // accuracy mode ring color — bands keyed to the normalised dist
         let ringColor = null;
         if (mode === "Accuracy") {
-          if (dist < 0.25) ringColor = "rgba(0,255,120,0.45)";
-          else if (dist < 0.55) ringColor = "rgba(0,220,255,0.28)";
-          else if (dist < 0.85) ringColor = "rgba(255,160,0,0.20)";
-          else ringColor = "rgba(255,60,60,0.15)";
+          if (isBullseye)        ringColor = "rgba(0,255,120,0.50)";
+          else if (dist < 0.33)  ringColor = "rgba(0,220,255,0.30)";
+          else if (dist < 0.66)  ringColor = "rgba(255,160,0,0.22)";
+          else                   ringColor = "rgba(255,60,60,0.16)";
         }
 
         const isHot = impacts.some(imp => imp.cellIndex === i);
@@ -235,7 +265,7 @@ export default function HitSimulator() {
   const [impacts, setImpacts] = useState([]);
   const [ripples, setRipples] = useState([]);
   const [hoveredZone, setHoveredZone] = useState(null);
-  const [sessionStats, setSessionStats] = useState({ hits: 0, avgForce: 0, maxForce: 0, accuracy: null });
+  const [sessionStats, setSessionStats] = useState({ hits: 0, avgIndex: 0, peakIndex: 0, accuracy: null });
 
   // Reaction mode state
   const [rxPhase, setRxPhase] = useState("idle"); // idle | waiting | signal | result
@@ -244,16 +274,18 @@ export default function HitSimulator() {
   const rxTimer = useRef(null);
 
   const rippleIdRef = useRef(0);
+  const lastHitAt = useRef(null); // wall-clock ms of previous hit, for IEI
   const ROWS = 10, COLS = 6;
 
   // ── Cleanup on mode switch
   useEffect(() => {
     setImpacts([]);
     setRipples([]);
-    setSessionStats({ hits: 0, avgForce: 0, maxForce: 0, accuracy: null });
+    setSessionStats({ hits: 0, avgIndex: 0, peakIndex: 0, accuracy: null });
     setRxPhase("idle");
     setRxTime(null);
     rxSignalAt.current = null;
+    lastHitAt.current  = null;
     clearTimeout(rxTimer.current);
   }, [mode]);
 
@@ -311,24 +343,38 @@ export default function HitSimulator() {
     // Standard / Accuracy modes
     const force = +(18 + Math.random() * 22 - dist * 8).toFixed(1);
     const speed = +(4.5 + Math.random() * 5 - dist * 1.5).toFixed(1);
-    const accScore = mode === "Accuracy" ? Math.round((1 - Math.min(dist, 1)) * 100) : null;
+
+    // Accuracy score: 4 centre cells = 100%, outer corner = 0%, linear in between
+    let accScore = null;
+    if (mode === "Accuracy") {
+      const MAX_DIST_H = Math.sqrt(cx * cx + cy * cy);
+      const BULL_DIST  = Math.sqrt(0.5 * 0.5 + 0.5 * 0.5);
+      const rawD       = Math.sqrt((col - cx) ** 2 + (row - cy) ** 2);
+      const normDist   = rawD <= BULL_DIST ? 0 : Math.min(1, (rawD - BULL_DIST) / (MAX_DIST_H - BULL_DIST));
+      accScore = Math.round((1 - normDist) * 100);
+    }
+
+    const now = Date.now();
+    const iei = lastHitAt.current == null ? null : now - lastHitAt.current;
+    lastHitAt.current = now;
+    const si = strengthIndex(force, iei);
 
     const xPct = ((col + 0.5) / COLS) * 100;
     const yPct = ((row + 0.5) / ROWS) * 100;
     const rid = ++rippleIdRef.current;
     setRipples(r => [...r, { id: rid, x: xPct, y: yPct, color: MODE_META[mode].color }]);
     setImpacts(prev => {
-      const next = [{ cellIndex, force, speed, accScore, ts: Date.now() }, ...prev].slice(0, 3);
+      const next = [{ cellIndex, force, speed, accScore, si, ts: now }, ...prev].slice(0, 3);
       return next;
     });
     setSessionStats(s => {
-      const newHits = s.hits + 1;
-      const newAvg = +((s.avgForce * s.hits + force) / newHits).toFixed(1);
-      const newMax = Math.max(s.maxForce, force);
-      const newAcc = mode === "Accuracy"
+      const newHits  = s.hits + 1;
+      const newAvg   = Math.round((s.avgIndex * s.hits + si) / newHits);
+      const newPeak  = Math.max(s.peakIndex, si);
+      const newAcc   = mode === "Accuracy"
         ? +((( (s.accuracy || 0) * s.hits + accScore) / newHits)).toFixed(0)
         : null;
-      return { hits: newHits, avgForce: newAvg, maxForce: newMax, accuracy: newAcc };
+      return { hits: newHits, avgIndex: newAvg, peakIndex: newPeak, accuracy: newAcc };
     });
   }, [mode, rxPhase]);
 
@@ -827,12 +873,12 @@ export default function HitSimulator() {
                     <span className="ts-sim-statVal" style={{ color: accentColor }}>{sessionStats.hits}</span>
                   </div>
                   <div className="ts-sim-stat">
-                    <span className="ts-sim-statLabel">Avg Force</span>
-                    <span className="ts-sim-statVal">{sessionStats.avgForce || "—"}<span style={{ fontSize: 10, fontWeight: 500, color: "rgba(255,255,255,0.4)" }}>{sessionStats.avgForce ? " lb" : ""}</span></span>
+                    <span className="ts-sim-statLabel">Avg Index</span>
+                    <span className="ts-sim-statVal">{sessionStats.avgIndex || "—"}</span>
                   </div>
                   <div className="ts-sim-stat">
-                    <span className="ts-sim-statLabel">Peak</span>
-                    <span className="ts-sim-statVal">{sessionStats.maxForce || "—"}<span style={{ fontSize: 10, fontWeight: 500, color: "rgba(255,255,255,0.4)" }}>{sessionStats.maxForce ? " lb" : ""}</span></span>
+                    <span className="ts-sim-statLabel">Peak Index</span>
+                    <span className="ts-sim-statVal">{sessionStats.peakIndex || "—"}</span>
                   </div>
                   {mode === "Accuracy" && (
                     <div className="ts-sim-stat">
@@ -867,9 +913,9 @@ export default function HitSimulator() {
                 <div className="ts-sim-feedTitle">Impact Feed</div>
                 {impacts.map((imp, idx) => (
                   <div key={imp.ts + idx} className="ts-sim-feedItem">
-                    <span className="ts-sim-feedLabel">{mode === "Accuracy" ? `Score` : `Force`}</span>
+                    <span className="ts-sim-feedLabel">{mode === "Accuracy" ? `Score` : `Strength Index`}</span>
                     <span className="ts-sim-feedVal" style={{ color: accentColor }}>
-                      {mode === "Accuracy" ? `${imp.accScore}%` : `${imp.force} lb`}
+                      {mode === "Accuracy" ? `${imp.accScore}%` : imp.si}
                     </span>
                   </div>
                 ))}

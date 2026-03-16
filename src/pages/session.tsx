@@ -28,9 +28,12 @@ function getCharUuids() {
   };
 }
 
-const NUM_ROWS    = 12;
-const NUM_COLS    = 8;
-const FADE_TTL_MS = 400;
+const NUM_ROWS       = 12;
+const NUM_COLS       = 8;
+const FADE_TTL_MS    = 400;
+// Mirrors ESP32 SCAN_PERIOD_MS — used as a duration floor for single-frame events
+// where t_start == t_end (contact resolved and released within one scan cycle).
+const SCAN_PERIOD_MS = 37;
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
@@ -146,13 +149,23 @@ type Athlete = {
   core_team_id: string;
 };
 
+// Enriched hit tuple from ESP32 firmware (scan_frame_tracked)
+// [row, col, mv_int, t_first_ms, t_peak_ms, v_peak_mv, is_new]
+//   mv_int     — current voltage reading × 1000 (integer millivolts, this frame)
+//   t_first_ms — ESP32 uptime when this cell first crossed the threshold
+//   t_peak_ms  — ESP32 uptime when the highest voltage was recorded for this cell
+//   v_peak_mv  — highest mv seen since the cell became active
+//   is_new     — 1 on the very first frame for this cell, 0 thereafter
+type RichHit = [number, number, number, number, number, number, number];
+
 // One raw BLE frame — maps to one row in `events`
 type BleFrame = {
-  event_id: string;                          // e.g. "ses_…_e00042"
-  t_device_ms: number;                       // ESP32 device uptime ms (`t` field)
-  epoch_ms: number;                          // wall-clock ms when received
-  hits: Array<[number, number, number]>;     // [row, col, mv]
-  raw: object;                               // original parsed JSON from ESP32
+  event_id:         string;                      // e.g. "ses_…_e00042"
+  t_device_ms:      number;                      // ESP32 device uptime ms (`t` field — current frame)
+  epoch_ms:         number;                      // wall-clock ms when received
+  hits:             RichHit[];                   // [row, col, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
+  raw:              object;                      // original parsed JSON from ESP32
+  reaction_time_ms: number | null;               // signal-to-impact ms (reaction mode only)
 };
 
 type CellState = { mv: number; ts: number };
@@ -248,7 +261,7 @@ function statSummary(vals: number[]): { mean: number; min: number; max: number; 
   return { mean: +mean.toFixed(3), min: +min.toFixed(3), max: +max.toFixed(3), std: +std.toFixed(3) };
 }
 
-function eventAngleDeg(hits: Array<[number, number, number]>): number | null {
+function eventAngleDeg(hits: RichHit[]): number | null {
   if (!hits.length) return null;
   // Centroid of all hit cells in this frame (weighted by mv)
   const totalMv = hits.reduce((s, [,, mv]) => s + mv, 0);
@@ -272,6 +285,41 @@ function strengthIndex(iei: number | null, peakMv: number): number {
   const voltNorm = Math.max(0, Math.min(1, peakMv / 3300));
 
   return Math.round((speedNorm * 0.4 + voltNorm * 0.6) * 1000);
+}
+
+function impulseIndex(si: number, cellCount: number): number {
+  // Impulse = area effect × strength.
+  // A large spread of cells with a high SI scores highest;
+  // a pinpoint hit (even with high SI) scores lower.
+  //   areaNorm  = cells contacted / total grid cells (0–1)
+  //   siNorm    = strength index / 1000            (0–1)
+  //   result    = areaNorm × siNorm × 1000         (0–1000)
+  const areaNorm = Math.min(1, cellCount / (NUM_ROWS * NUM_COLS));
+  const siNorm   = si / 1000;
+  return Math.round(areaNorm * siNorm * 1000);
+}
+
+function accuracyScore(hits: RichHit[]): number | null {
+  // Only meaningful in accuracy mode — returns null for other modes.
+  // Score 0–100: the mv-weighted centroid distance from the grid centre,
+  // normalised so the 4 centre cells = 100 and the outer corners = 0.
+  // Mirrors the hitSimulator.jsx bullseye logic exactly.
+  if (!hits.length) return null;
+  const cx = (NUM_COLS - 1) / 2;  // 3.5 for 8-col grid
+  const cy = (NUM_ROWS - 1) / 2;  // 5.5 for 12-row grid
+  const MAX_DIST    = Math.sqrt(cx * cx + cy * cy);
+  const BULL_DIST   = Math.sqrt(0.5 * 0.5 + 0.5 * 0.5); // radius of 2×2 bullseye ≈ 0.707
+
+  // mv-weighted centroid
+  const totalMv = hits.reduce((s, [,, mv]) => s + mv, 0);
+  const cR = hits.reduce((s, [r,, mv]) => s + r * mv, 0) / totalMv;
+  const cC = hits.reduce((s, [, c, mv]) => s + c * mv, 0) / totalMv;
+  const rawDist = Math.sqrt((cC - cx) ** 2 + (cR - cy) ** 2);
+
+  const normDist = rawDist <= BULL_DIST
+    ? 0
+    : Math.min(1, (rawDist - BULL_DIST) / (MAX_DIST - BULL_DIST));
+  return Math.round((1 - normDist) * 100);
 }
 
 async function uploadSession(opts: {
@@ -328,34 +376,89 @@ async function uploadSession(opts: {
   // ── 2. events — enriched ──────────────────────────────────────────────────
   // Pre-compute per-event derived values in one pass
   type EventDerived = {
-    iei:    number | null;   // ms since previous event (wall-clock)
-    angle:  number | null;   // degrees from grid center
-    si:     number;          // strength index 0–1000
-    peakMv: number;
+    iei:       number | null;   // ms since previous event (wall-clock)
+    angle:     number | null;   // degrees from grid center
+    si:        number;          // strength index 0–1000
+    ii:        number;          // impulse index 0–1000
+    accuracy:  number | null;   // accuracy score 0–100 (accuracy mode only)
+    cellCount: number;          // total cells contacted this event
+    peakMv:    number;
   };
 
   const derived: EventDerived[] = frames.map((f, i) => {
-    const iei    = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
-    const peakMv = f.hits.reduce((m, [,, mv]) => Math.max(m, mv), 0);
+    const iei       = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
+    // Use v_peak_mv (index 5) — the highest voltage this cell recorded while active.
+    // This is always >= the current-frame mv, which may be on the decay slope.
+    const peakMv    = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
+    const cellCount = f.hits.length;
+    const si        = strengthIndex(iei, peakMv);
     return {
       iei,
-      angle:  eventAngleDeg(f.hits),
-      si:     strengthIndex(iei, peakMv),
+      angle:    eventAngleDeg(f.hits),
+      si,
+      ii:       impulseIndex(si, cellCount),
+      accuracy: mode === "accuracy" ? accuracyScore(f.hits) : null,
+      cellCount,
       peakMv,
     };
   });
 
-  const eventRows = frames.map((f, i) => ({
-    event_id:    f.event_id,
-    session_id:  sessionId,
-    t_start_ms:  f.t_device_ms,
-    t_end_ms:    f.t_device_ms,
-    duration_ms: 0,           // firmware doesn't yet send per-strike duration
-    iei_prev_ms: derived[i].iei,
-    angle_deg:   derived[i].angle,
-    quality:     { strength_index: derived[i].si },
-    raw:         f.raw,
-  }));
+  const eventRows = frames.map((f, i) => {
+    const richHits = f.hits;
+
+    // t_start = earliest onset across all cells in this event
+    // (cells in the same frame can have different t_first values if they
+    //  became active on different prior scans)
+    const tStart = richHits.length
+      ? Math.min(...richHits.map(h => h[3]))
+      : f.t_device_ms;
+
+    // t_end = the current frame timestamp — clamped to be >= tStart to guard
+    // against the 1ms clock skew that can make t_device_ms arrive 1ms before
+    // a cell's t_first (fixed in firmware but defensive here too).
+    const tEnd = Math.max(f.t_device_ms, tStart);
+
+    // duration = full contact window from first cell onset to last active scan.
+    // Single-frame events (all cells new, t_start == t_end) get a floor of
+    // SCAN_PERIOD_MS — the contact lasted at most one scan cycle.
+    const rawDuration = tEnd - tStart;
+    const duration    = rawDuration > 0 ? rawDuration : SCAN_PERIOD_MS;
+
+    // Rise time: from the event onset to when the loudest cell peaked.
+    // We use v_peak_mv (index 5) to find the dominant cell, then read
+    // its t_peak_ms (index 4).
+    const peakHit = richHits.reduce(
+      (best, h) => h[5] > best[5] ? h : best,
+      richHits[0]
+    );
+    const riseTime  = Math.max(0, peakHit[4] - tStart);   // t_peak − t_start
+
+    // Decay time: lower-bound from peak to last active frame.
+    // The true end-of-decay is one frame after the cell vanishes below threshold
+    // (~37 ms underestimate at 27 Hz) — close enough for biomechanical analysis.
+    const decayTime = Math.max(0, tEnd - peakHit[4]);     // t_end − t_peak
+
+    return {
+      event_id:        f.event_id,
+      session_id:      sessionId,
+      t_start_ms:      tStart,
+      t_end_ms:        tEnd,
+      duration_ms:     duration,
+      rise_time_ms:    riseTime,
+      decay_time_ms:   decayTime,
+      iei_prev_ms:     derived[i].iei,
+      angle_deg:       derived[i].angle,
+      strength_index:  { value: derived[i].si },   // 0–1000 composite score
+      impulse_index:   derived[i].ii,              // 0–1000 area × strength score
+      accuracy:        derived[i].accuracy != null
+                         ? { score: derived[i].accuracy }
+                         : null,                   // accuracy mode only
+      temporal:        { cell_count: derived[i].cellCount }, // cells contacted this event
+      quality:          null,                      // strength_index moved to its own column
+      reaction_time_ms: f.reaction_time_ms ?? null, // signal-to-impact ms (reaction mode only)
+      raw:              f.raw,
+    };
+  });
 
   for (let i = 0; i < eventRows.length; i += CHUNK) {
     const { error } = await supabase.from("events").insert(eventRows.slice(i, i + CHUNK));
@@ -365,15 +468,16 @@ async function uploadSession(opts: {
   // ── 3. event_cells ─────────────────────────────────────────────────────────
   const cellRows: object[] = [];
   for (const f of frames) {
-    for (const [r, c, mv] of f.hits) {
+    for (const [r, c, mv, tFirst, tPeak, vPeak] of f.hits) {
       cellRows.push({
         event_id:   f.event_id,
         r, c,
         samples:    1,
-        v_min:      mv / 1000,
-        p_max_kpa:  null,   // requires force calibration
-        t_first_ms: f.t_device_ms,
-        t_last_ms:  f.t_device_ms,
+        v_min:      mv / 1000,         // voltage at this specific frame (may be on decay)
+        v_peak:     vPeak / 1000,      // highest voltage this cell recorded while active
+        t_first_ms: tFirst,                              // cell onset (ESP32 uptime ms)
+        t_peak_ms:  Math.max(tPeak,  tFirst),            // peak  — clamped >= onset
+        t_last_ms:  Math.max(f.t_device_ms, tFirst),     // last  — clamped >= onset (guards against 1ms clock skew)
       });
     }
   }
@@ -395,12 +499,19 @@ async function uploadSession(opts: {
   // Strength index across all events
   const siVals = derived.map(d => d.si);
 
-  // Heatmap: cumulative mv per cell
+  // Per-event timing distributions — collected from eventRows which already have
+  // rise/decay/duration computed. Used to populate session_summaries aggregate columns.
+  const durationVals = eventRows.map(e => e.duration_ms).filter(v => v > 0);
+  const riseVals     = eventRows.map(e => e.rise_time_ms).filter((v): v is number => v !== null && v > 0);
+  const decayVals    = eventRows.map(e => e.decay_time_ms).filter((v): v is number => v !== null && v > 0);
+
+  // Heatmap: cumulative v_peak per cell (h[5]) — uses true peak voltage, not a
+  // potentially decaying current-frame reading.
   const heatmap: Record<string, number> = {};
   for (const f of frames) {
-    for (const [r, c, mv] of f.hits) {
-      const k = `${r},${c}`;
-      heatmap[k] = (heatmap[k] ?? 0) + mv;
+    for (const h of f.hits) {
+      const k = `${h[0]},${h[1]}`;
+      heatmap[k] = (heatmap[k] ?? 0) + h[5];  // h[5] = v_peak_mv
     }
   }
 
@@ -412,16 +523,18 @@ async function uploadSession(opts: {
   }
   const [topR, topC] = topCell ? topCell.split(",").map(Number) : [null, null];
 
-  // Center of mass — mv-weighted centroid across all cell hits
+  // Center of mass — v_peak-weighted centroid across all cell hits
+  // Uses h[5] (v_peak_mv) so weighting is consistent with heatmap and strength scoring.
   const allHits = frames.flatMap(f => f.hits);
   let comR = 0, comC = 0, comW = 0;
-  for (const [r, c, mv] of allHits) { comR += r * mv; comC += c * mv; comW += mv; }
+  for (const h of allHits) { comR += h[0] * h[5]; comC += h[1] * h[5]; comW += h[5]; }
   const centerOfMass = comW > 0
     ? { r: +(comR / comW).toFixed(2), c: +(comC / comW).toFixed(2) }
     : null;
 
-  // Peak mv across all cells
-  const allMv  = allHits.map(h => h[2]);
+  // Peak mv across all cells — use v_peak_mv (h[5]) so stats reflect true peak force,
+  // not a current-frame reading that may be on the decay slope.
+  const allMv  = allHits.map(h => h[5]);
   const peakMv = allMv.length ? Math.max(...allMv) : 0;
   const avgMv  = allMv.length ? allMv.reduce((a, b) => a + b, 0) / allMv.length : 0;
 
@@ -437,12 +550,17 @@ async function uploadSession(opts: {
       }
     : null;
 
-  // Reaction stats (from live refs passed in)
+  // Reaction stats (from live refs passed in + per-event values on frames)
+  const rxVals = frames
+    .map(f => f.reaction_time_ms)
+    .filter((v): v is number => v !== null);
   const reactionQuality = mode === "reaction"
     ? {
-        best_reaction_ms: rxBestMs,
-        avg_reaction_ms:  rxAvgMs,
-        attempts:         rxAttempts,
+        best_reaction_ms:  rxBestMs,
+        avg_reaction_ms:   rxAvgMs,
+        attempts:          rxAttempts,
+        // Full distribution so dashboard can show median, std, all reps
+        reaction_time_ms:  rxVals.length ? statSummary(rxVals) : null,
       }
     : null;
 
@@ -489,6 +607,13 @@ async function uploadSession(opts: {
     most_contacted_cell_rc: topR !== null ? { r: topR, c: topC } : null,
     center_of_mass_mm:       centerOfMass,   // in grid units until mm/cell calibrated
     date_of_record:          new Date().toISOString(),
+
+    // Timing distributions across all events
+    duration_ms_stats: durationVals.length ? statSummary(durationVals) : null,
+    impulse_stats: {
+      rise_time_ms:  riseVals.length  ? statSummary(riseVals)  : null,
+      decay_time_ms: decayVals.length ? statSummary(decayVals) : null,
+    },
   });
   if (sumErr) throw new Error(`session_summaries: ${sumErr.message}`);
 }
@@ -641,6 +766,8 @@ export default function Session() {
   const sessionModeRef  = useRef<SessionMode>("standard");
   const rxPhaseRef      = useRef<string>("idle");
   const rxAttemptsRef   = useRef(0);
+  // Carries the per-event reaction time from the signal block into the frame push
+  const pendingRxMsRef  = useRef<number | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { sessionModeRef.current = sessionMode; }, [sessionMode]);
@@ -688,7 +815,8 @@ export default function Session() {
     let obj: any;
     try { obj = JSON.parse(maybeJson); } catch { return; }
 
-    const hits: Array<[number, number, number]> = obj.hits ?? [];
+    // ESP32 now sends 7-element hit arrays: [r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
+    const hits: RichHit[] = obj.hits ?? [];
     if (!hits.length) return;
 
     const epochMs = Date.now();
@@ -707,6 +835,7 @@ export default function Session() {
       }
       if (phase === "signal" && rxSignalAt.current !== null) {
         const rt = Math.round(performance.now() - rxSignalAt.current);
+        pendingRxMsRef.current = rt;            // carry into frame push below
         setRxTime(rt);
         setRxPhase("result");
         rxPhaseRef.current = "result";
@@ -740,12 +869,14 @@ export default function Session() {
     if (captureRef.current) {
       const idx = frameIndex.current++;
       framesRef.current.push({
-        event_id:    `${sessionIdRef.current}_e${String(idx).padStart(5, "0")}`,
-        t_device_ms: frameT,
-        epoch_ms:    epochMs,
+        event_id:         `${sessionIdRef.current}_e${String(idx).padStart(5, "0")}`,
+        t_device_ms:      frameT,
+        epoch_ms:         epochMs,
         hits,
-        raw:         obj,
+        raw:              obj,
+        reaction_time_ms: pendingRxMsRef.current,   // null for non-reaction or early events
       });
+      pendingRxMsRef.current = null;                // consumed — reset for next frame
     }
 
     // Update grid (display)
@@ -776,7 +907,7 @@ export default function Session() {
     }));
     setFeed(prev => [...newItems, ...prev].slice(0, 60));
 
-    setPeakMv(prev => Math.max(prev, ...hits.map(h => h[2])));
+    setPeakMv(prev => Math.max(prev, ...hits.map(h => h[5])));  // h[5] = v_peak_mv
   }, []);
 
   // ── BLE connect / disconnect ──────────────────────────────────────────────────

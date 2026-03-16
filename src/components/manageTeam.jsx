@@ -189,6 +189,8 @@ export default function ManageTeamModal({ open, onClose, team = null, onSaved, o
   // ── Create-mode form ────────────────────────────────────────────────────────
   const [name, setName] = useState("");
   const [teamType, setTeamType] = useState("sub");
+  const [parentTeamId, setParentTeamId] = useState("");
+  const [coreTeams, setCoreTeams] = useState([]);
 
   // ── Roster state ────────────────────────────────────────────────────────────
   const [roster, setRoster] = useState([]);          // current members: [{ member_id, athlete }]
@@ -232,6 +234,21 @@ export default function ManageTeamModal({ open, onClose, team = null, onSaved, o
       } else {
         setName("");
         setTeamType("sub");
+        setParentTeamId("");
+      }
+
+      // Load core teams so sub-teams can pick a parent
+      if (!isEdit) {
+        const { data: cores, error: cErr } = await supabase
+          .from("teams")
+          .select("id, name")
+          .eq("program_id", profile.program_id)
+          .eq("team_type", "core")
+          .order("name");
+
+        if (cErr) throw new Error("Could not load core teams.");
+        setCoreTeams(cores ?? []);
+        if (cores?.length > 0) setParentTeamId(cores[0].id);
       }
 
       // Load all athletes in program for the roster picker
@@ -335,17 +352,22 @@ export default function ManageTeamModal({ open, onClose, team = null, onSaved, o
     if (!userMeta) return setError("Profile not loaded — please wait.");
     if (teamType === "core" && !canCreateCore)
       return setError("Only admins can create core teams.");
+    if (teamType === "sub" && !parentTeamId)
+      return setError("Please select a parent core team for this sub-team.");
 
     setSaving(true);
     try {
+      const payload = {
+        program_id: userMeta.programId,
+        created_by: userMeta.userId,
+        name: name.trim(),
+        team_type: teamType,
+        ...(teamType === "sub" ? { parent_team_id: parentTeamId } : {}),
+      };
+
       const { data, error: iErr } = await supabase
         .from("teams")
-        .insert({
-          program_id: userMeta.programId,
-          created_by: userMeta.userId,
-          name: name.trim(),
-          team_type: teamType,
-        })
+        .insert(payload)
         .select()
         .single();
 
@@ -500,11 +522,35 @@ export default function ManageTeamModal({ open, onClose, team = null, onSaved, o
               label="Team Type"
               required
               value={teamType}
-              onChange={(e) => setTeamType(e.target.value)}
+              onChange={(e) => {
+                setTeamType(e.target.value);
+                // Reset parent when switching to core
+                if (e.target.value === "core") setParentTeamId("");
+                else if (coreTeams.length > 0) setParentTeamId(coreTeams[0].id);
+              }}
               disabled={!canCreateCore && teamType === "sub"}
             >
               {canCreateCore && <option value="core">Core</option>}
               <option value="sub">Sub</option>
+            </SelectField>
+          )}
+
+          {/* Parent team picker — only for sub teams in create mode */}
+          {!isEdit && teamType === "sub" && (
+            <SelectField
+              label="Parent Core Team"
+              required
+              value={parentTeamId}
+              onChange={(e) => setParentTeamId(e.target.value)}
+              disabled={coreTeams.length === 0}
+            >
+              {coreTeams.length === 0 ? (
+                <option value="">No core teams available</option>
+              ) : (
+                coreTeams.map((ct) => (
+                  <option key={ct.id} value={ct.id}>{ct.name}</option>
+                ))
+              )}
             </SelectField>
           )}
 

@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ProfileHeader, { Profile } from "../components/profileHeader";
 import CreateAthleteModal from "../components/createAthlete";
+import EditAthleteModal from "../components/editAthlete";
 import EditProfileModal from "../components/editProfile";
 import ProgramModal from "../components/program";
 import ManageTeamModal from "../components/manageTeam";
@@ -16,10 +17,25 @@ type RecentSession = {
   mode: string;
   athleteFirstName: string;
   athleteLastName: string;
+  athleteId: string | null;
 };
 
 type HeatmapCell = { r: number; c: number; intensity: number }; // intensity 0–1
-type ReplayEvent = { r: number; c: number; pressureKpa: number };
+
+// One event as fetched from the events table — groups all cells hit in that frame
+type ReplayCell  = { r: number; c: number; mv: number };
+type ReplayEvent = {
+  eventId:    string;
+  tMs:        number;          // offset from session start in ms (t_start_ms - t_zero)
+  cells:      ReplayCell[];
+  si:         number | null;   // strength_index.value
+  cellCount:  number;          // temporal.cell_count
+  impulse:    number | null;   // impulse_index
+  durationMs: number | null;   // duration_ms
+  riseMs:         number | null;   // rise_time_ms
+  angleDeg:       number | null;   // angle_deg
+  reactionTimeMs: number | null;   // reaction_time_ms (reaction mode only)
+};
 
 type SessionSummaryData = {
   mode: string;
@@ -62,7 +78,7 @@ function clamp(n: number, a: number, b: number) {
 
 
 type TabKey = "recent" | "insights" | "athletes";
-type MetricKey = "strength" | "reaction" | "accuracy";
+type MetricKey = "strength" | "reaction" | "accuracy" | "form";
 
 type LeaderRow =
   | {
@@ -96,6 +112,7 @@ export default function Dashboard() {
   // ---------- tabs ----------
   const [activeTab, setActiveTab] = useState<TabKey>("recent");
   const [showCreateAthlete, setShowCreateAthlete] = useState(false);
+  const [editAthleteTarget, setEditAthleteTarget] = useState<Athlete | null>(null);
   const [showCreateTeam, setShowCreateTeam] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [showEditProfile, setShowEditProfile] = useState(false);
@@ -184,7 +201,99 @@ export default function Dashboard() {
     fetchAthletes();
   }, [activeTab, programId]);
 
-  // ---------- teams ----------
+  // ---------- Athlete progress badges ----------
+  type AthleteProgress = {
+    trend:   "up" | "stable" | "down";
+    delta:   number;
+    metric:  "strength" | "accuracy" | "reaction";
+    unit:    string;
+    sessions: number;
+  };
+  const [athleteProgressMap, setAthleteProgressMap] = useState<Map<string, AthleteProgress>>(new Map());
+  const [athleteProgressLoading, setAthleteProgressLoading] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "athletes" || !programId || !supabase) return;
+
+    setAthleteProgressLoading(true);
+
+    (async () => {
+      try {
+        // Fetch all sessions across all three modes in one round-trip
+        const { data } = await supabase!
+          .from("session_summaries")
+          .select("athlete_id, date_of_record, mode, quality, peak_force_stats")
+          .eq("program_id", programId!)
+          .not("athlete_id", "is", null)
+          .order("date_of_record", { ascending: true });
+
+        if (!data) return;
+
+        // Group by athlete → mode → vals[]
+        type ModeVals = { strength: number[]; accuracy: number[]; reaction: number[] };
+        const byAthlete = new Map<string, ModeVals>();
+
+        for (const row of data as any[]) {
+          const id   = row.athlete_id;
+          const mode = (row.mode ?? "standard").toLowerCase();
+          if (!id) continue;
+
+          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [] });
+          const entry = byAthlete.get(id)!;
+
+          if (mode === "standard") {
+            const si = row.quality?.strength_index;
+            let val: number | null = null;
+            if (si?.max != null) val = Math.round(si.max);
+            else {
+              const pMv = row.peak_force_stats?.peak_mv ?? (row.peak_force_stats?.peak_v != null ? row.peak_force_stats.peak_v * 1000 : null);
+              if (pMv != null) val = Math.round((pMv / 3320) * 1000);
+            }
+            if (val != null) entry.strength.push(val);
+          } else if (mode === "accuracy") {
+            const pct = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+            if (pct != null) entry.accuracy.push(Math.round(Number(pct) * 10) / 10);
+          } else if (mode === "reaction") {
+            const rt = row.quality?.avg_reaction_ms ?? null;
+            if (rt != null) entry.reaction.push(Math.round(rt));
+          }
+        }
+
+        // Compute progress per athlete — pick metric with most sessions (≥4)
+        const progressMap = new Map<string, AthleteProgress>();
+
+        for (const [athleteId, modes] of byAthlete) {
+          // Pick the metric with the most sessions that has ≥4 data points
+          const candidates: { metric: "strength" | "accuracy" | "reaction"; vals: number[]; unit: string; lowerIsBetter: boolean }[] = [
+            { metric: "strength", vals: modes.strength, unit: "pts", lowerIsBetter: false },
+            { metric: "accuracy", vals: modes.accuracy, unit: "%",   lowerIsBetter: false },
+            { metric: "reaction", vals: modes.reaction, unit: "ms",  lowerIsBetter: true  },
+          ].filter(c => c.vals.length >= 4).sort((a, b) => b.vals.length - a.vals.length);
+
+          if (candidates.length === 0) continue;
+
+          const { metric, vals, unit, lowerIsBetter } = candidates[0];
+          const half  = Math.floor(vals.length / 2);
+          const early = vals.slice(0, half).reduce((s, v) => s + v, 0) / half;
+          const late  = vals.slice(-half).reduce((s, v)  => s + v, 0) / half;
+
+          // Positive delta always means improvement regardless of metric direction
+          const delta      = lowerIsBetter ? Math.round(early - late) : Math.round(late - early);
+          const absDelta   = Math.abs(delta);
+
+          // Threshold: >3% relative change = meaningful
+          const threshold  = Math.max(1, Math.round(early * 0.03));
+          const trend: AthleteProgress["trend"] = delta > threshold ? "up" : delta < -threshold ? "down" : "stable";
+
+          progressMap.set(athleteId, { trend, delta, metric, unit, sessions: vals.length });
+        }
+
+        setAthleteProgressMap(progressMap);
+      } finally {
+        setAthleteProgressLoading(false);
+      }
+    })();
+  }, [activeTab, programId]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsError, setTeamsError] = useState("");
@@ -284,10 +393,9 @@ export default function Dashboard() {
       try {
         let query = supabase!
           .from("session_summaries")
-          .select("session_id, date_of_record, mode, athletes(first_name, last_name)")
+          .select("session_id, date_of_record, mode, athlete_id, athletes(first_name, last_name)")
           .eq("program_id", programId!)
-          .order("date_of_record", { ascending: false })
-          .limit(10);
+          .order("date_of_record", { ascending: false });
 
         // Coaches are scoped to their core team; admins see the whole program
         if (userRole === "coach" && coreTeamId) {
@@ -304,6 +412,7 @@ export default function Dashboard() {
             mode: row.mode ?? "Standard",
             athleteFirstName: row.athletes?.first_name ?? "—",
             athleteLastName: row.athletes?.last_name ?? "",
+            athleteId: row.athlete_id ?? null,
           }))
         );
       } catch (err: any) {
@@ -323,19 +432,32 @@ export default function Dashboard() {
   const [heatmapLoading, setHeatmapLoading] = useState(false);
   const [sessionSummary, setSessionSummary] = useState<SessionSummaryData | null>(null);
 
-  // Replay state
-  const [replayIndex, setReplayIndex] = useState(0);
-  const [isReplaying, setIsReplaying] = useState(false);
-  const [replaySpeed, setReplaySpeed] = useState(120); // ms per event
-  const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ── Replay state ─────────────────────────────────────────────────────────────
+  // replayTimeMs  — current playhead position in session-time ms (0 = session start)
+  // activeEventIdx — index of the most recently fired event (-1 = none yet)
+  const [replayTimeMs,   setReplayTimeMs]   = useState(0);
+  const [activeEventIdx, setActiveEventIdx] = useState(-1);
+  const [isReplaying,    setIsReplaying]    = useState(false);
+  const [replaySpeed,    setReplaySpeed]    = useState(1);   // 0.5 | 1 | 2
+  // Pending timeouts — all cancelled on pause / seek / reset
+  const replayTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  // Wall-clock ms when the current play run started, and the session-time offset it started from
+  const replayStartWallRef    = useRef(0);
+  const replayStartSessionRef = useRef(0);
 
   useEffect(() => {
     if (!selectedSessionId || !supabase) return;
 
     setHeatmapCells([]);
     setReplayEvents([]);
-    setReplayIndex(0);
+    setReplayTimeMs(0);
+    setActiveEventIdx(-1);
     setIsReplaying(false);
+    setFiredEvents([]);
+    setHeatmapRipples([]);
+    // Cancel any in-flight replay timeouts (cancelPendingTimeouts defined below)
+    replayTimeoutsRef.current.forEach(clearTimeout);
+    replayTimeoutsRef.current = [];
     setSessionSummary(null);
 
     async function fetchSessionHeatmap() {
@@ -366,7 +488,6 @@ export default function Dashboard() {
 
           if (summary.heatmap) {
             const raw = summary.heatmap;
-            // Support both array [{r,c,value}] and object {"r-c": value} formats
             const cells: HeatmapCell[] = [];
             if (Array.isArray(raw)) {
               const maxV = Math.max(1, ...raw.map((x: any) => x.value ?? x.intensity ?? 1));
@@ -385,21 +506,32 @@ export default function Dashboard() {
           }
         }
 
-        // 2. Fetch ordered events + their cells for hit-by-hit replay
+        // 2. Fetch ordered events with all cells — grouped per event for true-time replay
         const { data: events } = await supabase!
           .from("events")
-          .select("event_id, t_start_ms, event_cells(r, c, p_max_kpa)")
+          .select("event_id, t_start_ms, strength_index, temporal, impulse_index, rise_time_ms, duration_ms, angle_deg, reaction_time_ms, event_cells(r, c, v_min)")
           .eq("session_id", selectedSessionId!)
           .order("t_start_ms", { ascending: true });
 
-        if (events) {
-          const hits: ReplayEvent[] = [];
-          for (const ev of events as any[]) {
-            for (const cell of ev.event_cells ?? []) {
-              hits.push({ r: cell.r, c: cell.c, pressureKpa: cell.p_max_kpa ?? 0 });
-            }
-          }
-          setReplayEvents(hits);
+        if (events && events.length > 0) {
+          const tZero: number = (events[0] as any).t_start_ms ?? 0;
+          const replayEvs: ReplayEvent[] = (events as any[]).map(ev => ({
+            eventId:    ev.event_id,
+            tMs:        (ev.t_start_ms ?? tZero) - tZero,
+            cells:      (ev.event_cells ?? []).map((c: any) => ({
+              r:  c.r,
+              c:  c.c,
+              mv: Math.round((c.v_min ?? 0) * 1000),
+            })),
+            si:         ev.strength_index?.value ?? null,
+            cellCount:  ev.temporal?.cell_count  ?? (ev.event_cells?.length ?? 0),
+            impulse:    ev.impulse_index   != null ? Math.round(Number(ev.impulse_index) * 10) / 10 : null,
+            durationMs: ev.duration_ms     != null ? Math.round(Number(ev.duration_ms))             : null,
+            riseMs:     ev.rise_time_ms    != null ? Math.round(Number(ev.rise_time_ms))             : null,
+            angleDeg:       ev.angle_deg        != null ? Math.round(Number(ev.angle_deg))                : null,
+            reactionTimeMs: ev.reaction_time_ms  != null ? Math.round(Number(ev.reaction_time_ms))         : null,
+          }));
+          setReplayEvents(replayEvs);
         }
       } finally {
         setHeatmapLoading(false);
@@ -409,60 +541,130 @@ export default function Dashboard() {
     fetchSessionHeatmap();
   }, [selectedSessionId]);
 
-  // Drive the replay interval
-  useEffect(() => {
-    if (isReplaying && replayIndex < replayEvents.length) {
-      replayTimerRef.current = setInterval(() => {
-        setReplayIndex((i) => {
-          const next = i + 1;
-          if (next >= replayEvents.length) setIsReplaying(false);
-          return next;
-        });
-      }, replaySpeed);
-    }
-    return () => { if (replayTimerRef.current) clearInterval(replayTimerRef.current); };
-  }, [isReplaying, replaySpeed, replayEvents.length]);
+  // ── Replay engine — true-time, setTimeout-based ─────────────────────────────
 
-  // Build a per-cell intensity map from replayed hits so far
-  const replayHeatmap = useMemo<Map<string, number>>(() => {
-    const map = new Map<string, number>();
-    for (let i = 0; i < replayIndex; i++) {
-      const ev = replayEvents[i];
-      if (!ev) continue;
-      const key = `${ev.r}-${ev.c}`;
-      map.set(key, (map.get(key) ?? 0) + 1);
-    }
-    return map;
-  }, [replayIndex, replayEvents]);
-
-  const maxReplayHits = useMemo(() => Math.max(1, ...Array.from(replayHeatmap.values())), [replayHeatmap]);
-
-  function startReplay() {
-    setReplayIndex(0);
-    setIsReplaying(true);
-    setHeatmapRipples([]);
-  }
-  function pauseReplay() { setIsReplaying(false); }
-  function resumeReplay() { if (replayIndex < replayEvents.length) setIsReplaying(true); }
-  function resetReplay() { setIsReplaying(false); setReplayIndex(0); setHeatmapRipples([]); }
-
-  // Ripples for heatmap replay
   const [heatmapRipples, setHeatmapRipples] = useState<Array<{ id: number; r: number; c: number; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
-  // Spawn a ripple whenever the replay advances
-  useEffect(() => {
-    if (replayIndex === 0 || replayIndex > replayEvents.length) return;
-    const ev = replayEvents[replayIndex - 1];
-    if (!ev) return;
-    const mode = (sessionSummary?.mode ?? "standard").toLowerCase();
-    const accent = mode === "accuracy" ? "#00dcff" : mode === "reaction" ? "#ffcc00" : "#b400ff";
-    const color = ev.pressureKpa > 80 ? accent : ev.pressureKpa > 30 ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.5)";
-    const id = ++rippleIdRef.current;
-    setHeatmapRipples(prev => [...prev, { id, r: ev.r, c: ev.c, color }]);
-    const t = setTimeout(() => setHeatmapRipples(prev => prev.filter(x => x.id !== id)), 900);
-    return () => clearTimeout(t);
-  }, [replayIndex, sessionSummary]);
+  // Snapshot of fired events used to build the cumulative heatmap
+  const [firedEvents, setFiredEvents] = useState<ReplayEvent[]>([]);
+
+  function cancelPendingTimeouts() {
+    replayTimeoutsRef.current.forEach(clearTimeout);
+    replayTimeoutsRef.current = [];
+  }
+
+  // Schedule all events from startIdx onward, with timing relative to startSessionMs
+  function scheduleFrom(startIdx: number, startSessionMs: number, speed: number) {
+    cancelPendingTimeouts();
+    if (startIdx >= replayEvents.length) return;
+
+    const wallNow = performance.now();
+    replayStartWallRef.current    = wallNow;
+    replayStartSessionRef.current = startSessionMs;
+
+    const totalMs = sessionSummary?.session_duration_ms ?? replayEvents[replayEvents.length - 1]?.tMs ?? 1;
+    const mode    = (sessionSummary?.mode ?? "standard").toLowerCase();
+    const accent  = mode === "accuracy" ? "#00dcff" : mode === "reaction" ? "#ffcc00" : "#b400ff";
+
+    replayEvents.slice(startIdx).forEach((ev, offset) => {
+      const idx     = startIdx + offset;
+      const delay   = Math.max(0, (ev.tMs - startSessionMs) / speed);
+
+      const tid = setTimeout(() => {
+        // Update playhead time
+        setReplayTimeMs(ev.tMs);
+        setActiveEventIdx(idx);
+
+        // Add to fired events for cumulative heatmap
+        setFiredEvents(prev => [...prev, ev]);
+
+        // Spawn ripples for each cell in this event
+        ev.cells.forEach(cell => {
+          const intensity = Math.min(1, cell.mv / 3300);
+          const color = intensity > 0.5 ? accent
+                      : intensity > 0.2 ? "rgba(255,255,255,0.75)"
+                      : "rgba(255,255,255,0.5)";
+          const id = ++rippleIdRef.current;
+          setHeatmapRipples(prev => [...prev, { id, r: cell.r, c: cell.c, color }]);
+          setTimeout(() => setHeatmapRipples(prev => prev.filter(x => x.id !== id)), 900);
+        });
+
+        // Last event — stop replaying, advance playhead to end
+        if (idx === replayEvents.length - 1) {
+          setIsReplaying(false);
+          setReplayTimeMs(totalMs);
+        }
+      }, delay);
+
+      replayTimeoutsRef.current.push(tid);
+    });
+  }
+
+  function startReplay() {
+    setFiredEvents([]);
+    setHeatmapRipples([]);
+    setReplayTimeMs(0);
+    setActiveEventIdx(-1);
+    setIsReplaying(true);
+    scheduleFrom(0, 0, replaySpeed);
+  }
+
+  function pauseReplay() {
+    cancelPendingTimeouts();
+    setIsReplaying(false);
+  }
+
+  function resumeReplay() {
+    if (activeEventIdx >= replayEvents.length - 1) return;
+    const nextIdx = activeEventIdx + 1;
+    setIsReplaying(true);
+    scheduleFrom(nextIdx, replayEvents[nextIdx]?.tMs ?? replayTimeMs, replaySpeed);
+  }
+
+  function resetReplay() {
+    cancelPendingTimeouts();
+    setIsReplaying(false);
+    setReplayTimeMs(0);
+    setActiveEventIdx(-1);
+    setFiredEvents([]);
+    setHeatmapRipples([]);
+  }
+
+  // Seek to a specific session-time position (ms) — fires all events up to that
+  // point instantly, then schedules the rest from there
+  function seekTo(targetMs: number) {
+    cancelPendingTimeouts();
+    const upTo  = replayEvents.filter(ev => ev.tMs <= targetMs);
+    const after = replayEvents.findIndex(ev => ev.tMs > targetMs);
+    setFiredEvents(upTo);
+    setReplayTimeMs(targetMs);
+    setActiveEventIdx(upTo.length - 1);
+    setHeatmapRipples([]);
+    if (isReplaying && after !== -1) {
+      scheduleFrom(after, targetMs, replaySpeed);
+    }
+  }
+
+  // Build cumulative per-cell hit map from all fired events
+  const replayHeatmap = useMemo<Map<string, number>>(() => {
+    const map = new Map<string, number>();
+    for (const ev of firedEvents) {
+      for (const cell of ev.cells) {
+        const key = `${cell.r}-${cell.c}`;
+        map.set(key, (map.get(key) ?? 0) + 1);
+      }
+    }
+    return map;
+  }, [firedEvents]);
+
+  const maxReplayHits = useMemo(
+    () => Math.max(1, ...Array.from(replayHeatmap.values())),
+    [replayHeatmap]
+  );
+
+  // Derived: most recent event's cells for "just hit" highlight
+  const activeEvent = activeEventIdx >= 0 ? replayEvents[activeEventIdx] : null;
 
   // ── Mode-aware accent colors ──────────────────────────────────────────────────
   const modeAccent = useMemo(() => {
@@ -550,14 +752,21 @@ export default function Dashboard() {
     }
 
     if (mode === "reaction") {
-      const bestRt    = s.iei_ms?.min ?? s.quality?.best_reaction_ms;
-      const avgRt     = s.iei_ms?.mean ?? s.quality?.avg_reaction_ms;
+      // Read true reaction times from quality — these are signal-to-impact ms
+      // recorded live during the session. iei_ms is inter-event interval (hit-to-hit
+      // cadence) and must NOT be used here — it reads much shorter than a real
+      // reaction time because it measures the gap between consecutive hits, not
+      // the gap from the "HIT!" signal to the strike.
+      const bestRt   = s.quality?.best_reaction_ms;
+      const avgRt    = s.quality?.avg_reaction_ms;
+      const attempts = s.quality?.attempts;
       const impactDur = s.duration_ms_stats?.mean ?? s.duration_ms_stats?.avg;
       return [
         totalEvents,
         duration,
         { label: "Best Reaction", value: fmtNum(bestRt, 0, " ms"), accent: true },
         { label: "Avg Reaction",  value: fmtNum(avgRt, 0, " ms") },
+        { label: "Attempts",      value: attempts != null ? String(attempts) : "—" },
         { label: "Impact Duration", value: fmtNum(impactDur, 0, " ms") },
         location,
         { label: "Angle",         value: fmtAngle(s.angles_deg) },
@@ -566,16 +775,15 @@ export default function Dashboard() {
     }
 
     // standard / default
-    const peakForce   = s.peak_force_stats?.max ?? s.peak_force_stats?.peak;
-    const avgForce    = s.peak_force_stats?.mean ?? s.peak_force_stats?.avg;
-    const peakImpulse = s.impulse_stats?.max ?? s.impulse_stats?.peak;
+    const siStats   = s.quality?.strength_index;
+    const peakIndex = siStats?.max  ?? null;
+    const avgIndex  = siStats?.mean ?? null;
     return [
       totalEvents,
       duration,
-      { label: "Peak Force",   value: fmtNum(peakForce, 1, " N"),   accent: true },
-      { label: "Avg Force",    value: fmtNum(avgForce, 1, " N") },
-      { label: "Peak Impulse", value: fmtNum(peakImpulse, 2, " N·s") },
-      { label: "Angle",        value: fmtAngle(s.angles_deg) },
+      { label: "Peak Strength Index", value: fmtNum(peakIndex, 0, ""), accent: true },
+      { label: "Avg Strength Index",  value: fmtNum(avgIndex,  0, "") },
+      { label: "Angle",               value: fmtAngle(s.angles_deg) },
       location,
       cadence,
       iei,
@@ -586,6 +794,8 @@ export default function Dashboard() {
     const d = new Date(isoString);
     return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
   }
+
+
 
   const insights: Insight[] = useMemo(() => {
     const peak = Math.max(0, ...series);
@@ -659,6 +869,15 @@ export default function Dashboard() {
   }
 
   // ---------- Leaderboard ----------
+  type LeaderDateRange = 7 | 30 | 90 | "all";
+  const [leaderDateRange, setLeaderDateRange] = useState<LeaderDateRange>(30);
+  const leaderCutoff = useMemo<string | null>(() => {
+    if (leaderDateRange === "all") return null;
+    const d = new Date();
+    d.setDate(d.getDate() - leaderDateRange);
+    return d.toISOString();
+  }, [leaderDateRange]);
+
   const [leaderMetric, setLeaderMetric] = useState<MetricKey>("strength");
   const [strengthRows, setStrengthRows] = useState<Extract<LeaderRow, { metric: "strength" }>[]>([]);
   const [strengthLoading, setStrengthLoading] = useState(false);
@@ -684,6 +903,7 @@ export default function Dashboard() {
         if (userRole === "coach" && coreTeamId) {
           query = query.eq("core_team_id", coreTeamId);
         }
+        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
         const { data, error } = await query;
         if (error || !data) return;
@@ -757,9 +977,7 @@ export default function Dashboard() {
         setStrengthLoading(false);
       }
     })();
-  }, [programId, userRole, coreTeamId]);
-
-  // ---------- Reaction leaderboard ----------
+  }, [programId, userRole, coreTeamId, leaderCutoff]);
   const [reactionRows, setReactionRows] = useState<Extract<LeaderRow, { metric: "reaction" }>[]>([]);
   const [reactionLoading, setReactionLoading] = useState(false);
 
@@ -774,13 +992,14 @@ export default function Dashboard() {
       try {
         let query = supabase!
           .from("session_summaries")
-          .select("athlete_id, num_events, iei_ms, peak_force_stats, athletes(first_name, last_name)")
+          .select("athlete_id, num_events, quality, athletes(first_name, last_name)")
           .eq("program_id", programId)
           .eq("mode", "reaction");
 
         if (userRole === "coach" && coreTeamId) {
           query = query.eq("core_team_id", coreTeamId);
         }
+        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
         const { data, error } = await query;
         if (error || !data) return;
@@ -792,19 +1011,15 @@ export default function Dashboard() {
           const athleteId = row.athlete_id;
           if (!athleteId) continue;
 
-          // iei_ms shape: { avg, values: [...] }  (your actual schema)
-          // Also accept mean/min keys in case schema evolves
-          const ieiMs  = row.iei_ms;
-          const avgMs  = ieiMs?.avg  ?? ieiMs?.mean;
-          // Best = smallest non-zero IEI from values array, or explicit min/best key
-          let minMs: number | null = ieiMs?.min ?? ieiMs?.best ?? null;
-          if (minMs == null && Array.isArray(ieiMs?.values) && ieiMs.values.length > 0) {
-            const nonZero = (ieiMs.values as number[]).filter(v => v > 0);
-            minMs = nonZero.length > 0 ? Math.min(...nonZero) : null;
-          }
+          // quality.best_reaction_ms / avg_reaction_ms are the true signal-to-impact
+          // times saved by uploadSession. Never use iei_ms here — that is inter-event
+          // cadence and will always read artificially short for reaction mode.
+          const q      = row.quality;
+          const avgMs  = q?.avg_reaction_ms  ?? null;
+          const minMs  = q?.best_reaction_ms ?? null;
 
           if (avgMs == null) continue;
-          const resolvedMin = minMs ?? avgMs; // fall back to avg if no min available
+          const resolvedMin = minMs ?? avgMs;
 
           const name = row.athletes
             ? `${row.athletes.first_name} ${row.athletes.last_name}`
@@ -839,7 +1054,7 @@ export default function Dashboard() {
         setReactionLoading(false);
       }
     })();
-  }, [programId, userRole, coreTeamId]);
+  }, [programId, userRole, coreTeamId, leaderCutoff]);
 
   // ---------- Accuracy leaderboard ----------
   const [accuracyRows, setAccuracyRows] = useState<Extract<LeaderRow, { metric: "accuracy" }>[]>([]);
@@ -863,6 +1078,7 @@ export default function Dashboard() {
         if (userRole === "coach" && coreTeamId) {
           query = query.eq("core_team_id", coreTeamId);
         }
+        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
         const { data, error } = await query;
         if (error || !data) return;
@@ -923,7 +1139,218 @@ export default function Dashboard() {
         setAccuracyLoading(false);
       }
     })();
-  }, [programId, userRole, coreTeamId]);
+  }, [programId, userRole, coreTeamId, leaderCutoff]);
+
+  // ---------- Team Leaderboards ----------
+  type TeamLeaderRow = {
+    teamId: string;
+    name: string;
+    teamType: "core" | "sub";
+    memberCount: number;
+    sessionCount: number;
+    // strength
+    peakIndex?: number;
+    avgIndex?: number;
+    // accuracy
+    accuracyPct?: number;
+    avgOffsetMm?: number;
+    // reaction
+    avgReactionMs?: number;
+    bestReactionMs?: number;
+  };
+
+  const [teamLeaderMetric, setTeamLeaderMetric] = useState<MetricKey>("strength");
+  const [teamLeaderRows,   setTeamLeaderRows]   = useState<TeamLeaderRow[]>([]);
+  const [teamLeaderLoading,setTeamLeaderLoading]= useState(false);
+
+  // Most Improved per team — first 50% of sessions vs last 50%
+  type TeamImprovedRow = { teamId: string; name: string; teamType: "core"|"sub"; delta: number; from: number; to: number; sessions: number };
+  const [teamImprovedMetric, setTeamImprovedMetric] = useState<MetricKey>("strength");
+  const [teamImprovedRows,   setTeamImprovedRows]   = useState<TeamImprovedRow[]>([]);
+  const [teamImprovedLoading,setTeamImprovedLoading]= useState(false);
+
+  useEffect(() => {
+    if (!programId || !supabase || teams.length === 0) return;
+    setTeamLeaderLoading(true);
+    setTeamLeaderRows([]);
+
+    (async () => {
+      try {
+        // All teams visible (core + sub)
+        const allTeams = teams;
+
+        // For sub-teams: resolve athlete IDs from team_members
+        const subTeams = allTeams.filter(t => t.team_type !== "core");
+        const subTeamMembers = new Map<string, string[]>();
+        if (subTeams.length > 0) {
+          const { data: memberRows } = await supabase!
+            .from("team_members")
+            .select("team_id, athlete_id")
+            .in("team_id", subTeams.map(t => t.id))
+            .not("athlete_id", "is", null);
+          for (const m of memberRows ?? []) {
+            if (!subTeamMembers.has(m.team_id)) subTeamMembers.set(m.team_id, []);
+            subTeamMembers.get(m.team_id)!.push(m.athlete_id);
+          }
+        }
+
+        const modeFilter = teamLeaderMetric === "strength" ? "standard" : teamLeaderMetric;
+
+        const rows: TeamLeaderRow[] = [];
+
+        for (const team of allTeams) {
+          const isCore = team.team_type === "core";
+
+          let query = supabase!
+            .from("session_summaries")
+            .select("quality, peak_force_stats, num_events")
+            .eq("program_id", programId!)
+            .eq("mode", modeFilter);
+
+          if (isCore) {
+            query = query.eq("core_team_id", team.id);
+          } else {
+            const ids = subTeamMembers.get(team.id) ?? [];
+            if (ids.length === 0) continue;
+            query = (query as any).in("athlete_id", ids);
+          }
+          if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
+
+          const { data } = await query;
+          if (!data || data.length === 0) continue;
+
+          if (teamLeaderMetric === "strength") {
+            let peakBest = 0, avgSum = 0, avgCount = 0;
+            for (const row of data as any[]) {
+              const si = row.quality?.strength_index;
+              let peak: number | null = null, avg: number | null = null;
+              if (si?.max != null) { peak = Math.round(si.max); avg = Math.round(si.mean ?? si.max); }
+              else {
+                const pfs = row.peak_force_stats;
+                const pMv = pfs?.peak_mv ?? (pfs?.peak_v != null ? pfs.peak_v * 1000 : null);
+                const aMv = pfs?.avg_mv  ?? (pfs?.avg_v  != null ? pfs.avg_v  * 1000 : null);
+                if (pMv != null) { peak = Math.round((pMv / 3320) * 1000); avg = aMv != null ? Math.round((aMv / 3320) * 1000) : peak; }
+              }
+              if (peak != null) { peakBest = Math.max(peakBest, peak); avgSum += avg ?? peak; avgCount++; }
+            }
+            if (avgCount === 0) continue;
+            rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, peakIndex: peakBest, avgIndex: Math.round(avgSum / avgCount) });
+          } else if (teamLeaderMetric === "accuracy") {
+            let pctSum = 0, offsetSum = 0, offsetCount = 0, count = 0;
+            for (const row of data as any[]) {
+              let pct = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+              if (pct == null) { const aMv = row.peak_force_stats?.avg_mv ?? null; if (aMv != null) pct = Math.min(100, Math.round((aMv / 3320) * 100 * 10) / 10); }
+              if (pct == null) continue;
+              pctSum += Number(pct); count++;
+              const off = row.quality?.avg_offset_mm ?? null;
+              if (off != null) { offsetSum += Number(off); offsetCount++; }
+            }
+            if (count === 0) continue;
+            rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, accuracyPct: Math.round((pctSum / count) * 10) / 10, avgOffsetMm: offsetCount > 0 ? Math.round(offsetSum / offsetCount) : undefined });
+          } else {
+            let avgSum = 0, bestMin = Infinity, count = 0;
+            for (const row of data as any[]) {
+              const avg = row.quality?.avg_reaction_ms ?? null;
+              const best = row.quality?.best_reaction_ms ?? null;
+              if (avg == null) continue;
+              avgSum += avg; count++;
+              if (best != null) bestMin = Math.min(bestMin, best);
+            }
+            if (count === 0) continue;
+            rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, avgReactionMs: Math.round(avgSum / count), bestReactionMs: bestMin < Infinity ? Math.round(bestMin) : undefined });
+          }
+        }
+
+        // Sort
+        if (teamLeaderMetric === "strength")  rows.sort((a, b) => (b.peakIndex ?? 0) - (a.peakIndex ?? 0));
+        if (teamLeaderMetric === "accuracy")  rows.sort((a, b) => (b.accuracyPct ?? 0) - (a.accuracyPct ?? 0));
+        if (teamLeaderMetric === "reaction")  rows.sort((a, b) => (a.avgReactionMs ?? 9999) - (b.avgReactionMs ?? 9999));
+
+        setTeamLeaderRows(rows);
+      } finally {
+        setTeamLeaderLoading(false);
+      }
+    })();
+  }, [programId, teams, teamLeaderMetric, leaderCutoff]);
+
+  // Most Improved per team
+  useEffect(() => {
+    if (!programId || !supabase || teams.length === 0) return;
+    setTeamImprovedLoading(true);
+    setTeamImprovedRows([]);
+
+    (async () => {
+      try {
+        const subTeams = teams.filter(t => t.team_type !== "core");
+        const subTeamMembers = new Map<string, string[]>();
+        if (subTeams.length > 0) {
+          const { data: memberRows } = await supabase!
+            .from("team_members").select("team_id, athlete_id")
+            .in("team_id", subTeams.map(t => t.id)).not("athlete_id", "is", null);
+          for (const m of memberRows ?? []) {
+            if (!subTeamMembers.has(m.team_id)) subTeamMembers.set(m.team_id, []);
+            subTeamMembers.get(m.team_id)!.push(m.athlete_id);
+          }
+        }
+
+        const modeFilter = teamImprovedMetric === "strength" ? "standard"
+                         : teamImprovedMetric === "form"     ? null
+                         : teamImprovedMetric;
+        const improved: TeamImprovedRow[] = [];
+
+        for (const team of teams) {
+          const isCore = team.team_type === "core";
+          let query = supabase!.from("session_summaries")
+            .select("date_of_record, quality, peak_force_stats, angles_deg")
+            .eq("program_id", programId!)
+            .order("date_of_record", { ascending: true });
+
+          if (modeFilter) query = (query as any).eq("mode", modeFilter);
+
+          if (isCore) { query = query.eq("core_team_id", team.id); }
+          else {
+            const ids = subTeamMembers.get(team.id) ?? [];
+            if (ids.length === 0) continue;
+            query = (query as any).in("athlete_id", ids);
+          }
+          if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
+
+          const { data } = await query;
+          if (!data || data.length < 4) continue;
+
+          function extractVal(row: any): number | null {
+            if (teamImprovedMetric === "strength") {
+              const si = row.quality?.strength_index;
+              if (si?.max != null) return Math.round(si.max);
+              const pMv = row.peak_force_stats?.peak_mv ?? null;
+              return pMv != null ? Math.round((pMv / 3320) * 1000) : null;
+            }
+            if (teamImprovedMetric === "accuracy") return row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+            if (teamImprovedMetric === "reaction") return row.quality?.avg_reaction_ms ?? null;
+            // form: abs(angle)
+            const angle = row.angles_deg?.mean ?? row.angles_deg?.avg ?? null;
+            return angle != null ? Math.round(Math.abs(Number(angle)) * 10) / 10 : null;
+          }
+
+          const vals = (data as any[]).map(extractVal).filter((v): v is number => v != null);
+          if (vals.length < 4) continue;
+          const half = Math.floor(vals.length / 2);
+          const early = vals.slice(0, half).reduce((s, v) => s + v, 0) / half;
+          const late  = vals.slice(-half).reduce((s, v) => s + v, 0) / half;
+          // form & reaction: lower = better
+          const delta = (teamImprovedMetric === "reaction" || teamImprovedMetric === "form")
+            ? Math.round((early - late) * 10) / 10
+            : Math.round(late - early);
+          improved.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", delta, from: Math.round(early * 10) / 10, to: Math.round(late * 10) / 10, sessions: vals.length });
+        }
+
+        improved.sort((a, b) => b.delta - a.delta);
+        setTeamImprovedRows(improved.slice(0, 5));
+      } finally {
+        setTeamImprovedLoading(false);
+      }
+    })();
+  }, [programId, teams, teamImprovedMetric, leaderCutoff]);
 
   const leaderboardData = useMemo<LeaderRow[]>(() => {
     if (leaderMetric === "strength") return strengthRows;
@@ -932,14 +1359,712 @@ export default function Dashboard() {
     return [];
   }, [leaderMetric, strengthRows, reactionRows, accuracyRows]);
 
-  // Most Improved — will be wired to Supabase once reaction/accuracy have enough sessions
-  const mostImproved = useMemo(() => {
-    return {
-      strength: { name: "—", deltaPeak: 0, deltaAvg: 0 },
-      reaction: { name: "—", deltaAvgMs: 0, deltaBestMs: 0 },
-      accuracy: { name: "—", deltaPct: 0, deltaOffsetCm: 0 },
-    };
+  // ---------- Coaching Insights (data-driven) ----------
+  type CoachInsight = {
+    tag: "Power" | "Accuracy" | "Reaction" | "Consistency" | "Fatigue" | "Tempo";
+    priority: "high" | "medium" | "low";
+    headline: string;
+    numbers: { label: string; value: string; delta?: string; deltaDir?: "up" | "down" | "neutral" }[];
+    cue: string;
+  };
+
+  const coachInsights = useMemo<CoachInsight[]>(() => {
+    const out: CoachInsight[] = [];
+
+    // ── 1. POWER — from strength leaderboard ─────────────────────────────────
+    if (strengthRows.length > 0) {
+      const top       = strengthRows[0];
+      const bottom    = strengthRows[strengthRows.length - 1];
+      const spread    = top.peakIndex - bottom.peakIndex;
+      const avgOfAvgs = Math.round(strengthRows.reduce((s, r) => s + r.avgIndex, 0) / strengthRows.length);
+      const gapTopAvg = top.peakIndex - top.avgIndex;
+      const consistency = gapTopAvg < 80 ? "consistent" : gapTopAvg < 180 ? "moderate variance" : "high variance";
+      out.push({
+        tag: "Power",
+        priority: spread > 300 ? "high" : "medium",
+        headline: spread > 300
+          ? `${top.name.split(" ")[0]} leads by ${spread} pts — group spread is wide`
+          : `Group avg strength index: ${avgOfAvgs} / 1000`,
+        numbers: [
+          { label: "Top athlete", value: `${top.peakIndex} peak`, delta: `${top.avgIndex} avg` },
+          { label: "Group avg",   value: `${avgOfAvgs} / 1000` },
+          { label: "Spread",      value: `${spread} pts`, deltaDir: spread > 300 ? "down" : "neutral" },
+        ],
+        cue: spread > 300
+          ? `Focus lower-index athletes on max-effort combos (3–4 strikes). Pair ${top.name.split(" ")[0]} with technique refinement — their ${consistency} peak-to-avg gap suggests ${gapTopAvg < 80 ? "solid output control" : "room to raise their floor"}.`
+          : `Group power is ${avgOfAvgs > 600 ? "strong" : avgOfAvgs > 400 ? "developing" : "early-stage"}. ${gapTopAvg > 150 ? `${top.name.split(" ")[0]}'s peak-to-avg gap (${gapTopAvg} pts) is wide — cue them to engage hips earlier on every strike.` : "Maintain form cues and increase volume gradually."}`,
+      });
+    }
+
+    // ── 2. SESSION POWER — from selected session summary ─────────────────────
+    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "standard") {
+      const si      = sessionSummary.quality?.strength_index;
+      const peakIdx = si?.max  ?? null;
+      const avgIdx  = si?.mean ?? null;
+      const cadence = sessionSummary.cadence_hz_avg;
+      const events  = sessionSummary.num_events ?? 0;
+      const dur     = sessionSummary.session_duration_ms;
+      const angle   = sessionSummary.angles_deg?.mean ?? sessionSummary.angles_deg?.avg;
+      if (peakIdx != null && avgIdx != null) {
+        const gap       = Math.round(peakIdx - avgIdx);
+        const rateKps   = dur && dur > 0 ? ((events / (dur / 1000)) * 60).toFixed(1) : null;
+        const angleNote = angle != null
+          ? angle > 10  ? `avg angle ${angle.toFixed(0)}° — possible form lean`
+          : angle < -10 ? `avg angle ${angle.toFixed(0)}° — check shoulder drop`
+          : `avg angle ${angle.toFixed(0)}° (neutral)` : null;
+        out.push({
+          tag: "Power",
+          priority: gap > 200 ? "high" : "medium",
+          headline: `Selected session: peak ${Math.round(peakIdx)} / avg ${Math.round(avgIdx)} (+${gap} pt gap)`,
+          numbers: [
+            { label: "Peak index", value: `${Math.round(peakIdx)}`, deltaDir: peakIdx > 700 ? "up" : peakIdx < 400 ? "down" : "neutral" },
+            { label: "Avg index",  value: `${Math.round(avgIdx)}` },
+            { label: "Events",     value: `${events}${rateKps ? ` · ${rateKps}/min` : ""}` },
+            ...(cadence != null ? [{ label: "Cadence", value: `${Number(cadence).toFixed(1)} Hz` }] : []),
+          ],
+          cue: gap > 200
+            ? `High peak-to-avg spread (${gap} pts) — athlete is flashing power but not sustaining it. Drill 8-count continuous combos with no rest to compress the gap. ${angleNote ? `Also: ${angleNote}.` : ""}`
+            : avgIdx < 350
+            ? `Average output is low (${Math.round(avgIdx)} / 1000). Cue explosive hip rotation and full extension — don't just count reps, demand intent. ${angleNote ? `Note: ${angleNote}.` : ""}`
+            : `Output is consistent. ${rateKps ? `Rate: ${rateKps} strikes/min — ` : ""}${Number(rateKps) > 30 ? "strong pace, now focus on target precision." : "build rate with short burst intervals."} ${angleNote ?? ""}`,
+        });
+      }
+    }
+
+    // ── 3. ACCURACY — from accuracy leaderboard ──────────────────────────────
+    if (accuracyRows.length > 0) {
+      const best   = accuracyRows[0];
+      const worst  = accuracyRows[accuracyRows.length - 1];
+      const avgPct = Math.round(accuracyRows.reduce((s, r) => s + r.accuracyPct, 0) / accuracyRows.length);
+      out.push({
+        tag: "Accuracy",
+        priority: avgPct < 60 ? "high" : avgPct < 78 ? "medium" : "low",
+        headline: `Group accuracy avg: ${avgPct}% · best: ${best.name.split(" ")[0]} at ${best.accuracyPct}%`,
+        numbers: [
+          { label: "Best",       value: `${best.accuracyPct}%`,  delta: best.avgOffsetCm > 0 ? `${best.avgOffsetCm} offset` : undefined, deltaDir: "up" },
+          { label: "Needs work", value: `${worst.accuracyPct}%`, delta: worst.avgOffsetCm > 0 ? `${worst.avgOffsetCm} offset` : undefined, deltaDir: worst.accuracyPct < 55 ? "down" : "neutral" },
+          { label: "Group avg",  value: `${avgPct}%` },
+        ],
+        cue: avgPct < 60
+          ? `Group accuracy needs immediate attention (${avgPct}%). Start every session with 3×10 slow-speed target-lock reps before adding power. ${worst.name.split(" ")[0]} (${worst.accuracyPct}%) should work target isolation drills daily until above 65%.`
+          : avgPct < 78
+          ? `Accuracy is building. Introduce combination drills that require switching target zones mid-combo — this forces recalibration under fatigue.`
+          : `Strong group accuracy (${avgPct}%). Challenge athletes with reduced target size or moving target sequences to push precision further.`,
+      });
+    }
+
+    // ── 4. ACCURACY — from selected session ──────────────────────────────────
+    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "accuracy") {
+      const q      = sessionSummary.quality;
+      const score  = q?.accuracy_pct ?? q?.score;
+      const offset = q?.avg_offset_mm ?? (q?.avg_offset_cm != null ? q.avg_offset_cm * 10 : null);
+      const events = sessionSummary.num_events ?? 0;
+      const com    = sessionSummary.center_of_mass_mm;
+      const comX   = com && typeof com === "object" && "x" in com ? Number(com.x) : null;
+      const comY   = com && typeof com === "object" && "y" in com ? Number(com.y) : null;
+      const biasTxt = comX != null && comY != null
+        ? Math.abs(comX) > 15 ? `center-of-mass bias: ${comX > 0 ? "right" : "left"} (${Math.abs(comX).toFixed(0)} mm off-center)`
+        : Math.abs(comY) > 15 ? `center-of-mass bias: ${comY > 0 ? "high" : "low"} (${Math.abs(comY).toFixed(0)} mm off-center)`
+        : null : null;
+      if (score != null) {
+        out.push({
+          tag: "Accuracy",
+          priority: score < 60 ? "high" : score < 78 ? "medium" : "low",
+          headline: `Session accuracy: ${Number(score).toFixed(1)}%${offset != null ? ` · avg offset ${Number(offset).toFixed(0)} mm` : ""}`,
+          numbers: [
+            { label: "Score",   value: `${Number(score).toFixed(1)}%`, deltaDir: score > 75 ? "up" : score < 55 ? "down" : "neutral" },
+            ...(offset != null ? [{ label: "Avg offset", value: `${Number(offset).toFixed(0)} mm` }] : []),
+            { label: "Strikes", value: `${events}` },
+            ...(biasTxt ? [{ label: "Bias", value: biasTxt }] : []),
+          ],
+          cue: score < 55
+            ? `Significant accuracy deficit. ${biasTxt ? `${biasTxt.charAt(0).toUpperCase() + biasTxt.slice(1)} — ` : ""}Slow the pace by 40%, lock eyes on target before initiating the strike, and only add speed once 3 consecutive hits land inside target zone.`
+            : score < 78
+            ? `Accuracy is moderate. ${biasTxt ? `Consistent ${biasTxt} — address with form correction.` : "Work target-entry angle — ensure elbow is driving toward center, not fanning."}`
+            : `Excellent session accuracy. Push to higher difficulty: tighter target, longer combination, or reaction mode to maintain challenge.`,
+        });
+      }
+    }
+
+    // ── 5. REACTION — from reaction leaderboard ───────────────────────────────
+    if (reactionRows.length > 0) {
+      const best     = reactionRows[0];
+      const slowest  = reactionRows[reactionRows.length - 1];
+      const avgReact = Math.round(reactionRows.reduce((s, r) => s + r.avgReactionMs, 0) / reactionRows.length);
+      const gapMs    = slowest.avgReactionMs - best.avgReactionMs;
+      out.push({
+        tag: "Reaction",
+        priority: avgReact > 700 ? "high" : avgReact > 500 ? "medium" : "low",
+        headline: `Avg group reaction: ${avgReact} ms · best: ${best.name.split(" ")[0]} at ${best.avgReactionMs} ms`,
+        numbers: [
+          { label: "Fastest avg",  value: `${best.avgReactionMs} ms`,    delta: `best ${best.bestReactionMs} ms`, deltaDir: "up" },
+          { label: "Slowest avg",  value: `${slowest.avgReactionMs} ms`, deltaDir: slowest.avgReactionMs > 700 ? "down" : "neutral" },
+          { label: "Group spread", value: `${gapMs} ms gap` },
+          { label: "Attempts",     value: `${reactionRows.reduce((s, r) => s + r.attempts, 0)} total` },
+        ],
+        cue: avgReact > 700
+          ? `Group reaction times are slow (${avgReact} ms avg). Focus on visual cue recognition drills — start with predictable signals, then introduce random delays. ${slowest.name.split(" ")[0]} (${slowest.avgReactionMs} ms) should work anticipation reduction: no pre-loading before the signal.`
+          : avgReact > 500
+          ? `Reaction times are developing. Introduce competitive pairs drill: athlete must beat their previous best each rep. Target sub-${Math.round(avgReact * 0.85)} ms avg for next session.`
+          : `Strong reaction group (${avgReact} ms avg). Increase cognitive load — multi-target or color-coded cues — to push further improvement.`,
+      });
+    }
+
+    // ── 6. REACTION — from selected session ──────────────────────────────────
+    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "reaction") {
+      const q        = sessionSummary.quality;
+      const bestRt   = q?.best_reaction_ms;
+      const avgRt    = q?.avg_reaction_ms;
+      const attempts = q?.attempts ?? sessionSummary.num_events;
+      if (avgRt != null) {
+        const fatigueDelta = q?.reaction_fatigue_delta_ms ?? null;
+        out.push({
+          tag: "Reaction",
+          priority: avgRt > 700 ? "high" : avgRt > 500 ? "medium" : "low",
+          headline: `Session avg reaction: ${Math.round(avgRt)} ms · best: ${bestRt != null ? Math.round(bestRt) : "—"} ms`,
+          numbers: [
+            { label: "Avg",      value: `${Math.round(avgRt)} ms`, deltaDir: avgRt < 400 ? "up" : avgRt > 700 ? "down" : "neutral" },
+            { label: "Best",     value: bestRt != null ? `${Math.round(bestRt)} ms` : "—", deltaDir: "up" },
+            { label: "Attempts", value: attempts != null ? String(attempts) : "—" },
+            ...(fatigueDelta != null ? [{ label: "Fatigue drift", value: `+${Math.round(fatigueDelta)} ms`, deltaDir: "down" as const }] : []),
+          ],
+          cue: avgRt > 700
+            ? `Slow reaction session (${Math.round(avgRt)} ms avg). Check if athlete is anticipating — add unpredictable cue timing. Cue: stay loose, don't pre-tense.`
+            : avgRt > 500
+            ? `Moderate reaction time. Gap between best (${bestRt != null ? Math.round(bestRt) : "—"} ms) and average (${Math.round(avgRt)} ms) shows inconsistency. Drill: 3 consecutive sub-${Math.round(avgRt * 0.9)} ms responses before rest.`
+            : `Excellent reaction session. Best rep: ${bestRt != null ? Math.round(bestRt) : "—"} ms — use this as the benchmark target going forward.`,
+        });
+      }
+    }
+
+    // ── 7. CONSISTENCY — from recent session volume + mode mix ────────────────
+    if (recentSessions.length >= 3) {
+      const last7days = recentSessions.filter(s =>
+        (Date.now() - new Date(s.timestamp).getTime()) < 7 * 24 * 60 * 60 * 1000
+      );
+      const modeBreakdown: Record<string, number> = {};
+      for (const s of recentSessions) {
+        const m = (s.mode ?? "standard").toLowerCase();
+        modeBreakdown[m] = (modeBreakdown[m] ?? 0) + 1;
+      }
+      const total    = recentSessions.length;
+      const stdPct   = Math.round(((modeBreakdown["standard"] ?? 0) / total) * 100);
+      const accPct   = Math.round(((modeBreakdown["accuracy"] ?? 0) / total) * 100);
+      const reactPct = Math.round(((modeBreakdown["reaction"] ?? 0) / total) * 100);
+      out.push({
+        tag: "Consistency",
+        priority: last7days.length < 2 ? "medium" : "low",
+        headline: `${total} sessions logged · ${last7days.length} in the last 7 days`,
+        numbers: [
+          { label: "Standard", value: `${stdPct}%`,   delta: `${modeBreakdown["standard"] ?? 0} sessions` },
+          { label: "Accuracy", value: `${accPct}%`,   delta: `${modeBreakdown["accuracy"] ?? 0} sessions` },
+          { label: "Reaction", value: `${reactPct}%`, delta: `${modeBreakdown["reaction"] ?? 0} sessions` },
+          { label: "Last 7d",  value: `${last7days.length} sessions`, deltaDir: last7days.length >= 3 ? "up" : last7days.length === 0 ? "down" : "neutral" },
+        ],
+        cue: stdPct > 80
+          ? `Almost all sessions are Standard mode (${stdPct}%). Introduce Accuracy and Reaction sessions — aim for a 60/20/20 split across mode types.`
+          : last7days.length < 2
+          ? `Only ${last7days.length} session${last7days.length === 1 ? "" : "s"} in the last 7 days. Consistent weekly volume is the #1 driver of improvement — schedule at least 3 sessions this week.`
+          : `Good session cadence. Mode split: ${stdPct}% Standard / ${accPct}% Accuracy / ${reactPct}% Reaction. ${reactPct < 15 ? "Consider adding more Reaction sessions to develop explosive decision-making." : "Keep the balanced mix going."}`,
+      });
+    }
+
+    if (out.length === 0) {
+      out.push({
+        tag: "Consistency",
+        priority: "medium",
+        headline: "No session data yet",
+        numbers: [],
+        cue: "Record your first session to start generating data-driven coaching insights. Connect a device, run a Standard session, and come back here to see power, accuracy, and tempo breakdowns.",
+      });
+    }
+
+    return out.sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.priority] - { high: 0, medium: 1, low: 2 }[b.priority]));
+  }, [strengthRows, accuracyRows, reactionRows, recentSessions, sessionSummary]);
+
+  // ---------- Theme awareness ----------
+  const [isDark, setIsDark] = useState<boolean>(() =>
+    typeof document !== "undefined"
+      ? document.documentElement.getAttribute("data-theme") !== "light"
+      : true
+  );
+  useEffect(() => {
+    const el = document.documentElement;
+    const obs = new MutationObserver(() => {
+      setIsDark(el.getAttribute("data-theme") !== "light");
+    });
+    obs.observe(el, { attributes: true, attributeFilter: ["data-theme"] });
+    return () => obs.disconnect();
   }, []);
+
+  // ---------- Recent Sessions filters ----------
+  const [sessionModeFilter, setSessionModeFilter] = useState<string>("all");
+  const [sessionAthleteFilter, setSessionAthleteFilter] = useState<string>("all");
+  const [sessionPage, setSessionPage] = useState(0);
+  const SESSION_PAGE_SIZE = 10;
+
+  // Athletes who appear in recentSessions (for the athlete filter dropdown)
+  const sessionAthletes = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const s of recentSessions) {
+      const key = `${s.athleteFirstName} ${s.athleteLastName}`.trim();
+      if (key && key !== "— " && key !== "—") seen.set(key, key);
+    }
+    return Array.from(seen.values()).sort();
+  }, [recentSessions]);
+
+  // ---------- In-Depth Athlete Analysis ----------
+  type AthleteSessionRow = {
+    session_id: string;
+    date_of_record: string;
+    mode: string;
+    num_events: number | null;
+    session_duration_ms: number | null;
+    cadence_hz_avg: number | null;
+    peak_force_stats: any;
+    quality: any;
+    angles_deg: any;
+    iei_ms: any;
+  };
+
+  const [analysisAthleteId, setAnalysisAthleteId]     = useState<string | null>(null);
+  const [analysisAthleteName, setAnalysisAthleteName] = useState<string>("—");
+  const [analysisSessions, setAnalysisSessions]       = useState<AthleteSessionRow[]>([]);
+  const [analysisLoading, setAnalysisLoading]         = useState(false);
+  const [analysisSection, setAnalysisSection]         = useState<"power" | "accuracy" | "reaction" | "form">("power");
+
+  // Ref for scrolling to the In-Depth Analysis card
+  const analysisCardRef = useRef<HTMLDivElement>(null);
+
+  // Popover state — which session avatar is hovered + pointer position
+  const [avatarPopover, setAvatarPopover] = useState<{ sessionId: string; x: number; y: number } | null>(null);
+
+  // Athlete list for the analysis dropdown — pulled from the athletes state (loaded when athletes tab visited)
+  // but also enriched from recentSessions so it works even before the athletes tab is visited
+  const analysisAthleteOptions = useMemo(() => {
+    const map = new Map<string, { id: string; name: string }>();
+    // From the full athletes list (if loaded)
+    for (const a of athletes) {
+      map.set(a.id, { id: a.id, name: `${a.first_name} ${a.last_name}`.trim() });
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [athletes]);
+
+  // Fetch all sessions for the selected athlete whenever analysisAthleteId changes
+  useEffect(() => {
+    if (!analysisAthleteId || !programId || !supabase) return;
+    setAnalysisLoading(true);
+    setAnalysisSessions([]);
+
+    (async () => {
+      try {
+        const { data, error } = await supabase!
+          .from("session_summaries")
+          .select("session_id, date_of_record, mode, num_events, session_duration_ms, cadence_hz_avg, peak_force_stats, quality, angles_deg, iei_ms")
+          .eq("athlete_id", analysisAthleteId)
+          .eq("program_id", programId)
+          .order("date_of_record", { ascending: true });
+
+        if (error) throw error;
+        setAnalysisSessions(
+          (data ?? []).map((r: any) => ({
+            session_id:         r.session_id,
+            date_of_record:     r.date_of_record ?? "",
+            mode:               r.mode ?? "standard",
+            num_events:         r.num_events ?? null,
+            session_duration_ms: r.session_duration_ms ?? null,
+            cadence_hz_avg:     r.cadence_hz_avg ?? null,
+            peak_force_stats:   r.peak_force_stats ?? null,
+            quality:            r.quality ?? null,
+            angles_deg:         r.angles_deg ?? null,
+            iei_ms:             r.iei_ms ?? null,
+          }))
+        );
+      } catch { /* silent */ } finally {
+        setAnalysisLoading(false);
+      }
+    })();
+  }, [analysisAthleteId, programId]);
+
+  // Derive metrics from analysisSessions
+  const athleteAnalysis = useMemo(() => {
+    if (!analysisSessions.length) return null;
+
+    const stdSessions  = analysisSessions.filter(s => s.mode.toLowerCase() === "standard");
+    const accSessions  = analysisSessions.filter(s => s.mode.toLowerCase() === "accuracy");
+    const reactSessions= analysisSessions.filter(s => s.mode.toLowerCase() === "reaction");
+
+    // ── Strength trend (standard sessions, chronological) ──────────────────
+    const strengthTrend = stdSessions.map(s => {
+      const si = s.quality?.strength_index;
+      if (si?.max != null)  return { date: s.date_of_record, peak: Math.round(si.max), avg: Math.round(si.mean ?? si.max) };
+      const pfs = s.peak_force_stats;
+      const peakMv = pfs?.peak_mv ?? (pfs?.peak_v != null ? pfs.peak_v * 1000 : null);
+      const avgMv  = pfs?.avg_mv  ?? (pfs?.avg_v  != null ? pfs.avg_v  * 1000 : null);
+      if (peakMv == null) return null;
+      return { date: s.date_of_record, peak: Math.round((peakMv / 3320) * 1000), avg: avgMv != null ? Math.round((avgMv / 3320) * 1000) : null };
+    }).filter(Boolean) as { date: string; peak: number; avg: number | null }[];
+
+    // ── Consistency score (peak-to-avg ratio across standard sessions) ──────
+    const consistencyPct = strengthTrend.length > 0
+      ? Math.round(strengthTrend.reduce((s, r) => s + (r.avg != null && r.peak > 0 ? r.avg / r.peak : 0), 0) / strengthTrend.length * 100)
+      : null;
+
+    // ── Fatigue proxy — compare first half vs second half strength of stdSessions ──
+    let fatigueNote: string | null = null;
+    if (strengthTrend.length >= 4) {
+      const half = Math.floor(strengthTrend.length / 2);
+      const earlyAvg = strengthTrend.slice(0, half).reduce((s, r) => s + r.peak, 0) / half;
+      const lateAvg  = strengthTrend.slice(-half).reduce((s, r) => s + r.peak, 0) / half;
+      const delta    = Math.round(lateAvg - earlyAvg);
+      fatigueNote = delta > 30 ? `+${delta} pts trend up` : delta < -30 ? `${delta} pts trend down` : "stable across sessions";
+    }
+
+    // ── Cadence trend (standard sessions) ──────────────────────────────────
+    const cadenceTrend = stdSessions
+      .filter(s => s.cadence_hz_avg != null)
+      .map(s => ({ date: s.date_of_record, hz: Number(s.cadence_hz_avg) }));
+
+    // ── Accuracy metrics ────────────────────────────────────────────────────
+    const accMetrics = accSessions.map(s => {
+      const score  = s.quality?.accuracy_pct ?? s.quality?.score ?? null;
+      const offset = s.quality?.avg_offset_mm ?? (s.quality?.avg_offset_cm != null ? s.quality.avg_offset_cm * 10 : null);
+      return score != null ? { date: s.date_of_record, score: Number(score), offset: offset != null ? Number(offset) : null } : null;
+    }).filter(Boolean) as { date: string; score: number; offset: number | null }[];
+
+    const latestAccScore  = accMetrics.length > 0 ? accMetrics[accMetrics.length - 1].score  : null;
+    const earliestAccScore = accMetrics.length > 1 ? accMetrics[0].score : null;
+    const accDrift = latestAccScore != null && earliestAccScore != null ? Math.round(latestAccScore - earliestAccScore) : null;
+
+    // ── Reaction metrics ────────────────────────────────────────────────────
+    const reactMetrics = reactSessions.map(s => {
+      const avgRt  = s.quality?.avg_reaction_ms  ?? null;
+      const bestRt = s.quality?.best_reaction_ms ?? null;
+      return avgRt != null ? { date: s.date_of_record, avg: Math.round(avgRt), best: bestRt != null ? Math.round(bestRt) : null } : null;
+    }).filter(Boolean) as { date: string; avg: number; best: number | null }[];
+
+    const latestReactAvg   = reactMetrics.length > 0 ? reactMetrics[reactMetrics.length - 1].avg  : null;
+    const earliestReactAvg = reactMetrics.length > 1  ? reactMetrics[0].avg : null;
+    const reactDrift = latestReactAvg != null && earliestReactAvg != null ? Math.round(latestReactAvg - earliestReactAvg) : null; // negative = improvement
+
+    // ── Angle bias ──────────────────────────────────────────────────────────
+    const angleReadings = analysisSessions
+      .map(s => s.angles_deg?.mean ?? s.angles_deg?.avg ?? null)
+      .filter((v): v is number => v != null);
+    const avgAngle = angleReadings.length > 0 ? angleReadings.reduce((a, b) => a + b, 0) / angleReadings.length : null;
+
+    // ── Mode breakdown ──────────────────────────────────────────────────────
+    const total     = analysisSessions.length;
+    const stdCount  = stdSessions.length;
+    const accCount  = accSessions.length;
+    const reactCount= reactSessions.length;
+
+    // ── Volume ──────────────────────────────────────────────────────────────
+    const totalEvents = analysisSessions.reduce((s, r) => s + (r.num_events ?? 0), 0);
+    const totalDurMs  = analysisSessions.reduce((s, r) => s + (r.session_duration_ms ?? 0), 0);
+
+    return {
+      total, stdCount, accCount, reactCount,
+      totalEvents, totalDurMs,
+      strengthTrend, consistencyPct, fatigueNote,
+      cadenceTrend,
+      accMetrics, latestAccScore, accDrift,
+      reactMetrics, latestReactAvg, reactDrift,
+      avgAngle,
+    };
+  }, [analysisSessions]);
+
+  // Trigger athletes fetch when analysis athlete dropdown opens (athletes may not be loaded yet)
+  useEffect(() => {
+    if (!programId || !supabase || athletes.length > 0) return;
+    supabase!
+      .from("athletes")
+      .select("id, first_name, last_name, height, weight, sport, position")
+      .eq("program_id", programId)
+      .order("last_name")
+      .then(({ data }) => { if (data) setAthletes(data as any); });
+  }, [programId, athletes.length]);
+
+  const filteredSessions = useMemo(() => {
+    setSessionPage(0);
+    return recentSessions.filter((s) => {
+      const modeMatch = sessionModeFilter === "all" || (s.mode ?? "standard").toLowerCase() === sessionModeFilter;
+      const athleteName = `${s.athleteFirstName} ${s.athleteLastName}`.trim();
+      const athleteMatch = sessionAthleteFilter === "all" || athleteName === sessionAthleteFilter;
+      return modeMatch && athleteMatch;
+    });
+  }, [recentSessions, sessionModeFilter, sessionAthleteFilter]);
+
+  const totalSessionPages = Math.ceil(filteredSessions.length / SESSION_PAGE_SIZE);
+  const pagedSessions = filteredSessions.slice(
+    sessionPage * SESSION_PAGE_SIZE,
+    (sessionPage + 1) * SESSION_PAGE_SIZE
+  );
+
+  // Most Improved Athletes — derived from per-athlete session histories
+  type AthleteImprovedRow = { athleteId: string; name: string; metric: MetricKey; delta: number; from: number; to: number; sessions: number };
+  const [athleteImprovedMetric, setAthleteImprovedMetric] = useState<MetricKey>("strength");
+  const [athleteImprovedRows,   setAthleteImprovedRows]   = useState<AthleteImprovedRow[]>([]);
+  const [athleteImprovedLoading,setAthleteImprovedLoading]= useState(false);
+
+  useEffect(() => {
+    if (!programId || !supabase) return;
+    setAthleteImprovedLoading(true);
+    setAthleteImprovedRows([]);
+
+    (async () => {
+      try {
+        const isForm = athleteImprovedMetric === "form";
+        const modeFilter = athleteImprovedMetric === "strength" ? "standard"
+                         : athleteImprovedMetric === "form"     ? null  // all modes
+                         : athleteImprovedMetric;
+
+        let query = supabase!
+          .from("session_summaries")
+          .select("athlete_id, date_of_record, quality, peak_force_stats, angles_deg, athletes(first_name, last_name)")
+          .eq("program_id", programId!)
+          .not("athlete_id", "is", null)
+          .order("date_of_record", { ascending: true });
+
+        if (modeFilter) query = (query as any).eq("mode", modeFilter);
+        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
+
+        const { data } = await query;
+        if (!data) return;
+
+        // Group by athlete
+        const byAthlete = new Map<string, { name: string; vals: number[] }>();
+        for (const row of data as any[]) {
+          const id = row.athlete_id;
+          if (!id) continue;
+          const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}`.trim() : "Unknown";
+          let val: number | null = null;
+          if (athleteImprovedMetric === "strength") {
+            const si = row.quality?.strength_index;
+            if (si?.max != null) val = Math.round(si.max);
+            else { const pMv = row.peak_force_stats?.peak_mv ?? null; if (pMv != null) val = Math.round((pMv / 3320) * 1000); }
+          } else if (athleteImprovedMetric === "accuracy") {
+            val = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+            if (val != null) val = Math.round(Number(val) * 10) / 10;
+          } else if (athleteImprovedMetric === "reaction") {
+            val = row.quality?.avg_reaction_ms ?? null;
+            if (val != null) val = Math.round(val);
+          } else {
+            // form: use abs(angle) — improvement = abs moving toward 0
+            const angle = row.angles_deg?.mean ?? row.angles_deg?.avg ?? null;
+            if (angle != null) val = Math.round(Math.abs(Number(angle)) * 10) / 10;
+          }
+          if (val == null) continue;
+          if (!byAthlete.has(id)) byAthlete.set(id, { name, vals: [] });
+          byAthlete.get(id)!.vals.push(val);
+        }
+
+        const improved: AthleteImprovedRow[] = [];
+        for (const [athleteId, { name, vals }] of byAthlete) {
+          if (vals.length < 4) continue;
+          const half  = Math.floor(vals.length / 2);
+          const early = vals.slice(0, half).reduce((s, v) => s + v, 0) / half;
+          const late  = vals.slice(-half).reduce((s, v) => s + v, 0) / half;
+          // form & reaction: lower = better, so delta = early - late (positive = improved)
+          const delta = (athleteImprovedMetric === "reaction" || athleteImprovedMetric === "form")
+            ? Math.round((early - late) * 10) / 10
+            : Math.round(late - early);
+          improved.push({ athleteId, name, metric: athleteImprovedMetric, delta, from: Math.round(early * 10) / 10, to: Math.round(late * 10) / 10, sessions: vals.length });
+        }
+        improved.sort((a, b) => b.delta - a.delta);
+        setAthleteImprovedRows(improved.slice(0, 5));
+      } finally {
+        setAthleteImprovedLoading(false);
+      }
+    })();
+  }, [programId, athleteImprovedMetric, leaderCutoff]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Charts & Graphs
+  // ─────────────────────────────────────────────────────────────────────────
+  type ChartMetric = "strength" | "accuracy" | "reaction" | "volume";
+  type CompareMode = "athlete-athlete" | "athlete-team" | "team-team";
+  type EntityKind  = "athlete" | "team";
+  type ChartEntity = { kind: EntityKind; id: string; label: string };
+
+  // Per-week data point
+  type WeekPoint = { week: string; value: number | null }; // week = "YYYY-WW"
+
+  const [chartMetric,      setChartMetric]      = useState<ChartMetric>("strength");
+  const [compareMode,      setCompareMode]       = useState<CompareMode>("athlete-athlete");
+  const [chartEntityA,     setChartEntityA]      = useState<ChartEntity | null>(null);
+  const [chartEntityB,     setChartEntityB]      = useState<ChartEntity | null>(null);
+  const [chartDataA,       setChartDataA]        = useState<WeekPoint[]>([]);
+  const [chartDataB,       setChartDataB]        = useState<WeekPoint[]>([]);
+  const [chartLoadingA,    setChartLoadingA]     = useState(false);
+  const [chartLoadingB,    setChartLoadingB]     = useState(false);
+  const [chartHoverIdx,    setChartHoverIdx]     = useState<number | null>(null);
+
+  // Derive entity options based on compareMode
+  const chartAthleteOptions = useMemo<ChartEntity[]>(() =>
+    athletes.map(a => ({ kind: "athlete" as EntityKind, id: a.id, label: `${a.first_name} ${a.last_name}`.trim() }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    [athletes]
+  );
+  const chartTeamOptions = useMemo<ChartEntity[]>(() => {
+    const core = teams
+      .filter(t => t.team_type === "core")
+      .map(t => ({ kind: "team" as EntityKind, id: t.id, label: t.name, teamType: "core" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    const sub = teams
+      .filter(t => t.team_type !== "core")
+      .map(t => ({ kind: "team" as EntityKind, id: t.id, label: t.name, teamType: "sub" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return [...core, ...sub];
+  }, [teams]);
+
+  function chartEntityOptionsFor(slot: "A" | "B"): ChartEntity[] {
+    if (compareMode === "athlete-athlete") return chartAthleteOptions;
+    if (compareMode === "team-team")       return chartTeamOptions;
+    // athlete-team: A = athlete, B = team
+    return slot === "A" ? chartAthleteOptions : chartTeamOptions;
+  }
+
+  // Fetch data for a single entity + metric → weekly aggregated points
+  async function fetchChartData(entity: ChartEntity, metric: ChartMetric): Promise<WeekPoint[]> {
+    if (!supabase || !programId) return [];
+
+    // For sub-teams: resolve athlete IDs from team_members first
+    let athleteIds: string[] | null = null;
+    const teamInfo = entity.kind === "team" ? teams.find(t => t.id === entity.id) : null;
+    const isSubTeam = teamInfo != null && teamInfo.team_type !== "core";
+
+    if (isSubTeam) {
+      const { data: members } = await supabase
+        .from("team_members")
+        .select("athlete_id")
+        .eq("team_id", entity.id)
+        .not("athlete_id", "is", null);
+      athleteIds = (members ?? []).map((m: any) => m.athlete_id).filter(Boolean);
+      if (athleteIds.length === 0) return [];
+    }
+
+    // Build query scoped to this entity
+    let query = supabase
+      .from("session_summaries")
+      .select("date_of_record, mode, num_events, quality, peak_force_stats, session_duration_ms")
+      .eq("program_id", programId)
+      .order("date_of_record", { ascending: true });
+
+    if (entity.kind === "athlete") {
+      query = query.eq("athlete_id", entity.id);
+    } else if (isSubTeam && athleteIds) {
+      // Sub-team: sessions belonging to any member athlete
+      query = (query as any).in("athlete_id", athleteIds);
+    } else {
+      // Core team: sessions directly scoped by core_team_id
+      query = query.eq("core_team_id", entity.id);
+    }
+
+    // Scope mode for metric
+    if (metric === "strength") query = (query as any).eq("mode", "standard");
+    if (metric === "accuracy") query = (query as any).eq("mode", "accuracy");
+    if (metric === "reaction") query = (query as any).eq("mode", "reaction");
+
+    const { data, error } = await query;
+    if (error || !data) return [];
+
+    // Group into ISO weeks and aggregate
+    const weekMap = new Map<string, number[]>();
+    for (const row of data as any[]) {
+      const d = new Date(row.date_of_record ?? 0);
+      // ISO week key: YYYY-WW
+      const jan4 = new Date(d.getFullYear(), 0, 4);
+      const weekNum = Math.ceil(((d.getTime() - jan4.getTime()) / 86400000 + jan4.getDay() + 1) / 7);
+      const key = `${d.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+
+      let val: number | null = null;
+      if (metric === "strength") {
+        const si = row.quality?.strength_index;
+        if (si?.max != null) val = Math.round(si.max);
+        else {
+          const pfs = row.peak_force_stats;
+          const peakMv = pfs?.peak_mv ?? (pfs?.peak_v != null ? pfs.peak_v * 1000 : null);
+          if (peakMv != null) val = Math.round((peakMv / 3320) * 1000);
+        }
+      } else if (metric === "accuracy") {
+        val = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+        if (val != null) val = Math.round(Number(val) * 10) / 10;
+      } else if (metric === "reaction") {
+        val = row.quality?.avg_reaction_ms ?? null;
+        if (val != null) val = Math.round(val);
+      } else if (metric === "volume") {
+        val = row.num_events ?? 0;
+      }
+
+      if (val != null) {
+        if (!weekMap.has(key)) weekMap.set(key, []);
+        weekMap.get(key)!.push(val);
+      }
+    }
+
+    // Average within each week, sort chronologically
+    return Array.from(weekMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([week, vals]) => ({
+        week,
+        value: metric === "volume"
+          ? vals.reduce((s, v) => s + v, 0)           // sum for volume
+          : Math.round(vals.reduce((s, v) => s + v, 0) / vals.length), // avg for others
+      }));
+  }
+
+  // Re-fetch when entity or metric changes
+  useEffect(() => {
+    if (!chartEntityA) { setChartDataA([]); return; }
+    setChartLoadingA(true);
+    fetchChartData(chartEntityA, chartMetric)
+      .then(setChartDataA)
+      .finally(() => setChartLoadingA(false));
+  }, [chartEntityA, chartMetric, programId]);
+
+  useEffect(() => {
+    if (!chartEntityB) { setChartDataB([]); return; }
+    setChartLoadingB(true);
+    fetchChartData(chartEntityB, chartMetric)
+      .then(setChartDataB)
+      .finally(() => setChartLoadingB(false));
+  }, [chartEntityB, chartMetric, programId]);
+
+  // Reset selections when compare mode changes
+  useEffect(() => {
+    setChartEntityA(null);
+    setChartEntityB(null);
+    setChartDataA([]);
+    setChartDataB([]);
+  }, [compareMode]);
+
+  // Ensure teams + athletes are loaded when charts section is visible
+  useEffect(() => {
+    if (!programId || !supabase) return;
+    if (athletes.length === 0) {
+      supabase!.from("athletes").select("id, first_name, last_name, height, weight, sport, position")
+        .eq("program_id", programId).order("last_name")
+        .then(({ data }) => { if (data) setAthletes(data as any); });
+    }
+    if (teams.length === 0) {
+      supabase!.from("teams")
+        .select("id, name, team_type, parent_team_id, created_by, program_id, team_members(athlete_id)")
+        .eq("program_id", programId).order("name")
+        .then(({ data }) => {
+          if (data) setTeams((data as any[]).map((t: any) => ({
+            ...t,
+            member_count: (t.team_members ?? []).filter((m: any) => m.athlete_id !== null).length,
+            team_members: undefined,
+          })));
+        });
+    }
+  }, [programId, athletes.length, teams.length]);
+
+  // ── Skeleton helper — shape-matched shimmer blocks ──────────────────────
+  const Skel = ({ w, h = 14, r = 6, style }: { w: number | string; h?: number; r?: number; style?: React.CSSProperties }) => (
+    <div className="ts-skel" style={{ width: w, height: h, borderRadius: r, flexShrink: 0, ...style }} />
+  );
 
   const tabBtn = (key: TabKey, label: string) => (
     <button
@@ -963,6 +2088,19 @@ export default function Dashboard() {
           setAthletes((prev) => [...prev, athlete as Athlete].sort((a, b) =>
             a.last_name.localeCompare(b.last_name)
           ));
+        }}
+      />
+
+      <EditAthleteModal
+        open={Boolean(editAthleteTarget)}
+        athlete={editAthleteTarget}
+        onClose={() => setEditAthleteTarget(null)}
+        onSaved={(updated) => {
+          // Merge the updated fields back into the athletes list in place
+          setAthletes((prev) =>
+            prev.map((a) => (a.id === updated.id ? { ...a, ...updated } : a))
+          );
+          setEditAthleteTarget(null);
         }}
       />
 
@@ -1045,64 +2183,452 @@ export default function Dashboard() {
               <div className="ts-cardTop">
                 <div className="ts-cardTitle">Recent Sessions</div>
                 <div className="ts-cardMeta">
-                  {recentSessionsLoading ? "Loading…" : `${recentSessions.length} sessions`}
+                  {recentSessionsLoading ? "Loading…" : filteredSessions.length > 0 ? `${sessionPage * SESSION_PAGE_SIZE + 1}–${Math.min((sessionPage + 1) * SESSION_PAGE_SIZE, filteredSessions.length)} of ${filteredSessions.length}` : "0 sessions"}
                 </div>
               </div>
+
+              {/* Filters row */}
+              {!recentSessionsLoading && recentSessions.length > 0 && (() => {
+                // Theme-adaptive colour tokens — all filter chrome derives from these
+                const ink       = isDark ? "255,255,255" : "20,20,40";
+                const subtleBg  = isDark ? `rgba(${ink},0.04)`  : `rgba(${ink},0.05)`;
+                const subtleBdr = isDark ? `rgba(${ink},0.12)`  : `rgba(${ink},0.14)`;
+                const idleFg    = isDark ? `rgba(${ink},0.45)`  : `rgba(${ink},0.45)`;
+                const activeFg  = isDark ? `rgba(${ink},0.95)`  : `rgba(${ink},0.92)`;
+                const activeBg  = isDark ? `rgba(${ink},0.10)`  : `rgba(${ink},0.09)`;
+                const activeBdr = isDark ? `rgba(${ink},0.30)`  : `rgba(${ink},0.28)`;
+                const clearFg   = isDark ? `rgba(${ink},0.40)`  : `rgba(${ink},0.40)`;
+                const clearFgHover = isDark ? `rgba(${ink},0.70)` : `rgba(${ink},0.72)`;
+                const clearBdr     = isDark ? `rgba(${ink},0.14)` : `rgba(${ink},0.16)`;
+                const clearBdrHover= isDark ? `rgba(${ink},0.28)` : `rgba(${ink},0.30)`;
+
+
+                return (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+
+                    {/* ── Athlete dropdown ── */}
+                    <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+                      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"
+                        style={{ position: "absolute", left: 10, pointerEvents: "none", opacity: 0.55, flexShrink: 0 }}>
+                        <circle cx="7" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                        <path d="M2 12c0-2.761 2.239-4 5-4s5 1.239 5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                      </svg>
+                      <select
+                        value={sessionAthleteFilter}
+                        onChange={(e) => setSessionAthleteFilter(e.target.value)}
+                        style={{
+                          background: sessionAthleteFilter !== "all" ? "rgba(180,0,255,0.14)" : subtleBg,
+                          border: sessionAthleteFilter !== "all"
+                            ? "1px solid rgba(180,0,255,0.45)"
+                            : `1px solid ${subtleBdr}`,
+                          borderRadius: 10,
+                          color: sessionAthleteFilter !== "all" ? "rgba(210,140,255,0.95)" : "inherit",
+                          font: "inherit",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          padding: "7px 14px 7px 30px",
+                          cursor: "pointer",
+                          outline: "none",
+                          appearance: "none",
+                          minWidth: 148,
+                          boxShadow: sessionAthleteFilter !== "all" ? "0 0 0 1px rgba(180,0,255,0.2)" : "none",
+                          transition: "background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease",
+                        }}
+                      >
+                        <option value="all">All Athletes</option>
+                        {sessionAthletes.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* ── Session type — segmented pill group ── */}
+                    <div style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      background: subtleBg,
+                      border: `1px solid ${subtleBdr}`,
+                      borderRadius: 10,
+                      padding: 3,
+                      gap: 2,
+                    }}>
+                      {([
+                        { value: "all",      label: "All",      icon: null },
+                        { value: "standard", label: "Standard", icon: "💥" },
+                        { value: "accuracy", label: "Accuracy", icon: "🎯" },
+                        { value: "reaction", label: "Reaction", icon: "⚡️" },
+                      ] as { value: string; label: string; icon: string | null }[]).map(({ value, label, icon }) => {
+                        const isActive    = sessionModeFilter === value;
+                        const isAccented  = isActive && value !== "all";
+                        const accentColor = value === "accuracy" ? "#00dcff" : value === "reaction" ? "#ffcc00" : "#b400ff";
+                        const accentBg    = value === "accuracy" ? "rgba(0,220,255,0.14)"  : value === "reaction" ? "rgba(255,200,0,0.14)"  : "rgba(180,0,255,0.18)";
+                        const accentBdr   = value === "accuracy" ? "rgba(0,220,255,0.40)"  : value === "reaction" ? "rgba(255,200,0,0.38)"  : "rgba(180,0,255,0.45)";
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setSessionModeFilter(value)}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 4,
+                              padding: "5px 11px",
+                              borderRadius: 7,
+                              border: isActive
+                                ? `1px solid ${isAccented ? accentBdr : activeBdr}`
+                                : "1px solid transparent",
+                              background: isActive
+                                ? (isAccented ? accentBg : activeBg)
+                                : "transparent",
+                              color: isActive
+                                ? (isAccented ? accentColor : activeFg)
+                                : idleFg,
+                              font: "inherit",
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              letterSpacing: "0.01em",
+                              transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {icon && <span style={{ fontSize: 11, lineHeight: 1 }}>{icon}</span>}
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Clear — only when a non-default filter is active ── */}
+                    {(sessionModeFilter !== "all" || sessionAthleteFilter !== "all") && (
+                      <button
+                        type="button"
+                        onClick={() => { setSessionModeFilter("all"); setSessionAthleteFilter("all"); }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 5,
+                          background: "transparent",
+                          border: `1px solid ${clearBdr}`,
+                          borderRadius: 10,
+                          color: clearFg,
+                          font: "inherit",
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: "7px 11px",
+                          cursor: "pointer",
+                          letterSpacing: "0.04em",
+                          transition: "color 140ms ease, border-color 140ms ease",
+                        }}
+                        onMouseEnter={(e) => {
+                          (e.currentTarget as HTMLButtonElement).style.color = clearFgHover;
+                          (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdrHover;
+                        }}
+                        onMouseLeave={(e) => {
+                          (e.currentTarget as HTMLButtonElement).style.color = clearFg;
+                          (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdr;
+                        }}
+                      >
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                          <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                        </svg>
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
 
               {recentSessionsError ? (
                 <div className="ts-athleteError">{recentSessionsError}</div>
               ) : recentSessionsLoading ? (
-                <div className="ts-athleteEmpty">Loading recent sessions…</div>
-              ) : recentSessions.length === 0 ? (
-                <div className="ts-athleteEmpty">No sessions found for this program.</div>
-              ) : (
-                <div className="ts-recentSessionsList">
-                  {recentSessions.map((session) => (
-                    <div
-                      key={session.id}
-                      className={`ts-recentSessionRow${selectedSessionId === session.id ? " isSelected" : ""}`}
-                      onClick={() => {
-                        setSelectedSessionId(session.id);
-                        resetReplay();
-                      }}
-                    >
-                      <div className="ts-recentSessionAvatar">
-                        {session.athleteFirstName[0]}{session.athleteLastName[0]}
+                <div className="ts-recentSessionsList" style={{ gap: 6 }}>
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 2px" }}>
+                      <Skel w={36} h={36} r={50} />
+                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                        <Skel w={`${55 + (i % 3) * 15}%`} h={12} />
+                        <Skel w="38%" h={10} />
                       </div>
-                      <div className="ts-recentSessionInfo">
-                        <div className="ts-recentSessionAthlete">
-                          {session.athleteFirstName} {session.athleteLastName}
-                        </div>
-                        <div className="ts-recentSessionMeta">{formatSessionTime(session.timestamp)}</div>
-                      </div>
-                      <div
-                        className="ts-recentSessionMode"
-                        style={(() => {
-                          const m = (session.mode ?? "standard").toLowerCase();
-                          const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
-                          const icon  = m === "accuracy" ? "🎯 " : m === "reaction" ? "⚡️ " : "💥 ";
-                          return {
-                            background: `${color}14`,
-                            border: `1px solid ${color}44`,
-                            color,
-                          };
-                        })()}
-                      >
-                        {(() => {
-                          const m = (session.mode ?? "standard").toLowerCase();
-                          const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
-                          const label = m.charAt(0).toUpperCase() + m.slice(1);
-                          return `${icon} ${label}`;
-                        })()}
-                      </div>
-                      <div className="ts-recentSessionChevron">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                          <path d="M5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                      </div>
+                      <Skel w={68} h={24} r={999} />
+                      <Skel w={14} h={14} r={4} />
                     </div>
                   ))}
                 </div>
+              ) : recentSessions.length === 0 ? (
+                <div className="ts-athleteEmpty">No sessions found for this program.</div>
+              ) : filteredSessions.length === 0 ? (
+                <div className="ts-athleteEmpty">No sessions match the selected filters.</div>
+              ) : (
+                <>
+                  {/* ── Avatar popover ── */}
+                  {avatarPopover && (() => {
+                    const session = recentSessions.find(s => s.id === avatarPopover.sessionId);
+                    if (!session?.athleteId) return null;
+
+                    const athleteId = session.athleteId;
+                    const fullName  = `${session.athleteFirstName} ${session.athleteLastName}`.trim();
+
+                    // Pull stats from existing leaderboard data
+                    const strengthRow = strengthRows.find(r => r.athleteId === athleteId);
+                    const reactionRow = reactionRows.find(r => r.athleteId === athleteId);
+                    const accuracyRow = accuracyRows.find(r => r.athleteId === athleteId);
+
+                    // Count sessions + last session from recentSessions
+                    const athleteSessions = recentSessions.filter(s => s.athleteId === athleteId);
+                    const sessionCount    = athleteSessions.length;
+                    const lastSession     = athleteSessions[0]; // already sorted newest first
+
+                    const ink    = isDark ? "255,255,255" : "20,20,40";
+                    const bg     = isDark ? "rgba(18,10,28,0.97)" : "rgba(255,255,255,0.98)";
+                    const border = isDark ? "rgba(180,0,255,0.35)" : "rgba(20,20,40,0.14)";
+
+                    return (
+                      <div
+                        onMouseEnter={() => {/* keep open while hovering popover */}}
+                        onMouseLeave={() => setAvatarPopover(null)}
+                        style={{
+                          position: "fixed",
+                          left: Math.min(avatarPopover.x + 12, window.innerWidth - 240),
+                          top:  Math.min(avatarPopover.y - 8, window.innerHeight - 220),
+                          zIndex: 9999,
+                          width: 224,
+                          borderRadius: 12,
+                          background: bg,
+                          border: `1px solid ${border}`,
+                          boxShadow: isDark
+                            ? "0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(180,0,255,0.12)"
+                            : "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+                          backdropFilter: "blur(16px)",
+                          overflow: "hidden",
+                          pointerEvents: "auto",
+                          animation: "tsPopoverIn 120ms ease",
+                        }}
+                      >
+                        {/* Header */}
+                        <div style={{ padding: "11px 13px 9px", borderBottom: `1px solid rgba(${ink},0.07)`, display: "flex", alignItems: "center", gap: 9 }}>
+                          <div style={{ width: 30, height: 30, borderRadius: "50%", background: "linear-gradient(135deg, rgba(180,0,255,0.30), rgba(180,0,255,0.12))", border: "1px solid rgba(180,0,255,0.35)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 800, color: "rgba(210,140,255,0.95)", flexShrink: 0 }}>
+                            {session.athleteFirstName[0]}{session.athleteLastName[0]}
+                          </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 800, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: `rgba(${ink},0.92)` }}>{fullName}</div>
+                            <div style={{ fontSize: 10, opacity: 0.45, marginTop: 1 }}>
+                              {sessionCount} session{sessionCount !== 1 ? "s" : ""}{lastSession ? ` · ${formatSessionTime(lastSession.timestamp)}` : ""}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Stats */}
+                        <div style={{ padding: "8px 13px 10px", display: "flex", flexDirection: "column", gap: 5 }}>
+                          {strengthRow ? (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>💥 Peak strength</span>
+                              <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(180,0,255,0.90)" }}>{strengthRow.peakIndex} <span style={{ fontSize: 10, opacity: 0.45 }}>/1000</span></span>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>💥 Strength</span>
+                              <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
+                            </div>
+                          )}
+                          {reactionRow ? (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>⚡️ Avg reaction</span>
+                              <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{reactionRow.avgReactionMs} <span style={{ fontSize: 10, opacity: 0.45 }}>ms</span></span>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>⚡️ Reaction</span>
+                              <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
+                            </div>
+                          )}
+                          {accuracyRow ? (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>🎯 Accuracy</span>
+                              <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{accuracyRow.accuracyPct}<span style={{ fontSize: 10, opacity: 0.45 }}>%</span></span>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <span style={{ fontSize: 11, opacity: 0.50 }}>🎯 Accuracy</span>
+                              <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* CTA */}
+                        <div style={{ padding: "0 13px 11px" }}>
+                          <div style={{ fontSize: 10, opacity: 0.38, textAlign: "center", paddingTop: 6, borderTop: `1px solid rgba(${ink},0.06)` }}>
+                            Click avatar to open full analysis ↓
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="ts-recentSessionsList">
+                    {pagedSessions.map((session) => (
+                      <div
+                        key={session.id}
+                        className={`ts-recentSessionRow${selectedSessionId === session.id ? " isSelected" : ""}`}
+                        onClick={() => {
+                          setSelectedSessionId(session.id);
+                          resetReplay();
+                        }}
+                      >
+                        {/* Avatar — hover for popover, click to jump to analysis */}
+                        <div
+                          className="ts-recentSessionAvatar"
+                          style={{ cursor: session.athleteId ? "pointer" : "default", position: "relative" }}
+                          onMouseEnter={(e) => {
+                            if (!session.athleteId) return;
+                            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                            setAvatarPopover({ sessionId: session.id, x: rect.right, y: rect.top });
+                          }}
+                          onMouseLeave={() => setAvatarPopover(null)}
+                          onClick={(e) => {
+                            if (!session.athleteId) return;
+                            e.stopPropagation();
+                            const athleteName = `${session.athleteFirstName} ${session.athleteLastName}`.trim();
+                            setAnalysisAthleteId(session.athleteId);
+                            setAnalysisAthleteName(athleteName);
+                            setAnalysisSection("power");
+                            setAvatarPopover(null);
+                            // Double rAF — first frame commits state, second frame paints, then scroll
+                            requestAnimationFrame(() => requestAnimationFrame(() => {
+                              analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                            }));
+                          }}
+                        >
+                          {session.athleteFirstName[0]}{session.athleteLastName[0]}
+                        </div>
+                        <div className="ts-recentSessionInfo">
+                          <div className="ts-recentSessionAthlete">
+                            {session.athleteFirstName} {session.athleteLastName}
+                          </div>
+                          <div className="ts-recentSessionMeta">{formatSessionTime(session.timestamp)}</div>
+                        </div>
+                        <div
+                          className="ts-recentSessionMode"
+                          style={(() => {
+                            const m = (session.mode ?? "standard").toLowerCase();
+                            const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
+                            return {
+                              background: `${color}14`,
+                              border: `1px solid ${color}44`,
+                              color,
+                            };
+                          })()}
+                        >
+                          {(() => {
+                            const m = (session.mode ?? "standard").toLowerCase();
+                            const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
+                            const label = m.charAt(0).toUpperCase() + m.slice(1);
+                            return `${icon} ${label}`;
+                          })()}
+                        </div>
+                        <div className="ts-recentSessionChevron">
+                          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                            <path d="M5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                          </svg>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* ── Pagination ── */}
+                  {totalSessionPages > 1 && (
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginTop: 12,
+                      paddingTop: 12,
+                      borderTop: `1px solid ${isDark ? "rgba(255,255,255,0.07)" : "rgba(20,20,40,0.08)"}`,
+                    }}>
+                      <button
+                        type="button"
+                        disabled={sessionPage === 0}
+                        onClick={() => setSessionPage((p) => p - 1)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "6px 12px",
+                          borderRadius: 9,
+                          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(20,20,40,0.14)"}`,
+                          background: "transparent",
+                          color: sessionPage === 0
+                            ? (isDark ? "rgba(255,255,255,0.20)" : "rgba(20,20,40,0.22)")
+                            : (isDark ? "rgba(255,255,255,0.75)" : "rgba(20,20,40,0.75)"),
+                          font: "inherit",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: sessionPage === 0 ? "not-allowed" : "pointer",
+                          opacity: sessionPage === 0 ? 0.45 : 1,
+                          transition: "color 140ms ease, background 140ms ease, border-color 140ms ease",
+                        }}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                          <path d="M9 3L5 7l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        Previous
+                      </button>
+
+                      {/* Page dots */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                        {Array.from({ length: totalSessionPages }).map((_, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => setSessionPage(i)}
+                            style={{
+                              width: i === sessionPage ? 20 : 7,
+                              height: 7,
+                              borderRadius: 999,
+                              border: "none",
+                              background: i === sessionPage
+                                ? "#b400ff"
+                                : (isDark ? "rgba(255,255,255,0.18)" : "rgba(20,20,40,0.18)"),
+                              cursor: "pointer",
+                              padding: 0,
+                              transition: "width 200ms ease, background 200ms ease",
+                            }}
+                            aria-label={`Page ${i + 1}`}
+                          />
+                        ))}
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={sessionPage >= totalSessionPages - 1}
+                        onClick={() => setSessionPage((p) => p + 1)}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "6px 12px",
+                          borderRadius: 9,
+                          border: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(20,20,40,0.14)"}`,
+                          background: "transparent",
+                          color: sessionPage >= totalSessionPages - 1
+                            ? (isDark ? "rgba(255,255,255,0.20)" : "rgba(20,20,40,0.22)")
+                            : (isDark ? "rgba(255,255,255,0.75)" : "rgba(20,20,40,0.75)"),
+                          font: "inherit",
+                          fontSize: 12,
+                          fontWeight: 700,
+                          cursor: sessionPage >= totalSessionPages - 1 ? "not-allowed" : "pointer",
+                          opacity: sessionPage >= totalSessionPages - 1 ? 0.45 : 1,
+                          transition: "color 140ms ease, background 140ms ease, border-color 140ms ease",
+                        }}
+                      >
+                        Next
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                          <path d="M5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
 
@@ -1121,66 +2647,157 @@ export default function Dashboard() {
                       ? "Loading…"
                       : selectedSessionId
                       ? replayEvents.length > 0
-                        ? `${replayIndex} / ${replayEvents.length} hits`
+                        ? `${activeEventIdx + 1} / ${replayEvents.length} events`
                         : `${heatmapCells.length} zones`
                       : "12 × 8 Grid"}
                   </div>
                 </div>
               </div>
 
-              {/* Replay controls — full width, above the body */}
-              {selectedSessionId && !heatmapLoading && replayEvents.length > 0 && (
-                <div className="ts-replayControls">
-                  {replayIndex === 0 && !isReplaying ? (
-                    <button className="ts-replayBtn ts-replayBtnPrimary" onClick={startReplay} title="Play replay">
-                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                        <path d="M3 2l8 4.5L3 11V2Z" fill="currentColor"/>
-                      </svg>
-                      Replay
-                    </button>
-                  ) : isReplaying ? (
-                    <button className="ts-replayBtn" onClick={pauseReplay} title="Pause">
-                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                        <rect x="2" y="2" width="3.5" height="9" rx="1" fill="currentColor"/>
-                        <rect x="7.5" y="2" width="3.5" height="9" rx="1" fill="currentColor"/>
-                      </svg>
-                      Pause
-                    </button>
-                  ) : (
-                    <button className="ts-replayBtn" onClick={resumeReplay} title="Resume">
-                      <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                        <path d="M3 2l8 4.5L3 11V2Z" fill="currentColor"/>
-                      </svg>
-                      Resume
-                    </button>
-                  )}
-                  <button className="ts-replayBtn" onClick={resetReplay} title="Reset" disabled={replayIndex === 0 && !isReplaying}>
-                    <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
-                      <path d="M2 6.5a4.5 4.5 0 1 1 1.2 3.1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-                      <path d="M2 10V6.5h3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                    Reset
-                  </button>
-                  <div className="ts-replaySpeed">
-                    <span className="ts-replaySpeedLabel">Speed</span>
-                    {([240, 120, 60] as const).map((ms) => (
-                      <button
-                        key={ms}
-                        className={`ts-replaySpeedBtn${replaySpeed === ms ? " isActive" : ""}`}
-                        onClick={() => setReplaySpeed(ms)}
-                      >
-                        {ms === 240 ? "0.5×" : ms === 120 ? "1×" : "2×"}
+              {/* Replay controls + timeline scrubber */}
+              {selectedSessionId && !heatmapLoading && replayEvents.length > 0 && (() => {
+                const totalMs  = sessionSummary?.session_duration_ms
+                               ?? replayEvents[replayEvents.length - 1]?.tMs
+                               ?? 1;
+                const pct      = Math.min(1, replayTimeMs / totalMs);
+                const fmtMs    = (ms: number) => {
+                  const s = Math.floor(ms / 1000);
+                  const m = Math.floor(s / 60);
+                  return m > 0 ? `${m}:${String(s % 60).padStart(2,"0")}` : `${s}s`;
+                };
+                const notStarted = activeEventIdx === -1 && !isReplaying;
+
+                return (
+                  <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+
+                    {/* Row 1: transport buttons + speed */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      {notStarted ? (
+                        <button className="ts-replayBtn ts-replayBtnPrimary" onClick={startReplay}>
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M2.5 1.5l8 4.5-8 4.5V1.5Z" fill="currentColor"/>
+                          </svg>
+                          Play
+                        </button>
+                      ) : isReplaying ? (
+                        <button className="ts-replayBtn" onClick={pauseReplay}>
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <rect x="1.5" y="1.5" width="3" height="9" rx="1" fill="currentColor"/>
+                            <rect x="7.5" y="1.5" width="3" height="9" rx="1" fill="currentColor"/>
+                          </svg>
+                          Pause
+                        </button>
+                      ) : (
+                        <button className="ts-replayBtn ts-replayBtnPrimary" onClick={resumeReplay}
+                          disabled={activeEventIdx >= replayEvents.length - 1}>
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <path d="M2.5 1.5l8 4.5-8 4.5V1.5Z" fill="currentColor"/>
+                          </svg>
+                          Resume
+                        </button>
+                      )}
+
+                      <button className="ts-replayBtn" onClick={resetReplay}
+                        disabled={notStarted}>
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                          <path d="M1.5 6a4.5 4.5 0 1 1 1.1 2.9" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                          <path d="M1.5 9.5V6h3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        Reset
                       </button>
-                    ))}
+
+                      <div className="ts-replaySpeed">
+                        <span className="ts-replaySpeedLabel">Speed</span>
+                        {([0.5, 1, 2] as const).map(s => (
+                          <button
+                            key={s}
+                            className={`ts-replaySpeedBtn${replaySpeed === s ? " isActive" : ""}`}
+                            onClick={() => {
+                              setReplaySpeed(s);
+                              // If mid-replay, reschedule remaining events at new speed
+                              if (isReplaying) {
+                                const nextIdx = activeEventIdx + 1;
+                                if (nextIdx < replayEvents.length) {
+                                  scheduleFrom(nextIdx, replayEvents[nextIdx].tMs, s);
+                                }
+                              }
+                            }}
+                          >
+                            {s === 0.5 ? "0.5×" : s === 1 ? "1×" : "2×"}
+                          </button>
+                        ))}
+                      </div>
+
+                      {/* Time counter */}
+                      <div style={{ marginLeft: "auto", fontSize: 11, fontVariantNumeric: "tabular-nums",
+                        opacity: 0.55, display: "flex", gap: 3, alignItems: "center" }}>
+                        <span style={{ opacity: 0.9 }}>{fmtMs(replayTimeMs)}</span>
+                        <span style={{ opacity: 0.4 }}>/</span>
+                        <span>{fmtMs(totalMs)}</span>
+                      </div>
+                    </div>
+
+                    {/* Row 2: timeline scrubber */}
+                    <div className="ts-replayTimeline"
+                      onClick={(e) => {
+                        const rect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+                        const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+                        seekTo(Math.round(ratio * totalMs));
+                      }}
+                    >
+                      {/* Track fill */}
+                      <div className="ts-replayTrackFill" style={{
+                        width: `${pct * 100}%`,
+                        background: `linear-gradient(90deg, ${modeAccent}99, ${modeAccent})`,
+                      }} />
+
+                      {/* Event dots */}
+                      {replayEvents.map((ev, idx) => {
+                        const dotPct = (ev.tMs / totalMs) * 100;
+                        const isFired  = idx <= activeEventIdx;
+                        const isActive = idx === activeEventIdx;
+                        // Size dot by SI: bigger = stronger hit
+                        const siNorm   = ev.si != null ? ev.si / 1000 : 0.4;
+                        const dotSize  = 5 + Math.round(siNorm * 5); // 5–10px
+                        return (
+                          <div
+                            key={ev.eventId}
+                            className="ts-replayDot"
+                            title={`Event ${idx + 1} · ${fmtMs(ev.tMs)}${ev.si != null ? ` · SI ${ev.si}` : ""}${ev.cellCount ? ` · ${ev.cellCount} cells` : ""}`}
+                            onClick={(e) => { e.stopPropagation(); seekTo(ev.tMs); }}
+                            style={{
+                              left:      `${dotPct}%`,
+                              width:     dotSize,
+                              height:    dotSize,
+                              marginTop: -(dotSize / 2),
+                              // Fired (on/behind playhead): solid mode color
+                              // Unfired (ahead of playhead): mode color at ~25% opacity
+                              background: isFired ? modeAccent : `${modeAccent}40`,
+                              boxShadow:  isActive ? `0 0 0 3px ${modeAccent}44` : "none",
+                              transform:  isActive ? "translate(-50%,-50%) scale(1.5)" : "translate(-50%,-50%) scale(1)",
+                              zIndex:     isActive ? 3 : 1,
+                            }}
+                          />
+                        );
+                      })}
+
+                      {/* Playhead */}
+                      <div className="ts-replayHead" style={{ left: `${pct * 100}%` }} />
+                    </div>
+
+                    {/* Row 3: active event info strip */}
+                    {activeEvent && (
+                      <div style={{ display: "flex", gap: 12, fontSize: 11,
+                        color: modeAccent, fontVariantNumeric: "tabular-nums", opacity: 0.85 }}>
+                        <span>Event {activeEventIdx + 1} of {replayEvents.length}</span>
+                        {activeEvent.si   != null && <span>SI {activeEvent.si}</span>}
+                        {activeEvent.cellCount > 0  && <span>{activeEvent.cellCount} cells</span>}
+                      </div>
+                    )}
+
                   </div>
-                  <div className="ts-replayProgress">
-                    <div
-                      className="ts-replayProgressFill"
-                      style={{ width: `${replayEvents.length > 0 ? (replayIndex / replayEvents.length) * 100 : 0}%` }}
-                    />
-                  </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* Body: empty state OR two-column bag + stats */}
               {!selectedSessionId ? (
@@ -1265,11 +2882,8 @@ export default function Dashboard() {
                               if (replayEvents.length > 0) {
                                 const hits = replayHeatmap.get(key) ?? 0;
                                 intensity = hits / maxReplayHits;
-                                if (replayIndex > 0 && replayEvents[replayIndex - 1]?.r === r && replayEvents[replayIndex - 1]?.c === c) {
-                                  kpa = replayEvents[replayIndex - 1].pressureKpa;
-                                } else {
-                                  kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;
-                                }
+                                // Derive kpa proxy from mv intensity
+                                kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;
                               } else {
                                 const cell = heatmapCells.find((hc) => hc.r === r && hc.c === c);
                                 intensity = cell?.intensity ?? 0;
@@ -1279,10 +2893,10 @@ export default function Dashboard() {
                               const isAlive = intensity > 0;
                               const color = isAlive ? pressureToColor(kpa) : null;
                               const glow  = isAlive ? pressureToGlow(kpa) : null;
-                              const isJustHit =
-                                replayIndex > 0 &&
-                                replayEvents[replayIndex - 1]?.r === r &&
-                                replayEvents[replayIndex - 1]?.c === c;
+                              // isJustHit: any cell in the active event matches this grid cell
+                              const isJustHit = activeEvent?.cells.some(
+                                cell => cell.r === r && cell.c === c
+                              ) ?? false;
 
                               return (
                                 <div
@@ -1359,7 +2973,14 @@ export default function Dashboard() {
                     </div>
 
                     {heatmapLoading ? (
-                      <div style={{ fontSize: 12, opacity: 0.40, padding: "8px 0" }}>Loading…</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
+                        {Array.from({ length: 5 }).map((_, i) => (
+                          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0" }}>
+                            <Skel w={`${45 + (i % 3) * 12}%`} h={11} />
+                            <Skel w="22%" h={13} />
+                          </div>
+                        ))}
+                      </div>
                     ) : summaryStats.length === 0 ? (
                       <div style={{ fontSize: 12, opacity: 0.40, padding: "8px 0" }}>No data available</div>
                     ) : (
@@ -1382,6 +3003,114 @@ export default function Dashboard() {
                         ))}
                       </div>
                     )}
+
+                    {/* ── Event Stats — matches Session Stats row style, live-updates on replay ── */}
+                    {replayEvents.length > 0 && (() => {
+                      const mode     = (sessionSummary?.mode ?? "standard").toLowerCase();
+                      const ev       = activeEvent;
+                      const hasEvent = ev !== null;
+
+                      // Value helpers
+                      const evSI      = ev?.si         != null ? String(ev.si)                        : "—";
+                      const evImpulse = ev?.impulse    != null ? String(ev.impulse)                   : "—";
+                      const evCells   = ev             != null ? String(ev.cellCount || ev.cells.length) : "—";
+                      const evAngle   = ev?.angleDeg   != null ? `${ev.angleDeg}°`                    : "—";
+                      const evDur     = ev?.durationMs != null ? `${ev.durationMs} ms`                : "—";
+                      const evRise    = ev?.riseMs     != null ? `${ev.riseMs} ms`                    : "—";
+
+                      // Accuracy: pull from quality if available
+                      const accPct    = sessionSummary?.quality?.accuracy_pct ?? sessionSummary?.quality?.score;
+                      const evAccuracy = accPct != null ? `${Number(accPct).toFixed(1)}%` : "—";
+
+                      // Reaction time: use the dedicated column, not duration as a proxy
+                      const evReactionTime = ev?.reactionTimeMs != null ? `${ev.reactionTimeMs} ms` : "—";
+
+                      type StatRow = { label: string; value: string; accent?: boolean };
+                      let eventStatRows: StatRow[];
+
+                      if (mode === "accuracy") {
+                        eventStatRows = [
+                          { label: "Accuracy",        value: evAccuracy,  accent: true },
+                          { label: "Cells Hit",        value: evCells },
+                          { label: "Strength Index",   value: evSI },
+                          { label: "Duration",         value: evDur },
+                          { label: "Angle",            value: evAngle },
+                        ];
+                      } else if (mode === "reaction") {
+                        eventStatRows = [
+                          { label: "Reaction Time",    value: evReactionTime,  accent: true },
+                          { label: "Duration",         value: evDur },
+                          { label: "Rise Time",        value: evRise },
+                          { label: "Angle",            value: evAngle },
+                        ];
+                      } else {
+                        // standard
+                        eventStatRows = [
+                          { label: "Strength Index",   value: evSI,        accent: true },
+                          { label: "Impulse Index",    value: evImpulse },
+                          { label: "Cells Hit",        value: evCells },
+                          { label: "Angle",            value: evAngle },
+                        ];
+                      }
+
+                      return (
+                        <div style={{ marginTop: 14 }}>
+                          {/* Header — same style as "Session Stats" label above */}
+                          <div style={{
+                            display: "flex", alignItems: "center", gap: 6, marginBottom: 10,
+                          }}>
+                            <div style={{
+                              fontSize: 10, fontWeight: 800, letterSpacing: "0.08em",
+                              textTransform: "uppercase", opacity: 0.40,
+                            }}>
+                              Event Stats
+                            </div>
+                            {/* Live pulse dot */}
+                            <div style={{
+                              width: 5, height: 5, borderRadius: "50%",
+                              background: hasEvent ? modeAccent : "rgba(255,255,255,0.18)",
+                              boxShadow: hasEvent ? `0 0 5px 2px ${modeAccent}55` : "none",
+                              transition: "background 200ms, box-shadow 200ms",
+                            }} />
+                          </div>
+
+                          {/* Rows — identical markup to ts-summaryRow */}
+                          <div className="ts-summaryList">
+                            {eventStatRows.map((row) => (
+                              <div
+                                key={row.label}
+                                className={`ts-summaryRow${row.accent ? " isAccent" : ""}`}
+                                style={row.accent ? {
+                                  background: modeAccent + "12",
+                                  borderColor: modeAccent + "30",
+                                } : undefined}
+                              >
+                                <span className="ts-summaryRowLabel">{row.label}</span>
+                                <span
+                                  className="ts-summaryRowValue"
+                                  style={{
+                                    color: row.accent ? modeAccent : undefined,
+                                    opacity: hasEvent ? 1 : 0.30,
+                                    transition: "opacity 200ms ease",
+                                  }}
+                                >
+                                  {row.value}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+
+                          {!hasEvent && (
+                            <div style={{
+                              fontSize: 10, opacity: 0.28, textAlign: "center",
+                              marginTop: 7, fontWeight: 500,
+                            }}>
+                              Play or tap a dot to populate
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                 </div>
@@ -1389,121 +3118,1075 @@ export default function Dashboard() {
             </div>
 
             {/* AI Insights */}
-            <div className="ts-card ts-span2">
+            <div className="ts-card ts-span2" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
               <div className="ts-cardTop">
-                <div className="ts-cardTitle">AI Insights</div>
-                <div className="ts-cardMeta">placeholders</div>
+                <div className="ts-cardTitle">Coaching Insights</div>
+                <div className="ts-cardMeta">
+                  {coachInsights.filter(i => i.priority === "high").length > 0
+                    ? `${coachInsights.filter(i => i.priority === "high").length} high-priority`
+                    : `${coachInsights.length} insight${coachInsights.length !== 1 ? "s" : ""}`}
+                </div>
               </div>
 
-              <div className="ts-insights">
-                {insights.map((it) => (
-                  <div key={it.title} className="ts-insight">
-                    <div className="ts-insightTop">
-                      <div className="ts-tag">{it.tag}</div>
-                      <div className="ts-insightTitle">{it.title}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, flex: 1, overflowY: "auto", minHeight: 0 }}>
+                {coachInsights.map((insight, idx) => {
+                  const tagColors: Record<string, { bg: string; border: string; color: string }> = {
+                    Power:       { bg: "rgba(180,0,255,0.10)",  border: "rgba(180,0,255,0.30)",  color: "rgba(210,140,255,0.95)" },
+                    Accuracy:    { bg: "rgba(0,220,255,0.09)",  border: "rgba(0,220,255,0.28)",  color: "rgba(80,220,255,0.95)"  },
+                    Reaction:    { bg: "rgba(255,200,0,0.09)",  border: "rgba(255,200,0,0.28)",  color: "rgba(255,210,60,0.95)"  },
+                    Consistency: { bg: "rgba(80,220,160,0.09)", border: "rgba(80,220,160,0.26)", color: "rgba(80,220,160,0.95)"  },
+                    Fatigue:     { bg: "rgba(255,100,80,0.09)", border: "rgba(255,100,80,0.26)", color: "rgba(255,130,110,0.95)" },
+                    Tempo:       { bg: "rgba(255,170,0,0.09)",  border: "rgba(255,170,0,0.26)",  color: "rgba(255,190,60,0.95)"  },
+                  };
+                  const priorityDot: Record<string, string> = {
+                    high:   "#ff5f5f",
+                    medium: "#ffcc00",
+                    low:    "rgba(255,255,255,0.22)",
+                  };
+                  const tc = tagColors[insight.tag] ?? tagColors.Power;
+                  const ink = isDark ? "255,255,255" : "20,20,40";
+
+                  return (
+                    <div key={idx} style={{
+                      borderRadius: 12,
+                      border: `1px solid rgba(${ink},${isDark ? "0.08" : "0.10"})`,
+                      background: `rgba(${ink},${isDark ? "0.03" : "0.025"})`,
+                      overflow: "hidden",
+                    }}>
+                      {/* Header row */}
+                      <div style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        padding: "10px 14px 8px",
+                        borderBottom: `1px solid rgba(${ink},${isDark ? "0.07" : "0.08"})`,
+                      }}>
+                        {/* Priority dot */}
+                        <div style={{
+                          width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+                          background: priorityDot[insight.priority],
+                          boxShadow: insight.priority === "high" ? "0 0 6px #ff5f5faa" : "none",
+                        }} />
+                        {/* Tag pill */}
+                        <div style={{
+                          fontSize: 10, fontWeight: 800, letterSpacing: "0.07em",
+                          textTransform: "uppercase", padding: "2px 8px",
+                          borderRadius: 999, background: tc.bg, border: `1px solid ${tc.border}`, color: tc.color,
+                          flexShrink: 0,
+                        }}>
+                          {insight.tag}
+                        </div>
+                        {/* Headline */}
+                        <div style={{
+                          fontSize: 12, fontWeight: 700, flex: 1, minWidth: 0,
+                          color: `rgba(${ink},0.90)`, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }}>
+                          {insight.headline}
+                        </div>
+                      </div>
+
+                      {/* Numbers row */}
+                      {insight.numbers.length > 0 && (
+                        <div style={{
+                          display: "flex", gap: 0,
+                          borderBottom: `1px solid rgba(${ink},${isDark ? "0.07" : "0.08"})`,
+                          overflowX: "auto",
+                        }}>
+                          {insight.numbers.map((n, ni) => (
+                            <div key={ni} style={{
+                              flex: "1 0 auto",
+                              padding: "8px 14px",
+                              borderRight: ni < insight.numbers.length - 1
+                                ? `1px solid rgba(${ink},${isDark ? "0.07" : "0.08"})` : "none",
+                              minWidth: 80,
+                            }}>
+                              <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.45, marginBottom: 3, whiteSpace: "nowrap" }}>
+                                {n.label}
+                              </div>
+                              <div style={{
+                                fontSize: 13, fontWeight: 800, fontVariantNumeric: "tabular-nums",
+                                color: n.deltaDir === "up"
+                                  ? tc.color
+                                  : n.deltaDir === "down"
+                                  ? (isDark ? "rgba(255,100,80,0.90)" : "rgba(200,50,40,0.90)")
+                                  : `rgba(${ink},0.88)`,
+                                lineHeight: 1.2,
+                              }}>
+                                {n.value}
+                              </div>
+                              {n.delta && (
+                                <div style={{ fontSize: 10, opacity: 0.45, marginTop: 2, whiteSpace: "nowrap" }}>
+                                  {n.delta}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Coaching cue */}
+                      <div style={{
+                        padding: "9px 14px 11px",
+                        display: "flex", alignItems: "flex-start", gap: 8,
+                      }}>
+                        {/* Whistle / coach icon */}
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"
+                          style={{ flexShrink: 0, marginTop: 1, opacity: 0.45 }}>
+                          <circle cx="5.5" cy="8.5" r="3.5" stroke="currentColor" strokeWidth="1.3"/>
+                          <path d="M8.5 6l3-3M8.5 5h3v2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        <div style={{ fontSize: 12, lineHeight: 1.55, opacity: 0.78, color: `rgba(${ink},0.88)` }}>
+                          {insight.cue}
+                        </div>
+                      </div>
                     </div>
-                    <div className="ts-insightBody">{it.body}</div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* In-Depth Athlete Analysis */}
+            <div ref={analysisCardRef} className="ts-card" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+              <div className="ts-cardTop">
+                <div className="ts-cardTitle">In-Depth Analysis</div>
+                <div className="ts-cardMeta">
+                  {analysisAthleteId
+                    ? analysisLoading ? "Loading…"
+                    : `${analysisSessions.length} session${analysisSessions.length !== 1 ? "s" : ""} · ${analysisAthleteName}`
+                    : "Select an athlete"}
+                </div>
+              </div>
+
+              {/* Athlete picker */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"
+                    style={{ position: "absolute", left: 10, pointerEvents: "none", opacity: 0.5, flexShrink: 0 }}>
+                    <circle cx="7" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                    <path d="M2 12c0-2.761 2.239-4 5-4s5 1.239 5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                  </svg>
+                  <select
+                    value={analysisAthleteId ?? ""}
+                    onChange={(e) => {
+                      const id   = e.target.value;
+                      const name = analysisAthleteOptions.find(a => a.id === id)?.name ?? "—";
+                      setAnalysisAthleteId(id || null);
+                      setAnalysisAthleteName(name);
+                    }}
+                    style={{
+                      background: analysisAthleteId ? "rgba(180,0,255,0.14)" : (isDark ? "rgba(255,255,255,0.06)" : "rgba(20,20,40,0.05)"),
+                      border: analysisAthleteId ? "1px solid rgba(180,0,255,0.45)" : `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
+                      borderRadius: 10,
+                      color: analysisAthleteId ? "rgba(210,140,255,0.95)" : "inherit",
+                      font: "inherit", fontSize: 12, fontWeight: 700,
+                      padding: "7px 14px 7px 30px",
+                      cursor: "pointer", outline: "none", appearance: "none",
+                      minWidth: 180,
+                      transition: "background 150ms ease, border-color 150ms ease",
+                    }}
+                  >
+                    <option value="">Select athlete…</option>
+                    {analysisAthleteOptions.map(a => (
+                      <option key={a.id} value={a.id}>{a.name}</option>
+                    ))}
+                  </select>
+                </div>
+                {analysisAthleteId && (
+                  <button
+                    type="button"
+                    onClick={() => { setAnalysisAthleteId(null); setAnalysisAthleteName("—"); setAnalysisSessions([]); }}
+                    style={{
+                      display: "inline-flex", alignItems: "center", gap: 5,
+                      background: "transparent",
+                      border: `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
+                      borderRadius: 10, color: isDark ? "rgba(255,255,255,0.40)" : "rgba(20,20,40,0.40)",
+                      font: "inherit", fontSize: 11, fontWeight: 700, padding: "7px 11px", cursor: "pointer",
+                    }}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                      <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                    </svg>
+                    Clear
+                  </button>
+                )}
+              </div>
+
+              {/* Empty / loading states */}
+              {!analysisAthleteId && (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.32, fontSize: 13, textAlign: "center", padding: "0 16px" }}>
+                  Choose an athlete above to see their individual breakdown across all session types.
+                </div>
+              )}
+              {analysisAthleteId && analysisLoading && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {/* Overview strip skeleton */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", borderRadius: 10, overflow: "hidden", border: `1px solid rgba(128,128,128,0.1)` }}>
+                    {Array.from({ length: 3 }).map((_, i) => (
+                      <div key={i} style={{ padding: "10px 12px", borderRight: i < 2 ? "1px solid rgba(128,128,128,0.1)" : "none" }}>
+                        <Skel w="50%" h={9} style={{ marginBottom: 6 }} />
+                        <Skel w="65%" h={15} />
+                      </div>
+                    ))}
+                  </div>
+                  {/* Tab buttons skeleton */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4 }}>
+                    {Array.from({ length: 4 }).map((_, i) => (
+                      <Skel key={i} w="100%" h={52} r={10} />
+                    ))}
+                  </div>
+                  {/* Stat rows skeleton */}
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: "1px solid rgba(128,128,128,0.08)" }}>
+                      <Skel w={`${40 + (i % 3) * 14}%`} h={11} />
+                      <Skel w="20%" h={13} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {analysisAthleteId && !analysisLoading && analysisSessions.length === 0 && (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.35, fontSize: 13, textAlign: "center", padding: "0 16px" }}>
+                  No sessions recorded yet for {analysisAthleteName}.
+                </div>
+              )}
+
+              {/* Full analysis */}
+              {analysisAthleteId && !analysisLoading && athleteAnalysis && (() => {
+                const a   = athleteAnalysis;
+                const ink = isDark ? "255,255,255" : "20,20,40";
+                const divider = `1px solid rgba(${ink},${isDark ? "0.07" : "0.08"})`;
+
+                function Sparkline({ values, color, height = 40 }: { values: number[]; color: string; height?: number }) {
+                  if (values.length < 2) return <span style={{ opacity: 0.3, fontSize: 11 }}>not enough data</span>;
+                  const W = 160, H = height;
+                  const min = Math.min(...values), max = Math.max(...values);
+                  const range = Math.max(max - min, 1);
+                  const pts = values.map((v, i) => {
+                    const x = (i / (values.length - 1)) * W;
+                    const y = H - ((v - min) / range) * (H - 6) - 3;
+                    return `${x.toFixed(1)},${y.toFixed(1)}`;
+                  }).join(" ");
+                  const dotPts = values.map((v, i) => ({
+                    x: (i / (values.length - 1)) * W,
+                    y: H - ((v - min) / range) * (H - 6) - 3,
+                  }));
+                  return (
+                    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{ overflow: "visible", display: "block" }}>
+                      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/>
+                      {dotPts.map((p, i) => (
+                        <circle key={i} cx={p.x} cy={p.y} r="2.5" fill={color} opacity="0.7"/>
+                      ))}
+                    </svg>
+                  );
+                }
+
+                function StatRow({ label, value, sub, highlight }: { label: string; value: string; sub?: string; highlight?: "good" | "warn" | "bad" }) {
+                  const valColor = highlight === "good" ? (isDark ? "rgba(80,220,160,0.95)" : "rgba(20,140,90,0.95)")
+                                 : highlight === "warn" ? (isDark ? "rgba(255,200,60,0.95)" : "rgba(180,120,0,0.95)")
+                                 : highlight === "bad"  ? (isDark ? "rgba(255,100,80,0.95)" : "rgba(180,50,30,0.95)")
+                                 : `rgba(${ink},0.88)`;
+                  return (
+                    <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, padding: "7px 0", borderBottom: divider }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, opacity: 0.5 }}>{label}</span>
+                      <span style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: valColor }}>{value}</span>
+                        {sub && <span style={{ fontSize: 10, opacity: 0.4 }}>{sub}</span>}
+                      </span>
+                    </div>
+                  );
+                }
+
+                const totalMins = Math.round(a.totalDurMs / 60000);
+                const durFmt    = totalMins >= 60 ? `${Math.floor(totalMins / 60)}h ${totalMins % 60}m` : `${totalMins}m`;
+
+                // Section config — drives the accordion tabs
+                type SectionKey = "power" | "accuracy" | "reaction" | "form";
+                const sections: { key: SectionKey; icon: string; label: string; count?: number; accent: string; accentBg: string; accentBdr: string; hasData: boolean }[] = [
+                  { key: "power",    icon: "💥", label: "Power",        count: a.stdCount,   accent: "#b400ff", accentBg: "rgba(180,0,255,0.09)",  accentBdr: "rgba(180,0,255,0.25)", hasData: a.strengthTrend.length > 0 },
+                  { key: "accuracy", icon: "🎯", label: "Accuracy",     count: a.accCount,   accent: "#00dcff", accentBg: "rgba(0,220,255,0.07)",   accentBdr: "rgba(0,220,255,0.22)", hasData: a.accMetrics.length > 0 },
+                  { key: "reaction", icon: "⚡️", label: "Reaction",     count: a.reactCount, accent: "#ffcc00", accentBg: "rgba(255,200,0,0.07)",   accentBdr: "rgba(255,200,0,0.22)", hasData: a.reactMetrics.length > 0 },
+                  { key: "form",     icon: "📐", label: "Form & Angle", count: undefined,    accent: isDark ? "rgba(255,255,255,0.80)" : "rgba(20,20,40,0.80)", accentBg: `rgba(${ink},0.05)`, accentBdr: `rgba(${ink},0.14)`, hasData: a.avgAngle != null },
+                ];
+
+                const activeSection = sections.find(s => s.key === analysisSection) ?? sections[0];
+
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+
+                    {/* ── Overview strip ── */}
+                    <div style={{
+                      display: "grid", gridTemplateColumns: "repeat(3, 1fr)",
+                      gap: 0, borderRadius: 10, overflow: "hidden",
+                      border: divider, marginBottom: 14, flexShrink: 0,
+                    }}>
+                      {[
+                        { label: "Sessions",  value: String(a.total) },
+                        { label: "Strikes",   value: a.totalEvents.toLocaleString() },
+                        { label: "Bag Time",  value: durFmt },
+                      ].map((item, i, arr) => (
+                        <div key={item.label} style={{
+                          padding: "10px 12px",
+                          borderRight: i < arr.length - 1 ? divider : "none",
+                          background: `rgba(${ink},${isDark ? "0.03" : "0.02"})`,
+                        }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, opacity: 0.42, marginBottom: 3 }}>{item.label}</div>
+                          <div style={{ fontSize: 15, fontWeight: 800, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{item.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* ── Accordion tab row ── */}
+                    <div style={{
+                      display: "grid", gridTemplateColumns: "repeat(4, 1fr)",
+                      gap: 4, marginBottom: 12, flexShrink: 0,
+                    }}>
+                      {sections.map(sec => {
+                        const isActive = analysisSection === sec.key;
+                        return (
+                          <button
+                            key={sec.key}
+                            type="button"
+                            onClick={() => setAnalysisSection(sec.key)}
+                            style={{
+                              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                              gap: 3, padding: "8px 4px",
+                              borderRadius: 10,
+                              border: isActive ? `1px solid ${sec.accentBdr}` : `1px solid rgba(${ink},${isDark ? "0.10" : "0.10"})`,
+                              background: isActive ? sec.accentBg : `rgba(${ink},${isDark ? "0.03" : "0.02"})`,
+                              cursor: "pointer", font: "inherit",
+                              transition: "background 150ms ease, border-color 150ms ease",
+                              opacity: !sec.hasData && !isActive ? 0.42 : 1,
+                            }}
+                          >
+                            <span style={{ fontSize: 15, lineHeight: 1 }}>{sec.icon}</span>
+                            <span style={{
+                              fontSize: 10, fontWeight: 800, letterSpacing: "0.04em",
+                              textTransform: "uppercase", lineHeight: 1,
+                              color: isActive ? sec.accent : `rgba(${ink},0.55)`,
+                              transition: "color 150ms ease",
+                            }}>{sec.label}</span>
+                            {sec.count != null && (
+                              <span style={{ fontSize: 9, opacity: 0.38, lineHeight: 1 }}>{sec.count} sess.</span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* ── Active section content (scrollable) ── */}
+                    <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
+
+                      {/* POWER */}
+                      {analysisSection === "power" && (
+                        <div>
+                          {a.strengthTrend.length === 0 ? (
+                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No standard sessions recorded yet.</div>
+                          ) : (
+                            <>
+                              <StatRow label="Consistency score" value={a.consistencyPct != null ? `${a.consistencyPct}%` : "—"} sub="avg/peak ratio" highlight={a.consistencyPct == null ? undefined : a.consistencyPct >= 80 ? "good" : a.consistencyPct >= 60 ? "warn" : "bad"} />
+                              <StatRow label="Latest peak index" value={String(a.strengthTrend[a.strengthTrend.length - 1].peak)} sub="/ 1000" highlight={a.strengthTrend[a.strengthTrend.length - 1].peak >= 700 ? "good" : a.strengthTrend[a.strengthTrend.length - 1].peak >= 450 ? "warn" : "bad"} />
+                              <StatRow label="Session trend" value={a.fatigueNote ?? "—"} highlight={a.fatigueNote?.includes("up") ? "good" : a.fatigueNote?.includes("down") ? "bad" : "warn"} />
+                              {a.cadenceTrend.length > 0 && <StatRow label="Avg cadence" value={`${(a.cadenceTrend.reduce((s, r) => s + r.hz, 0) / a.cadenceTrend.length).toFixed(1)} Hz`} />}
+                              {a.strengthTrend.length >= 2 && (
+                                <div style={{ marginTop: 14 }}>
+                                  <div style={{ fontSize: 10, opacity: 0.4, marginBottom: 6 }}>Peak strength index over time</div>
+                                  <Sparkline values={a.strengthTrend.map(r => r.peak)} color="#b400ff" />
+                                </div>
+                              )}
+                              <div style={{ marginTop: 14, padding: "9px 10px", borderRadius: 8, background: "rgba(180,0,255,0.08)", border: "1px solid rgba(180,0,255,0.18)", fontSize: 11, lineHeight: 1.6, opacity: 0.85 }}>
+                                {a.consistencyPct != null && a.consistencyPct < 65
+                                  ? `Consistency is low (${a.consistencyPct}%). Drill 8-count continuous combos to raise the floor.`
+                                  : a.fatigueNote?.includes("down")
+                                  ? `Output trending down. Prioritize recovery and focus on quality over quantity next session.`
+                                  : a.fatigueNote?.includes("up")
+                                  ? `Strength trending up. Add 10% volume or intensity next session.`
+                                  : `Output is stable. Introduce power-interval training to break the plateau.`}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* ACCURACY */}
+                      {analysisSection === "accuracy" && (
+                        <div>
+                          {a.accMetrics.length === 0 ? (
+                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No accuracy sessions recorded yet.</div>
+                          ) : (
+                            <>
+                              <StatRow label="Latest score" value={a.latestAccScore != null ? `${a.latestAccScore.toFixed(1)}%` : "—"} highlight={a.latestAccScore == null ? undefined : a.latestAccScore >= 80 ? "good" : a.latestAccScore >= 60 ? "warn" : "bad"} />
+                              {a.accDrift != null && <StatRow label="Accuracy drift" value={`${a.accDrift > 0 ? "+" : ""}${a.accDrift}%`} sub="first → latest" highlight={a.accDrift > 5 ? "good" : a.accDrift < -5 ? "bad" : "warn"} />}
+                              {a.accMetrics[a.accMetrics.length - 1]?.offset != null && <StatRow label="Avg offset (latest)" value={`${a.accMetrics[a.accMetrics.length - 1].offset!.toFixed(0)} mm`} highlight={a.accMetrics[a.accMetrics.length - 1].offset! < 20 ? "good" : a.accMetrics[a.accMetrics.length - 1].offset! < 40 ? "warn" : "bad"} />}
+                              {a.accMetrics.length >= 2 && (
+                                <div style={{ marginTop: 14 }}>
+                                  <div style={{ fontSize: 10, opacity: 0.4, marginBottom: 6 }}>Accuracy % over time</div>
+                                  <Sparkline values={a.accMetrics.map(r => r.score)} color="#00dcff" />
+                                </div>
+                              )}
+                              <div style={{ marginTop: 14, padding: "9px 10px", borderRadius: 8, background: "rgba(0,220,255,0.07)", border: "1px solid rgba(0,220,255,0.18)", fontSize: 11, lineHeight: 1.6, opacity: 0.85 }}>
+                                {a.latestAccScore != null && a.latestAccScore < 60
+                                  ? `Score below 60% — slow to target-lock fundamentals. 3×10 deliberate reps before adding speed every session.`
+                                  : a.accDrift != null && a.accDrift < -8
+                                  ? `Accuracy regressing (${a.accDrift}%). Reintroduce slow-speed form work before adding power.`
+                                  : a.accDrift != null && a.accDrift > 8
+                                  ? `Accuracy improving (+${a.accDrift}%). Introduce tighter targets or longer combos to maintain challenge.`
+                                  : `Accuracy is stable. Add moving-target or reaction-accuracy combos to push further.`}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* REACTION */}
+                      {analysisSection === "reaction" && (
+                        <div>
+                          {a.reactMetrics.length === 0 ? (
+                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No reaction sessions recorded yet.</div>
+                          ) : (
+                            <>
+                              <StatRow label="Latest avg reaction" value={a.latestReactAvg != null ? `${a.latestReactAvg} ms` : "—"} highlight={a.latestReactAvg == null ? undefined : a.latestReactAvg < 400 ? "good" : a.latestReactAvg < 650 ? "warn" : "bad"} />
+                              <StatRow label="Best ever reaction" value={a.reactMetrics.reduce((b, r) => r.best != null && r.best < b ? r.best : b, Infinity) < Infinity ? `${a.reactMetrics.reduce((b, r) => r.best != null && r.best < b ? r.best : b, Infinity)} ms` : "—"} highlight="good" />
+                              {a.reactDrift != null && <StatRow label="Reaction drift" value={`${a.reactDrift > 0 ? "+" : ""}${a.reactDrift} ms`} sub="first → latest" highlight={a.reactDrift < -20 ? "good" : a.reactDrift > 20 ? "bad" : "warn"} />}
+                              {a.reactMetrics.length >= 2 && (
+                                <div style={{ marginTop: 14 }}>
+                                  <div style={{ fontSize: 10, opacity: 0.4, marginBottom: 6 }}>Avg reaction ms over time (lower = better)</div>
+                                  <Sparkline values={a.reactMetrics.map(r => r.avg)} color="#ffcc00" />
+                                </div>
+                              )}
+                              <div style={{ marginTop: 14, padding: "9px 10px", borderRadius: 8, background: "rgba(255,200,0,0.07)", border: "1px solid rgba(255,200,0,0.20)", fontSize: 11, lineHeight: 1.6, opacity: 0.85 }}>
+                                {a.latestReactAvg != null && a.latestReactAvg > 700
+                                  ? `Reaction time is slow. Start with predictable-cue drills, then add random timing once avg drops below 600 ms.`
+                                  : a.reactDrift != null && a.reactDrift > 30
+                                  ? `Reaction slowing (+${a.reactDrift} ms). Vary cue signal timing to prevent anticipation.`
+                                  : a.reactDrift != null && a.reactDrift < -30
+                                  ? `Reaction improving (${a.reactDrift} ms). Push with multi-cue sequences.`
+                                  : `Reaction is stable. Introduce random-delay cues and mixed-target sessions to break ceiling.`}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {/* FORM & ANGLE */}
+                      {analysisSection === "form" && (
+                        <div>
+                          {a.avgAngle == null ? (
+                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No angle data recorded yet.</div>
+                          ) : (
+                            <>
+                              <StatRow label="Avg strike angle" value={`${a.avgAngle.toFixed(1)}°`} highlight={Math.abs(a.avgAngle) < 8 ? "good" : Math.abs(a.avgAngle) < 16 ? "warn" : "bad"} />
+                              <StatRow label="Bias direction" value={Math.abs(a.avgAngle) < 5 ? "Neutral" : a.avgAngle > 0 ? "Leans right / forward" : "Leans left / back"} highlight={Math.abs(a.avgAngle) < 5 ? "good" : "warn"} />
+                              <div style={{ marginTop: 14, padding: "9px 10px", borderRadius: 8, background: `rgba(${ink},0.05)`, border: `1px solid rgba(${ink},0.12)`, fontSize: 11, lineHeight: 1.6, opacity: 0.85 }}>
+                                {Math.abs(a.avgAngle) < 6
+                                  ? `Angle is neutral — good form consistency. Monitor for drift under fatigue.`
+                                  : Math.abs(a.avgAngle) < 14
+                                  ? `Slight ${a.avgAngle > 0 ? "forward/right" : "back/left"} bias (${a.avgAngle.toFixed(1)}°). Cue: square shoulders, drive elbow through center of target.`
+                                  : `Significant angle bias (${a.avgAngle.toFixed(1)}°). Address with form-only drills before adding power — injury risk is elevated.`}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Charts & Graphs */}
+            <div className="ts-card ts-span2" style={{ gridColumn: "1 / -1" }}>
+              <div className="ts-cardTop">
+                <div className="ts-cardTitle">Charts & Graphs</div>
+                <div className="ts-cardMeta">
+                  {chartEntityA && chartEntityB
+                    ? `${chartEntityA.label} vs ${chartEntityB.label}`
+                    : chartEntityA ? chartEntityA.label
+                    : "Select entities to compare"}
+                </div>
+              </div>
+
+              {(() => {
+                const ink = isDark ? "255,255,255" : "20,20,40";
+                const divider = `1px solid rgba(${ink},${isDark ? "0.07" : "0.09"})`;
+
+                // ── Metric labels & units ───────────────────────────────────
+                const metricMeta: Record<ChartMetric, { label: string; unit: string; mode: string; description: string }> = {
+                  strength: { label: "Strength Index",   unit: "/ 1000", mode: "Standard sessions", description: "Peak strength index (0–1000) per week" },
+                  accuracy: { label: "Accuracy Score",   unit: "%",      mode: "Accuracy sessions", description: "Avg accuracy % per week" },
+                  reaction: { label: "Reaction Time",    unit: "ms",     mode: "Reaction sessions", description: "Avg reaction time per week (lower = better)" },
+                  volume:   { label: "Strike Volume",    unit: "hits",   mode: "All sessions",      description: "Total strikes logged per week" },
+                };
+                const meta = metricMeta[chartMetric];
+
+                // ── Entity colors ───────────────────────────────────────────
+                const colorA = "#b400ff";
+                const colorB = "#00dcff";
+
+                // ── Merge week keys from both series ────────────────────────
+                const allWeeks = Array.from(new Set([
+                  ...chartDataA.map(p => p.week),
+                  ...chartDataB.map(p => p.week),
+                ])).sort();
+
+                const mergedA = allWeeks.map(w => chartDataA.find(p => p.week === w)?.value ?? null);
+                const mergedB = allWeeks.map(w => chartDataB.find(p => p.week === w)?.value ?? null);
+
+                const allValues = [...mergedA, ...mergedB].filter((v): v is number => v != null);
+                const yMin  = allValues.length > 0 ? Math.floor(Math.min(...allValues) * 0.92) : 0;
+                const yMax  = allValues.length > 0 ? Math.ceil( Math.max(...allValues) * 1.06)  : 100;
+                const yRange = Math.max(yMax - yMin, 1);
+
+                // SVG dimensions
+                const W = 860, H = 220, padL = 44, padR = 16, padT = 12, padB = 28;
+                const chartW = W - padL - padR;
+                const chartH = H - padT - padB;
+
+                function xPos(i: number): number {
+                  return padL + (allWeeks.length <= 1 ? chartW / 2 : (i / (allWeeks.length - 1)) * chartW);
+                }
+                function yPos(v: number): number {
+                  return padT + chartH - ((v - yMin) / yRange) * chartH;
+                }
+
+                function buildPath(values: (number | null)[]): string {
+                  const segments: string[] = [];
+                  let inSeg = false;
+                  values.forEach((v, i) => {
+                    if (v == null) { inSeg = false; return; }
+                    const x = xPos(i).toFixed(1), y = yPos(v).toFixed(1);
+                    if (!inSeg) { segments.push(`M${x},${y}`); inSeg = true; }
+                    else        { segments.push(`L${x},${y}`); }
+                  });
+                  return segments.join(" ");
+                }
+
+                // Y-axis gridlines
+                const yTicks = 4;
+                const yTickVals = Array.from({ length: yTicks + 1 }, (_, i) =>
+                  Math.round(yMin + (yRange / yTicks) * i)
+                );
+
+                // X-axis label (show ~5 evenly spaced week labels)
+                const xLabelIndices = allWeeks.length <= 6
+                  ? allWeeks.map((_, i) => i)
+                  : Array.from({ length: 5 }, (_, i) => Math.round(i * (allWeeks.length - 1) / 4));
+
+                function fmtWeek(w: string): string {
+                  const [yr, wk] = w.split("-W");
+                  return `W${wk} '${yr.slice(2)}`;
+                }
+
+                const hasData = allWeeks.length > 0;
+                const isLoading = chartLoadingA || chartLoadingB;
+
+                // ── Hover tooltip values ─────────────────────────────────────
+                const hoverA = chartHoverIdx != null ? mergedA[chartHoverIdx] : null;
+                const hoverB = chartHoverIdx != null ? mergedB[chartHoverIdx] : null;
+                const hoverWeek = chartHoverIdx != null ? allWeeks[chartHoverIdx] : null;
+
+                return (
+                  <div>
+                    {/* ── Controls row ── */}
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 16 }}>
+
+                      {/* Metric pills */}
+                      <div style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
+                        {(["strength","accuracy","reaction","volume"] as ChartMetric[]).map(m => {
+                          const isActive = chartMetric === m;
+                          const accentC  = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : m === "volume" ? "rgba(80,220,160,0.95)" : "#b400ff";
+                          const accentBg = m === "accuracy" ? "rgba(0,220,255,0.13)" : m === "reaction" ? "rgba(255,200,0,0.13)" : m === "volume" ? "rgba(80,220,160,0.12)" : "rgba(180,0,255,0.16)";
+                          const accentBdr= m === "accuracy" ? "rgba(0,220,255,0.38)" : m === "reaction" ? "rgba(255,200,0,0.36)" : m === "volume" ? "rgba(80,220,160,0.30)" : "rgba(180,0,255,0.40)";
+                          return (
+                            <button key={m} type="button" onClick={() => setChartMetric(m)} style={{
+                              padding: "5px 11px", borderRadius: 7, border: isActive ? `1px solid ${accentBdr}` : "1px solid transparent",
+                              background: isActive ? accentBg : "transparent",
+                              color: isActive ? accentC : `rgba(${ink},0.45)`,
+                              font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                              textTransform: "capitalize", transition: "all 140ms ease", whiteSpace: "nowrap",
+                            }}>
+                              {metricMeta[m].label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Compare mode pills */}
+                      <div style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
+                        {([
+                          { v: "athlete-athlete", label: "Athlete vs Athlete" },
+                          { v: "athlete-team",    label: "Athlete vs Team" },
+                          { v: "team-team",       label: "Team vs Team" },
+                        ] as { v: CompareMode; label: string }[]).map(({ v, label }) => {
+                          const isActive = compareMode === v;
+                          return (
+                            <button key={v} type="button" onClick={() => setCompareMode(v)} style={{
+                              padding: "5px 11px", borderRadius: 7,
+                              border: isActive ? `1px solid rgba(${ink},0.28)` : "1px solid transparent",
+                              background: isActive ? `rgba(${ink},0.09)` : "transparent",
+                              color: isActive ? `rgba(${ink},0.90)` : `rgba(${ink},0.45)`,
+                              font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                              transition: "all 140ms ease", whiteSpace: "nowrap",
+                            }}>{label}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* ── Entity selectors ── */}
+                    <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
+                      {(["A","B"] as const).map(slot => {
+                        const entity   = slot === "A" ? chartEntityA : chartEntityB;
+                        const setEntity= slot === "A" ? setChartEntityA : setChartEntityB;
+                        const color    = slot === "A" ? colorA : colorB;
+                        const opts     = chartEntityOptionsFor(slot);
+                        const isAthleteSlot = compareMode === "athlete-athlete" || (compareMode === "athlete-team" && slot === "A");
+                        const slotLabel = compareMode === "athlete-team" ? (slot === "A" ? "Athlete" : "Team") : compareMode === "team-team" ? "Team" : "Athlete";
+                        return (
+                          <div key={slot} style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                            {/* Color swatch */}
+                            <div style={{ width: 10, height: 10, borderRadius: "50%", background: color, flexShrink: 0, boxShadow: `0 0 6px ${color}88` }} />
+                            <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+                              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true"
+                                style={{ position: "absolute", left: 9, pointerEvents: "none", opacity: 0.45, flexShrink: 0 }}>
+                                {isAthleteSlot
+                                  ? <><circle cx="7" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/><path d="M2 12c0-2.761 2.239-4 5-4s5 1.239 5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></>
+                                  : <><rect x="2" y="5" width="10" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.4"/><path d="M5 5V3.5a2 2 0 0 1 4 0V5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></>
+                                }
+                              </svg>
+                              <select
+                                value={entity?.id ?? ""}
+                                onChange={e => {
+                                  const id  = e.target.value;
+                                  const opt = opts.find(o => o.id === id) ?? null;
+                                  setEntity(opt);
+                                }}
+                                style={{
+                                  background: entity ? `${color}18` : `rgba(${ink},0.05)`,
+                                  border: entity ? `1px solid ${color}55` : `1px solid rgba(${ink},0.13)`,
+                                  borderRadius: 10, color: entity ? color : "inherit",
+                                  font: "inherit", fontSize: 12, fontWeight: 700,
+                                  padding: "7px 12px 7px 27px",
+                                  cursor: "pointer", outline: "none", appearance: "none",
+                                  minWidth: 160, transition: "all 150ms ease",
+                                }}
+                              >
+                                <option value="">{slotLabel} {slot}…</option>
+                                {isAthleteSlot ? (
+                                  opts.map(o => <option key={o.id} value={o.id}>{o.label}</option>)
+                                ) : (
+                                  <>
+                                    {opts.filter((o: any) => o.teamType === "core").length > 0 && (
+                                      <optgroup label="── Full Roster">
+                                        {opts.filter((o: any) => o.teamType === "core").map(o => (
+                                          <option key={o.id} value={o.id}>{o.label}</option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                    {opts.filter((o: any) => o.teamType !== "core").length > 0 && (
+                                      <optgroup label="── Sub-Teams">
+                                        {opts.filter((o: any) => o.teamType !== "core").map(o => (
+                                          <option key={o.id} value={o.id}>{o.label}</option>
+                                        ))}
+                                      </optgroup>
+                                    )}
+                                  </>
+                                )}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* Description */}
+                      <span style={{ fontSize: 11, opacity: 0.38, marginLeft: 4 }}>{meta.description} · {meta.mode}</span>
+                    </div>
+
+                    {/* ── Chart area ── */}
+                    <div style={{
+                      borderRadius: 12, border: divider,
+                      background: `rgba(${ink},${isDark ? "0.025" : "0.018"})`,
+                      padding: "16px 16px 10px",
+                      position: "relative", overflow: "hidden",
+                    }}>
+                      {/* Legend */}
+                      <div style={{ display: "flex", gap: 16, marginBottom: 12, flexWrap: "wrap" }}>
+                        {[
+                          { entity: chartEntityA, color: colorA, loading: chartLoadingA },
+                          { entity: chartEntityB, color: colorB, loading: chartLoadingB },
+                        ].map(({ entity, color, loading }, i) => entity && (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <svg width="20" height="3" viewBox="0 0 20 3"><line x1="0" y1="1.5" x2="20" y2="1.5" stroke={color} strokeWidth="2" strokeDasharray={i === 1 ? "4 2" : "none"}/></svg>
+                            <span style={{ fontSize: 11, fontWeight: 700, color, opacity: loading ? 0.5 : 1 }}>
+                              {entity.label}{loading ? " (loading…)" : ""}
+                            </span>
+                          </div>
+                        ))}
+                        {/* Hover tooltip */}
+                        {chartHoverIdx != null && hoverWeek && (
+                          <div style={{ marginLeft: "auto", display: "flex", gap: 12, alignItems: "center", fontSize: 11, fontWeight: 700 }}>
+                            <span style={{ opacity: 0.4 }}>{fmtWeek(hoverWeek)}</span>
+                            {hoverA != null && <span style={{ color: colorA }}>{hoverA} <span style={{ opacity: 0.5, fontWeight: 600 }}>{meta.unit}</span></span>}
+                            {hoverB != null && <span style={{ color: colorB }}>{hoverB} <span style={{ opacity: 0.5, fontWeight: 600 }}>{meta.unit}</span></span>}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* SVG chart */}
+                      {isLoading ? (
+                        <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: "block" }}>
+                          {/* Y-axis skeleton labels */}
+                          {Array.from({ length: 5 }).map((_, i) => {
+                            const y = padT + (chartH / 4) * i;
+                            return (
+                              <g key={i}>
+                                <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="rgba(128,128,128,0.08)" strokeWidth="1"/>
+                                <rect x={0} y={y - 5} width={32} height={10} rx={3} className="ts-skel" />
+                              </g>
+                            );
+                          })}
+                          {/* X-axis skeleton labels */}
+                          {Array.from({ length: 5 }).map((_, i) => {
+                            const x = padL + (chartW / 4) * i;
+                            return <rect key={i} x={x - 14} y={H - padB + 6} width={28} height={9} rx={3} className="ts-skel" />;
+                          })}
+                          {/* Skeleton line A */}
+                          <rect x={padL} y={padT + chartH * 0.3} width={chartW} height={3} rx={2} className="ts-skel" style={{ opacity: 0.7 }} />
+                          {/* Skeleton line B (dashed look — two segments) */}
+                          <rect x={padL} y={padT + chartH * 0.55} width={chartW * 0.45} height={3} rx={2} className="ts-skel" style={{ opacity: 0.45 }} />
+                          <rect x={padL + chartW * 0.55} y={padT + chartH * 0.55} width={chartW * 0.45} height={3} rx={2} className="ts-skel" style={{ opacity: 0.45 }} />
+                        </svg>
+                      ) : !chartEntityA && !chartEntityB ? (
+                        <div style={{ height: H, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.28, fontSize: 13 }}>Select entities above to render the chart.</div>
+                      ) : !hasData ? (
+                        <div style={{ height: H, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.28, fontSize: 13 }}>No {meta.mode.toLowerCase()} found for the selected entities.</div>
+                      ) : (
+                        <svg
+                          width="100%" viewBox={`0 0 ${W} ${H}`}
+                          style={{ overflow: "visible", display: "block", cursor: "crosshair" }}
+                          onMouseLeave={() => setChartHoverIdx(null)}
+                          onMouseMove={e => {
+                            if (!allWeeks.length) return;
+                            const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
+                            const mouseX = (e.clientX - rect.left) / rect.width * W;
+                            const closestIdx = allWeeks.reduce((best, _, i) => {
+                              const dx = Math.abs(xPos(i) - mouseX);
+                              return dx < Math.abs(xPos(best) - mouseX) ? i : best;
+                            }, 0);
+                            setChartHoverIdx(closestIdx);
+                          }}
+                        >
+                          {/* Y-axis gridlines + labels */}
+                          {yTickVals.map(v => (
+                            <g key={v}>
+                              <line x1={padL} y1={yPos(v)} x2={W - padR} y2={yPos(v)} stroke={`rgba(${ink},${isDark ? "0.08" : "0.07"})`} strokeWidth="1"/>
+                              <text x={padL - 6} y={yPos(v) + 4} textAnchor="end" fontSize="9" fill={`rgba(${ink},0.35)`}>{v}</text>
+                            </g>
+                          ))}
+
+                          {/* X-axis labels */}
+                          {xLabelIndices.map(i => (
+                            <text key={i} x={xPos(i)} y={H - 4} textAnchor="middle" fontSize="9" fill={`rgba(${ink},0.35)`}>
+                              {fmtWeek(allWeeks[i])}
+                            </text>
+                          ))}
+
+                          {/* Entity B line (dashed, behind A) */}
+                          {chartEntityB && mergedB.some(v => v != null) && (
+                            <>
+                              <path d={buildPath(mergedB)} fill="none" stroke={colorB} strokeWidth="2" strokeDasharray="5 3" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/>
+                              {mergedB.map((v, i) => v != null && (
+                                <circle key={i} cx={xPos(i)} cy={yPos(v)} r={chartHoverIdx === i ? 5 : 3} fill={colorB} opacity={chartHoverIdx === i ? 1 : 0.7}/>
+                              ))}
+                            </>
+                          )}
+
+                          {/* Entity A line (solid, on top) */}
+                          {chartEntityA && mergedA.some(v => v != null) && (
+                            <>
+                              <path d={buildPath(mergedA)} fill="none" stroke={colorA} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" opacity="0.90"/>
+                              {mergedA.map((v, i) => v != null && (
+                                <circle key={i} cx={xPos(i)} cy={yPos(v)} r={chartHoverIdx === i ? 5 : 3} fill={colorA} opacity={chartHoverIdx === i ? 1 : 0.7}/>
+                              ))}
+                            </>
+                          )}
+
+                          {/* Hover vertical line */}
+                          {chartHoverIdx != null && (
+                            <line
+                              x1={xPos(chartHoverIdx)} y1={padT}
+                              x2={xPos(chartHoverIdx)} y2={padT + chartH}
+                              stroke={`rgba(${ink},0.22)`} strokeWidth="1" strokeDasharray="3 2"
+                            />
+                          )}
+                        </svg>
+                      )}
+                    </div>
+
+                    {/* ── Summary stats below chart ── */}
+                    {(chartDataA.length > 0 || chartDataB.length > 0) && (() => {
+                      function seriesSummary(data: WeekPoint[], color: string, entity: ChartEntity | null) {
+                        if (!entity || data.length === 0) return null;
+                        const vals = data.map(p => p.value).filter((v): v is number => v != null);
+                        if (!vals.length) return null;
+                        const avg  = Math.round(vals.reduce((s, v) => s + v, 0) / vals.length);
+                        const peak = Math.max(...vals);
+                        const low  = Math.min(...vals);
+                        const trend = vals.length >= 2 ? vals[vals.length - 1] - vals[0] : null;
+                        return { entity, color, avg, peak, low, trend, count: data.length };
+                      }
+                      const summaries = [
+                        seriesSummary(chartDataA, colorA, chartEntityA),
+                        seriesSummary(chartDataB, colorB, chartEntityB),
+                      ].filter(Boolean) as NonNullable<ReturnType<typeof seriesSummary>>[];
+
+                      if (!summaries.length) return null;
+                      return (
+                        <div style={{ display: "grid", gridTemplateColumns: `repeat(${summaries.length}, 1fr)`, gap: 10, marginTop: 14 }}>
+                          {summaries.map(s => (
+                            <div key={s.entity.id} style={{
+                              borderRadius: 10, border: `1px solid ${s.color}28`,
+                              background: `${s.color}09`, padding: "12px 14px",
+                            }}>
+                              <div style={{ fontSize: 11, fontWeight: 800, color: s.color, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                                <div style={{ width: 8, height: 8, borderRadius: "50%", background: s.color }} />
+                                {s.entity.label}
+                                <span style={{ fontSize: 10, opacity: 0.5, fontWeight: 600, marginLeft: 2 }}>({s.count} weeks)</span>
+                              </div>
+                              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
+                                {[
+                                  { label: "Avg",   value: `${s.avg} ${meta.unit}` },
+                                  { label: "Peak",  value: `${s.peak} ${meta.unit}` },
+                                  { label: "Low",   value: `${s.low} ${meta.unit}` },
+                                  { label: "Trend", value: s.trend != null ? `${s.trend > 0 ? "+" : ""}${s.trend} ${meta.unit}` : "—",
+                                    color: s.trend == null ? undefined : (chartMetric === "reaction" ? (s.trend < 0 ? "rgba(80,220,160,0.95)" : "rgba(255,100,80,0.90)") : (s.trend > 0 ? "rgba(80,220,160,0.95)" : "rgba(255,100,80,0.90)")) },
+                                ].map(stat => (
+                                  <div key={stat.label}>
+                                    <div style={{ fontSize: 9, fontWeight: 600, opacity: 0.4, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>{stat.label}</div>
+                                    <div style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: (stat as any).color ?? `rgba(${ink},0.88)` }}>{stat.value}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </>
+      ) : activeTab === "insights" ? (() => {
+        const isLoadingAny = strengthLoading || reactionLoading || accuracyLoading;
+        const hasAnyData   = strengthRows.length > 0 || reactionRows.length > 0 || accuracyRows.length > 0;
+        const ink          = isDark ? "255,255,255" : "20,20,40";
+
+        // ── Full onboarding state — shown while loading finishes or when truly no data ──
+        if (!isLoadingAny && !hasAnyData) return (
+          <div className="ts-dashGrid ts-dashMain">
+            <div style={{ gridColumn: "1 / -1" }}>
+
+              {/* Hero prompt */}
+              <div style={{
+                borderRadius: 16,
+                border: isDark ? "1px solid rgba(180,0,255,0.22)" : "1px solid rgba(180,0,255,0.18)",
+                background: isDark ? "rgba(180,0,255,0.07)" : "rgba(180,0,255,0.04)",
+                padding: "36px 40px",
+                marginBottom: 20,
+                display: "flex", alignItems: "flex-start", gap: 24, flexWrap: "wrap",
+              }}>
+                {/* Icon */}
+                <div style={{
+                  width: 56, height: 56, borderRadius: 14, flexShrink: 0,
+                  background: isDark ? "rgba(180,0,255,0.18)" : "rgba(180,0,255,0.12)",
+                  border: "1px solid rgba(180,0,255,0.30)",
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26,
+                }}>📊</div>
+                <div style={{ flex: 1, minWidth: 240 }}>
+                  <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 8, color: isDark ? "rgba(210,140,255,0.95)" : "rgba(120,0,200,0.90)" }}>
+                    Your leaderboards will appear here
+                  </div>
+                  <div style={{ fontSize: 13, lineHeight: 1.65, opacity: 0.72, maxWidth: 560 }}>
+                    Start recording sessions to unlock rankings, improvement trends, and team comparisons.
+                    Each section has a minimum session threshold — here's what to aim for first.
+                  </div>
+                </div>
+              </div>
+
+              {/* Unlock cards grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
+                {[
+                  {
+                    icon: "💥", label: "Athlete Leaderboard", accentColor: "#b400ff",
+                    accentBg: isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.06)",
+                    accentBdr: isDark ? "rgba(180,0,255,0.28)" : "rgba(180,0,255,0.20)",
+                    steps: [
+                      "Record Standard sessions for your athletes",
+                      "3+ sessions per athlete generates a Strength Index",
+                      "Rankings update automatically after each session",
+                    ],
+                  },
+                  {
+                    icon: "🎯", label: "Accuracy Leaderboard", accentColor: "#00dcff",
+                    accentBg: isDark ? "rgba(0,220,255,0.08)" : "rgba(0,220,255,0.05)",
+                    accentBdr: isDark ? "rgba(0,220,255,0.25)" : "rgba(0,220,255,0.18)",
+                    steps: [
+                      "Record Accuracy sessions for your athletes",
+                      "Each session logs accuracy % and avg offset",
+                      "Scores aggregate across all accuracy sessions",
+                    ],
+                  },
+                  {
+                    icon: "⚡️", label: "Reaction Leaderboard", accentColor: "#ffcc00",
+                    accentBg: isDark ? "rgba(255,200,0,0.08)" : "rgba(255,200,0,0.05)",
+                    accentBdr: isDark ? "rgba(255,200,0,0.25)" : "rgba(255,200,0,0.18)",
+                    steps: [
+                      "Record Reaction sessions for your athletes",
+                      "Avg and best reaction times are tracked per session",
+                      "Top 5 athletes ranked by fastest avg response",
+                    ],
+                  },
+                  {
+                    icon: "📈", label: "Most Improved", accentColor: isDark ? "rgba(80,220,160,0.95)" : "rgba(15,130,80,0.90)",
+                    accentBg: isDark ? "rgba(80,220,160,0.08)" : "rgba(15,130,80,0.05)",
+                    accentBdr: isDark ? "rgba(80,220,160,0.24)" : "rgba(15,130,80,0.18)",
+                    steps: [
+                      "Requires 4+ sessions per athlete in any one mode",
+                      "Compares first half vs last half of session history",
+                      "Automatically updates as more sessions are recorded",
+                    ],
+                  },
+                ].map(({ icon, label, accentColor, accentBg, accentBdr, steps }) => (
+                  <div key={label} style={{
+                    borderRadius: 12,
+                    border: `1px solid ${accentBdr}`,
+                    background: accentBg,
+                    padding: "16px 18px",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                      <span style={{ fontSize: 18 }}>{icon}</span>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: accentColor }}>{label}</span>
+                    </div>
+                    <ol style={{ margin: 0, padding: "0 0 0 16px", display: "flex", flexDirection: "column", gap: 6 }}>
+                      {steps.map((step, si) => (
+                        <li key={si} style={{ fontSize: 12, lineHeight: 1.55, opacity: 0.72 }}>{step}</li>
+                      ))}
+                    </ol>
                   </div>
                 ))}
               </div>
 
-              <div className="ts-cardHint">
-                Next: wire in "session summary" generation (peak/avg, strike clusters, fatigue trend, recommended drills).
-              </div>
-            </div>
-
-            {/* Analysis */}
-            <div className="ts-card">
-              <div className="ts-cardTop">
-                <div className="ts-cardTitle">In-Depth Analysis</div>
-                <div className="ts-cardMeta">coming soon</div>
-              </div>
-
-              <div className="ts-list">
-                <div className="ts-listItem">
-                  <div className="ts-listTitle">Consistency Score</div>
-                  <div className="ts-listVal">{connected ? "—" : "Connect to compute"}</div>
+              {/* Quick-start CTA */}
+              <div style={{
+                borderRadius: 12,
+                border: `1px solid rgba(${ink},${isDark ? "0.08" : "0.09"})`,
+                background: `rgba(${ink},${isDark ? "0.03" : "0.025"})`,
+                padding: "14px 20px",
+                display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <span style={{ fontSize: 16 }}>🚀</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Ready to get started?</div>
+                    <div style={{ fontSize: 12, opacity: 0.55 }}>Head to the Recent Sessions tab and record your first Standard session.</div>
+                  </div>
                 </div>
-                <div className="ts-listItem">
-                  <div className="ts-listTitle">Fatigue Curve</div>
-                  <div className="ts-listVal">Placeholder</div>
-                </div>
-                <div className="ts-listItem">
-                  <div className="ts-listTitle">Accuracy Drift</div>
-                  <div className="ts-listVal">Placeholder</div>
-                </div>
-                <div className="ts-listItem">
-                  <div className="ts-listTitle">Tempo Breakdown</div>
-                  <div className="ts-listVal">Placeholder</div>
-                </div>
+                <button
+                  type="button"
+                  className="ts-btn ts-btnSecondary"
+                  onClick={() => setActiveTab("recent")}
+                  style={{ fontSize: 12, padding: "8px 16px", whiteSpace: "nowrap", flexShrink: 0 }}
+                >
+                  Go to Recent Sessions →
+                </button>
               </div>
 
-              <button className="ts-btn ts-btnGhostWide" type="button" onClick={() => alert("Open analysis view later")}>
-                Open Analysis
-              </button>
-            </div>
-
-            {/* Charts */}
-            <div className="ts-card ts-span2">
-              <div className="ts-cardTop">
-                <div className="ts-cardTitle">Charts & Graphs</div>
-                <div className="ts-cardMeta">placeholders</div>
-              </div>
-
-              <div className="ts-chartsGrid">
-                <div className="ts-chartStub">
-                  <div className="ts-chartTitle">Force Distribution</div>
-                  <div className="ts-chartBox" />
-                </div>
-                <div className="ts-chartStub">
-                  <div className="ts-chartTitle">Speed Over Time</div>
-                  <div className="ts-chartBox" />
-                </div>
-                <div className="ts-chartStub">
-                  <div className="ts-chartTitle">Zone Frequency</div>
-                  <div className="ts-chartBox" />
-                </div>
-                <div className="ts-chartStub">
-                  <div className="ts-chartTitle">Session Comparisons</div>
-                  <div className="ts-chartBox" />
-                </div>
-              </div>
-
-              <div className="ts-cardHint">If you want, we can add a chart library next (Recharts is a great pick for React).</div>
             </div>
           </div>
-        </>
-      ) : activeTab === "insights" ? (
+        );
+
+        // ── Normal populated state ──
+        return (
         <div className="ts-dashGrid ts-dashMain">
-          {/* Leaderboard */}
+
+          {/* ── DATE RANGE FILTER — controls all leaderboards + most improved ── */}
+          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.45 }}>Date Range</span>
+              <span style={{ fontSize: 11, opacity: 0.32 }}>Applies to all leaderboards &amp; Most Improved</span>
+            </div>
+            <div style={{
+              display: "inline-flex",
+              background: isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)",
+              border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`,
+              borderRadius: 10, padding: 3, gap: 2,
+            }}>
+              {([7, 30, 90, "all"] as LeaderDateRange[]).map(r => {
+                const isActive = leaderDateRange === r;
+                const ink = isDark ? "255,255,255" : "20,20,40";
+                return (
+                  <button
+                    key={String(r)}
+                    type="button"
+                    onClick={() => setLeaderDateRange(r)}
+                    style={{
+                      padding: "6px 14px",
+                      borderRadius: 7,
+                      border: isActive
+                        ? isDark ? "1px solid rgba(180,0,255,0.55)" : `1px solid rgba(${ink},0.28)`
+                        : "1px solid transparent",
+                      background: isActive
+                        ? isDark ? "rgba(180,0,255,0.18)" : `rgba(${ink},0.09)`
+                        : "transparent",
+                      color: isActive
+                        ? isDark ? "rgba(210,140,255,0.96)" : `rgba(${ink},0.92)`
+                        : `rgba(${ink},0.45)`,
+                      font: "inherit",
+                      fontSize: 12,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      transition: "all 140ms ease",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {r === "all" ? "All time" : `${r}d`}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── ATHLETE SECTION HEADER ── */}
+          <div className="ts-span2" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingBottom: 4 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.45 }}>Athletes</div>
+            <div style={{ flex: 1, height: 1, background: isDark ? "rgba(255,255,255,0.08)" : "rgba(20,20,40,0.10)" }} />
+          </div>
+
+          {/* Athlete Leaderboard */}
           <div className="ts-card ts-span2">
             <div className="ts-cardTop">
-              <div className="ts-cardTitle">Leaderboard</div>
+              <div className="ts-cardTitle">Athlete Leaderboard</div>
               <div className="ts-cardMeta">
                 {leaderMetric === "strength"
-                  ? strengthLoading ? "Loading…" : `${strengthRows.length} athletes · live`
+                  ? strengthLoading ? "Loading…" : `${strengthRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}`
                   : leaderMetric === "reaction"
-                  ? reactionLoading ? "Loading…" : reactionRows.length > 0 ? `${reactionRows.length} athletes · live` : "no data yet"
-                  : accuracyLoading ? "Loading…" : accuracyRows.length > 0 ? `${accuracyRows.length} athletes · live` : "no data yet"}
+                  ? reactionLoading ? "Loading…" : reactionRows.length > 0 ? `${reactionRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"
+                  : accuracyLoading ? "Loading…" : accuracyRows.length > 0 ? `${accuracyRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"}
               </div>
             </div>
 
             <div className="ts-leaderTop">
               <div className="ts-leaderNote">
                 {leaderMetric === "strength"
-                  ? "Top 5 athletes by Strength Index (0–1000), derived from peak & avg force. Higher = more powerful."
+                  ? "Top athletes by Strength Index (0–1000), derived from peak & avg force across all standard sessions."
                   : leaderMetric === "reaction"
-                  ? "Top 5 athletes by average inter-event interval — lower is better. Best = fastest single response."
-                  : "Top 5 athletes by Accuracy Score (0–100%). Derived from avg impact force until quality data is available."}
+                  ? "Top athletes by avg reaction time — lower is better. Best = fastest single response."
+                  : "Top athletes by Accuracy Score (0–100%) across all accuracy sessions."}
               </div>
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="leaderMetric">Mode</label>
-                <select
-                  id="leaderMetric"
-                  className="ts-select"
-                  value={leaderMetric}
-                  onChange={(e) => setLeaderMetric(e.target.value as MetricKey)}
-                >
+                <select id="leaderMetric" className="ts-select" value={leaderMetric} onChange={(e) => setLeaderMetric(e.target.value as MetricKey)}>
                   <option value="strength">💥 Standard</option>
                   <option value="reaction">⚡️ Reaction</option>
                   <option value="accuracy">🎯 Accuracy</option>
@@ -1511,187 +4194,411 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="ts-leaderTable" role="table" aria-label="Leaderboard">
+            <div className="ts-leaderTable" role="table" aria-label="Athlete Leaderboard">
               <div className="ts-leaderRow ts-leaderHead" role="row">
                 <div className="ts-leaderCell rank" role="columnheader">#</div>
                 <div className="ts-leaderCell name" role="columnheader">Athlete</div>
-                {leaderMetric === "strength" ? (
-                  <>
-                    <div className="ts-leaderCell" role="columnheader">Peak Index</div>
-                    <div className="ts-leaderCell" role="columnheader">Avg Index</div>
-                    <div className="ts-leaderCell" role="columnheader">Sessions</div>
-                  </>
-                ) : leaderMetric === "reaction" ? (
-                  <>
-                    <div className="ts-leaderCell" role="columnheader">Avg Reaction</div>
-                    <div className="ts-leaderCell" role="columnheader">Best</div>
-                    <div className="ts-leaderCell" role="columnheader">Attempts</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
-                    <div className="ts-leaderCell" role="columnheader">Avg Offset</div>
-                    <div className="ts-leaderCell" role="columnheader">Sessions</div>
-                  </>
-                )}
+                {leaderMetric === "strength" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Peak Index</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg Index</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : leaderMetric === "reaction" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Avg Reaction</div>
+                  <div className="ts-leaderCell" role="columnheader">Best</div>
+                  <div className="ts-leaderCell" role="columnheader">Attempts</div>
+                </>) : (<>
+                  <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg Offset</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>)}
               </div>
 
               {leaderMetric === "strength" ? (
                 strengthLoading ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    Loading leaderboard…
-                  </div>
-                ) : strengthRows.length === 0 ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    No standard sessions recorded yet
-                  </div>
-                ) : strengthRows.map((row, idx) => (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingTop: 4 }}>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 8px" }}>
+                      <Skel w={20} h={12} r={4} />
+                      <Skel w={`${30 + (i % 3) * 10}%`} h={13} />
+                      <div style={{ marginLeft: "auto", display: "flex", gap: 24 }}>
+                        <Skel w={40} h={13} />
+                        <Skel w={36} h={13} />
+                        <Skel w={24} h={13} />
+                      </div>
+                    </div>
+                  ))}
+                </div>)
+                : strengthRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>💥</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No strength data yet</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Standard sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
+                </div>)
+                : strengthRows.map((row, idx) => (
                   <div key={row.athleteId} className="ts-leaderRow" role="row">
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
                       <div className="ts-leaderSub">Power profile</div>
                     </div>
-                    <div className="ts-leaderCell" role="cell">
-                      <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.peakIndex}</span>
-                      <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span>
-                    </div>
-                    <div className="ts-leaderCell" role="cell">
-                      <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgIndex}</span>
-                      <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span>
-                    </div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.peakIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
                     <div className="ts-leaderCell" role="cell">{row.sessions}</div>
                   </div>
                 ))
               ) : leaderMetric === "reaction" ? (
                 reactionLoading ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    Loading leaderboard…
-                  </div>
-                ) : reactionRows.length === 0 ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    No reaction sessions recorded yet
-                  </div>
-                ) : (
-                  <>
-                    {reactionRows.map((row, idx) => (
-                      <div key={row.athleteId} className="ts-leaderRow" role="row">
-                        <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
-                        <div className="ts-leaderCell name" role="cell">
-                          <div className="ts-leaderName">{row.name}</div>
-                          <div className="ts-leaderSub">Reaction profile</div>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">
-                          <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs}</span>
-                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms avg</span>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">
-                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs}</span>
-                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms best</span>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">{row.attempts}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingTop: 4 }}>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 8px" }}>
+                      <Skel w={20} h={12} r={4} />
+                      <Skel w={`${30 + (i % 3) * 10}%`} h={13} />
+                      <div style={{ marginLeft: "auto", display: "flex", gap: 24 }}>
+                        <Skel w={44} h={13} />
+                        <Skel w={36} h={13} />
+                        <Skel w={28} h={13} />
                       </div>
-                    ))}
-                    {/* Pad to 5 rows with ghost placeholders if fewer athletes exist */}
-                    {Array.from({ length: Math.max(0, 5 - reactionRows.length) }, (_, i) => (
-                      <div key={`ghost-r-${i}`} className="ts-leaderRow" role="row" style={{ opacity: 0.25 }}>
-                        <div className="ts-leaderCell rank" role="cell">{reactionRows.length + i + 1}</div>
-                        <div className="ts-leaderCell name" role="cell">
-                          <div className="ts-leaderName">—</div>
-                          <div className="ts-leaderSub">no data</div>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                      </div>
-                    ))}
-                  </>
-                )
+                    </div>
+                  ))}
+                </div>)
+                : reactionRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>⚡️</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No reaction data yet</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Reaction sessions to start tracking response times. Rankings show avg and best reaction ms per athlete.</div>
+                </div>)
+                : reactionRows.map((row, idx) => (
+                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                    <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                    <div className="ts-leaderCell name" role="cell">
+                      <div className="ts-leaderName">{row.name}</div>
+                      <div className="ts-leaderSub">Reaction profile</div>
+                    </div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms avg</span></div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms best</span></div>
+                    <div className="ts-leaderCell" role="cell">{row.attempts}</div>
+                  </div>
+                ))
               ) : (
-                // accuracy
                 accuracyLoading ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    Loading leaderboard…
-                  </div>
-                ) : accuracyRows.length === 0 ? (
-                  <div style={{ padding: "20px 0", textAlign: "center", fontSize: 13, opacity: 0.4 }}>
-                    No accuracy sessions recorded yet
-                  </div>
-                ) : (
-                  <>
-                    {accuracyRows.map((row, idx) => (
-                      <div key={row.athleteId} className="ts-leaderRow" role="row">
-                        <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
-                        <div className="ts-leaderCell name" role="cell">
-                          <div className="ts-leaderName">{row.name}</div>
-                          <div className="ts-leaderSub">Accuracy profile</div>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">
-                          <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{row.accuracyPct}</span>
-                          <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">
-                          <span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgOffsetCm > 0 ? row.avgOffsetCm : "—"}</span>
-                          {row.avgOffsetCm > 0 && <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>offset</span>}
-                        </div>
-                        <div className="ts-leaderCell" role="cell">{row.sessions}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingTop: 4 }}>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 8px" }}>
+                      <Skel w={20} h={12} r={4} />
+                      <Skel w={`${30 + (i % 3) * 10}%`} h={13} />
+                      <div style={{ marginLeft: "auto", display: "flex", gap: 24 }}>
+                        <Skel w={36} h={13} />
+                        <Skel w={40} h={13} />
+                        <Skel w={24} h={13} />
                       </div>
-                    ))}
-                    {/* Pad to 5 rows with ghost placeholders if fewer athletes exist */}
-                    {Array.from({ length: Math.max(0, 5 - accuracyRows.length) }, (_, i) => (
-                      <div key={`ghost-a-${i}`} className="ts-leaderRow" role="row" style={{ opacity: 0.25 }}>
-                        <div className="ts-leaderCell rank" role="cell">{accuracyRows.length + i + 1}</div>
-                        <div className="ts-leaderCell name" role="cell">
-                          <div className="ts-leaderName">—</div>
-                          <div className="ts-leaderSub">no data</div>
-                        </div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                        <div className="ts-leaderCell" role="cell">—</div>
-                      </div>
-                    ))}
-                  </>
-                )
+                    </div>
+                  ))}
+                </div>)
+                : accuracyRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>🎯</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No accuracy data yet</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Accuracy sessions to track placement scores and avg offset. Each session logs accuracy % automatically.</div>
+                </div>)
+                : accuracyRows.map((row, idx) => (
+                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                    <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                    <div className="ts-leaderCell name" role="cell">
+                      <div className="ts-leaderName">{row.name}</div>
+                      <div className="ts-leaderSub">Accuracy profile</div>
+                    </div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{row.accuracyPct}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span></div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgOffsetCm > 0 ? row.avgOffsetCm : "—"}</span>{row.avgOffsetCm > 0 && <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>offset</span>}</div>
+                    <div className="ts-leaderCell" role="cell">{row.sessions}</div>
+                  </div>
+                ))
               )}
             </div>
-
-            <div className="ts-cardHint">Strength index scaled from peak_force_stats (0–3320 mV = 0–1000). Accuracy score derived from avg force until the quality column is populated by your processing pipeline. Reaction best time derived from the minimum value in iei_ms.values.</div>
           </div>
 
-          {/* Most Improved */}
+          {/* Athlete Most Improved */}
           <div className="ts-card">
             <div className="ts-cardTop">
               <div className="ts-cardTitle">Most Improved</div>
-              <div className="ts-cardMeta">coming soon</div>
+              <div className="ts-cardMeta">{athleteImprovedLoading ? "Loading…" : athleteImprovedRows.length > 0 ? `${athleteImprovedRows.length} athletes` : "needs more data"}</div>
             </div>
 
-            <div className="ts-mostImproved">
-              {[
-                { title: "Strength",      subtitle: "largest combined jump in peak & avg index" },
-                { title: "Reaction Time", subtitle: "avg & best ms — reduction = improvement" },
-                { title: "Accuracy",      subtitle: "accuracy % & avg offset" },
-              ].map(({ title, subtitle }) => (
-                <div key={title} className="ts-mostRow">
-                  <div className="ts-miLabel">
-                    <div className="ts-miTitle">{title}</div>
-                    <div className="ts-miSubtitle">{subtitle}</div>
-                  </div>
-                  <div className="ts-miBody">
-                    <div className="ts-miName" style={{ opacity: 0.35 }}>—</div>
-                    <div className="ts-miPills" style={{ opacity: 0.35 }}>
-                      <div className="ts-improvePill">needs more sessions</div>
+            {/* Metric selector */}
+            <div style={{ display: "inline-flex", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)", border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`, borderRadius: 9, padding: 3, gap: 2, marginBottom: 14 }}>
+              {(["strength","reaction","accuracy","form"] as MetricKey[]).map(m => {
+                const isActive = athleteImprovedMetric === m;
+                const accent   = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : m === "form" ? (isDark ? "rgba(255,255,255,0.80)" : "rgba(20,20,40,0.80)") : "#b400ff";
+                const accentBg = m === "accuracy" ? "rgba(0,220,255,0.12)" : m === "reaction" ? "rgba(255,200,0,0.12)" : m === "form" ? (isDark ? "rgba(255,255,255,0.08)" : "rgba(20,20,40,0.07)") : "rgba(180,0,255,0.16)";
+                const accentBdr= m === "accuracy" ? "rgba(0,220,255,0.35)" : m === "reaction" ? "rgba(255,200,0,0.35)" : m === "form" ? (isDark ? "rgba(255,255,255,0.22)" : "rgba(20,20,40,0.22)") : "rgba(180,0,255,0.40)";
+                return (
+                  <button key={m} type="button" onClick={() => setAthleteImprovedMetric(m)} style={{ padding: "4px 10px", borderRadius: 6, border: isActive ? `1px solid ${accentBdr}` : "1px solid transparent", background: isActive ? accentBg : "transparent", color: isActive ? accent : isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)", font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "capitalize", transition: "all 130ms ease" }}>
+                    {m === "strength" ? "💥" : m === "reaction" ? "⚡️" : m === "accuracy" ? "🎯" : "📐"} {m === "form" ? "Form" : m}
+                  </button>
+                );
+              })}
+            </div>
+
+            {athleteImprovedLoading ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(128,128,128,0.08)" }}>
+                    <Skel w={20} h={12} r={4} />
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+                      <Skel w={`${40 + (i % 3) * 15}%`} h={12} />
+                      <Skel w="55%" h={9} />
                     </div>
+                    <Skel w={72} h={24} r={999} />
                   </div>
+                ))}
+              </div>
+            ) : athleteImprovedRows.length === 0 ? (
+              <div className="ts-mostImproved">
+                <div className="ts-mostRow">
+                  <div className="ts-miLabel">
+                    <div className="ts-miTitle" style={{ fontSize: 13 }}>
+                      {athleteImprovedMetric === "form" ? "📐 Form & Angle" : athleteImprovedMetric === "strength" ? "💥 Strength" : athleteImprovedMetric === "reaction" ? "⚡️ Reaction" : "🎯 Accuracy"}
+                    </div>
+                    <div className="ts-miSubtitle">needs 4+ sessions per athlete to compute trend</div>
+                  </div>
+                  <div className="ts-miBody"><div className="ts-miName" style={{ opacity: 0.3 }}>—</div></div>
                 </div>
-              ))}
+              </div>
+            ) : (
+              <div className="ts-mostImproved">
+                {athleteImprovedRows.map((row, idx) => {
+                  const isForm     = athleteImprovedMetric === "form";
+                  const isPositive = row.delta > 0;
+                  const accent = athleteImprovedMetric === "accuracy" ? "#00dcff" : athleteImprovedMetric === "reaction" ? "#ffcc00" : isForm ? (isDark ? "rgba(255,255,255,0.80)" : "rgba(20,20,40,0.80)") : "#b400ff";
+                  const unit   = athleteImprovedMetric === "reaction" ? "ms" : athleteImprovedMetric === "accuracy" ? "%" : isForm ? "°" : "pts";
+                  const fromVal = isForm ? `${row.from}°` : `${row.from}${unit}`;
+                  const toVal   = isForm ? `${row.to}°`   : `${row.to}${unit}`;
+                  const dirLabel= isForm ? (isPositive ? "↗ more neutral" : "↘ more biased") : (isPositive ? "▲" : "▼");
+                  return (
+                    <div key={row.athleteId} className="ts-mostRow">
+                      <div className="ts-leaderCell rank" style={{ fontSize: 13, fontWeight: 800, opacity: 0.4, minWidth: 24 }}>{idx + 1}</div>
+                      <div className="ts-miLabel" style={{ minWidth: 0, flex: 1 }}>
+                        <div className="ts-miTitle" style={{ fontSize: 13 }}>{row.name}</div>
+                        <div className="ts-miSubtitle">{fromVal} → {toVal}{isForm ? " avg bias" : ""} · {row.sessions} sessions</div>
+                      </div>
+                      <div className="ts-miPills">
+                        <div className="ts-improvePill" style={{ color: isPositive ? accent : "rgba(255,100,80,0.90)", borderColor: isPositive ? `${accent}40` : "rgba(255,100,80,0.30)", background: isPositive ? `${accent}10` : "rgba(255,100,80,0.08)", fontSize: 12 }}>
+                          {dirLabel} {isForm ? `${Math.abs(row.delta)}°` : `${Math.abs(row.delta)} ${unit}`}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* ── TEAM SECTION DIVIDER ── */}
+          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingTop: 8, paddingBottom: 4 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.45 }}>Teams</div>
+            <div style={{ flex: 1, height: 1, background: isDark ? "rgba(255,255,255,0.08)" : "rgba(20,20,40,0.10)" }} />
+          </div>
+
+          {/* Team Leaderboard */}
+          <div className="ts-card ts-span2">
+            <div className="ts-cardTop">
+              <div className="ts-cardTitle">Team Leaderboard</div>
+              <div className="ts-cardMeta">{teamLeaderLoading ? "Loading…" : teamLeaderRows.length > 0 ? `${teamLeaderRows.length} teams · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"}</div>
             </div>
 
-            <div className="ts-cardHint">
-              Will show deltas across a selectable time range once enough sessions are recorded per athlete.
+            <div className="ts-leaderTop">
+              <div className="ts-leaderNote">
+                {teamLeaderMetric === "strength"
+                  ? "Teams ranked by avg peak strength index across all standard sessions. Core = full roster, Sub = smaller groups."
+                  : teamLeaderMetric === "reaction"
+                  ? "Teams ranked by avg reaction time across all reaction sessions — lower is better."
+                  : "Teams ranked by avg accuracy score across all accuracy sessions."}
+              </div>
+              <div className="ts-leaderControls">
+                <label className="ts-leaderLabel" htmlFor="teamLeaderMetric">Mode</label>
+                <select id="teamLeaderMetric" className="ts-select" value={teamLeaderMetric} onChange={(e) => setTeamLeaderMetric(e.target.value as MetricKey)}>
+                  <option value="strength">💥 Standard</option>
+                  <option value="reaction">⚡️ Reaction</option>
+                  <option value="accuracy">🎯 Accuracy</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="ts-leaderTable" role="table" aria-label="Team Leaderboard">
+              <div className="ts-leaderRow ts-leaderHead" role="row">
+                <div className="ts-leaderCell rank" role="columnheader">#</div>
+                <div className="ts-leaderCell name" role="columnheader">Team</div>
+                {teamLeaderMetric === "strength" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Peak Index</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg Index</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : teamLeaderMetric === "reaction" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Avg Reaction</div>
+                  <div className="ts-leaderCell" role="columnheader">Best</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : (<>
+                  <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg Offset</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>)}
+              </div>
+
+              {teamLeaderLoading ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 2, paddingTop: 4 }}>
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 8px" }}>
+                      <Skel w={20} h={12} r={4} />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5, flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <Skel w={`${28 + (i % 3) * 10}%`} h={13} />
+                          <Skel w={36} h={16} r={999} />
+                        </div>
+                        <Skel w="35%" h={9} />
+                      </div>
+                      <div style={{ display: "flex", gap: 24 }}>
+                        <Skel w={40} h={13} />
+                        <Skel w={36} h={13} />
+                        <Skel w={24} h={13} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : teamLeaderRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>🏅</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No team data for this mode</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 320, lineHeight: 1.6 }}>Record sessions in this mode for athletes on your teams. Core teams aggregate all roster sessions; sub-teams pull from their member athletes.</div>
+                </div>
+              ) : teamLeaderRows.map((row, idx) => {
+                const isCore = row.teamType === "core";
+                const typePill = (
+                  <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", padding: "2px 6px", borderRadius: 999, marginLeft: 6,
+                    background: isCore ? "rgba(180,0,255,0.12)" : isDark ? "rgba(255,255,255,0.07)" : "rgba(20,20,40,0.06)",
+                    border:     isCore ? "1px solid rgba(180,0,255,0.28)" : isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(20,20,40,0.20)",
+                    color:      isCore ? "rgba(210,140,255,0.90)" : isDark ? "rgba(255,255,255,0.75)" : "rgba(20,20,40,0.70)",
+                    opacity: 1,
+                  }}>
+                    {isCore ? "core" : "sub"}
+                  </span>
+                );
+                return (
+                  <div key={row.teamId} className="ts-leaderRow" role="row">
+                    <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                    <div className="ts-leaderCell name" role="cell">
+                      <div className="ts-leaderName" style={{ display: "flex", alignItems: "center" }}>{row.name}{typePill}</div>
+                      <div className="ts-leaderSub">{row.memberCount} members · {row.sessionCount} sessions</div>
+                    </div>
+                    {teamLeaderMetric === "strength" ? (<>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.peakIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
+                    </>) : teamLeaderMetric === "reaction" ? (<>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></div>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
+                    </>) : (<>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{row.accuracyPct ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span></div>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgOffsetMm != null ? `${row.avgOffsetMm} mm` : "—"}</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
+                    </>)}
+                  </div>
+                );
+              })}
             </div>
           </div>
+
+          {/* Team Most Improved */}
+          <div className="ts-card">
+            <div className="ts-cardTop">
+              <div className="ts-cardTitle">Most Improved</div>
+              <div className="ts-cardMeta">{teamImprovedLoading ? "Loading…" : teamImprovedRows.length > 0 ? `${teamImprovedRows.length} teams` : "needs more data"}</div>
+            </div>
+
+            {/* Metric selector */}
+            <div style={{ display: "inline-flex", background: isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)", border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`, borderRadius: 9, padding: 3, gap: 2, marginBottom: 14 }}>
+              {(["strength","reaction","accuracy","form"] as MetricKey[]).map(m => {
+                const isActive  = teamImprovedMetric === m;
+                const accent    = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : m === "form" ? (isDark ? "rgba(255,255,255,0.80)" : "rgba(20,20,40,0.80)") : "#b400ff";
+                const accentBg  = m === "accuracy" ? "rgba(0,220,255,0.12)" : m === "reaction" ? "rgba(255,200,0,0.12)" : m === "form" ? (isDark ? "rgba(255,255,255,0.08)" : "rgba(20,20,40,0.07)") : "rgba(180,0,255,0.16)";
+                const accentBdr = m === "accuracy" ? "rgba(0,220,255,0.35)" : m === "reaction" ? "rgba(255,200,0,0.35)" : m === "form" ? (isDark ? "rgba(255,255,255,0.22)" : "rgba(20,20,40,0.22)") : "rgba(180,0,255,0.40)";
+                return (
+                  <button key={m} type="button" onClick={() => setTeamImprovedMetric(m)} style={{ padding: "4px 10px", borderRadius: 6, border: isActive ? `1px solid ${accentBdr}` : "1px solid transparent", background: isActive ? accentBg : "transparent", color: isActive ? accent : isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)", font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "capitalize", transition: "all 130ms ease" }}>
+                    {m === "strength" ? "💥" : m === "reaction" ? "⚡️" : m === "accuracy" ? "🎯" : "📐"} {m === "form" ? "Form" : m}
+                  </button>
+                );
+              })}
+            </div>
+
+            {teamImprovedLoading ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, paddingTop: 4 }}>
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 12, border: "1px solid rgba(128,128,128,0.08)" }}>
+                    <Skel w={20} h={12} r={4} />
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Skel w={`${35 + (i % 3) * 12}%`} h={12} />
+                        <Skel w={32} h={14} r={999} />
+                      </div>
+                      <Skel w="50%" h={9} />
+                    </div>
+                    <Skel w={72} h={24} r={999} />
+                  </div>
+                ))}
+              </div>
+            ) : teamImprovedRows.length === 0 ? (
+              <div className="ts-mostImproved">
+                <div className="ts-mostRow">
+                  <div className="ts-miLabel">
+                    <div className="ts-miTitle" style={{ fontSize: 13 }}>
+                      {teamImprovedMetric === "form" ? "📐 Form & Angle" : teamImprovedMetric === "strength" ? "💥 Strength" : teamImprovedMetric === "reaction" ? "⚡️ Reaction" : "🎯 Accuracy"}
+                    </div>
+                    <div className="ts-miSubtitle">needs 4+ sessions per team to compute trend</div>
+                  </div>
+                  <div className="ts-miBody"><div className="ts-miName" style={{ opacity: 0.3 }}>—</div></div>
+                </div>
+              </div>
+            ) : (
+              <div className="ts-mostImproved">
+                {teamImprovedRows.map((row, idx) => {
+                  const isForm     = teamImprovedMetric === "form";
+                  const isPositive = row.delta > 0;
+                  const isCore     = row.teamType === "core";
+                  const accent = teamImprovedMetric === "accuracy" ? "#00dcff" : teamImprovedMetric === "reaction" ? "#ffcc00" : isForm ? (isDark ? "rgba(255,255,255,0.80)" : "rgba(20,20,40,0.80)") : "#b400ff";
+                  const unit   = teamImprovedMetric === "reaction" ? "ms" : teamImprovedMetric === "accuracy" ? "%" : isForm ? "°" : "pts";
+                  const fromVal = isForm ? `${row.from}°` : `${row.from}${unit}`;
+                  const toVal   = isForm ? `${row.to}°`   : `${row.to}${unit}`;
+                  const dirLabel= isForm ? (isPositive ? "↗ more neutral" : "↘ more biased") : (isPositive ? "▲" : "▼");
+                  return (
+                    <div key={row.teamId} className="ts-mostRow">
+                      <div className="ts-leaderCell rank" style={{ fontSize: 13, fontWeight: 800, opacity: 0.4, minWidth: 24 }}>{idx + 1}</div>
+                      <div className="ts-miLabel" style={{ minWidth: 0, flex: 1 }}>
+                        <div className="ts-miTitle" style={{ fontSize: 13, display: "flex", alignItems: "center", gap: 6 }}>
+                          {row.name}
+                          <span style={{ fontSize: 9, fontWeight: 800, textTransform: "uppercase", padding: "2px 5px", borderRadius: 999,
+                            background: isCore ? "rgba(180,0,255,0.12)" : isDark ? "rgba(255,255,255,0.07)" : "rgba(20,20,40,0.06)",
+                            border:     isCore ? "1px solid rgba(180,0,255,0.28)" : isDark ? "1px solid rgba(255,255,255,0.18)" : "1px solid rgba(20,20,40,0.20)",
+                            color:      isCore ? "rgba(210,140,255,0.90)" : isDark ? "rgba(255,255,255,0.75)" : "rgba(20,20,40,0.70)",
+                            opacity: 1,
+                          }}>
+                            {isCore ? "roster" : "sub"}
+                          </span>
+                        </div>
+                        <div className="ts-miSubtitle">{fromVal} → {toVal}{isForm ? " avg bias" : ""} · {row.sessions} sessions</div>
+                      </div>
+                      <div className="ts-miPills">
+                        <div className="ts-improvePill" style={{ color: isPositive ? accent : "rgba(255,100,80,0.90)", borderColor: isPositive ? `${accent}40` : "rgba(255,100,80,0.30)", background: isPositive ? `${accent}10` : "rgba(255,100,80,0.08)", fontSize: 12 }}>
+                          {dirLabel} {isForm ? `${Math.abs(row.delta)}°` : `${Math.abs(row.delta)} ${unit}`}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
         </div>
-      ) : (
+        ); // end normal populated return
+      })() : (
         <div className="ts-dashGrid ts-dashMain">
           <div className="ts-card ts-span2">
             <div className="ts-cardTop">
@@ -1700,7 +4607,22 @@ export default function Dashboard() {
             </div>
 
             {athletesLoading && (
-              <div className="ts-athleteEmpty">Loading athletes…</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", borderRadius: 14, border: "1px solid rgba(128,128,128,0.08)" }}>
+                    <Skel w={40} h={40} r={50} />
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                      <Skel w={`${40 + (i % 3) * 14}%`} h={13} />
+                      <Skel w="28%" h={10} />
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <Skel w={52} h={26} r={999} />
+                      <Skel w={52} h={26} r={999} />
+                    </div>
+                    <Skel w={86} h={28} r={999} />
+                  </div>
+                ))}
+              </div>
             )}
 
             {!athletesLoading && athletesError && (
@@ -1753,14 +4675,59 @@ export default function Dashboard() {
 
                   return (
                     <div className="ts-athleteList">
-                      {filtered.map((a) => {
+                      {filtered
+                        // Sort: improving first, then stable, then declining, then no data
+                        .slice()
+                        .sort((a, b) => {
+                          const order = { up: 0, stable: 1, down: 2 };
+                          const pa = athleteProgressMap.get(a.id);
+                          const pb = athleteProgressMap.get(b.id);
+                          if (!pa && !pb) return 0;
+                          if (!pa) return 1;
+                          if (!pb) return -1;
+                          return order[pa.trend] - order[pb.trend];
+                        })
+                        .map((a) => {
                         const fullName = `${a.first_name} ${a.last_name}`;
                         const initials = [a.first_name, a.last_name]
                           .filter(Boolean)
                           .map((w) => w[0]?.toUpperCase())
                           .join("");
+                        const progress = athleteProgressMap.get(a.id) ?? null;
+                        const ink = isDark ? "255,255,255" : "20,20,40";
+
+                        // Badge colours
+                        const trendColor = progress?.trend === "up"
+                          ? (isDark ? "rgba(80,220,160,0.95)"  : "rgba(15,130,80,0.95)")
+                          : progress?.trend === "down"
+                          ? (isDark ? "rgba(255,100,80,0.90)"  : "rgba(180,50,30,0.90)")
+                          : `rgba(${ink},0.50)`;
+                        const trendBg = progress?.trend === "up"
+                          ? (isDark ? "rgba(80,220,160,0.10)"  : "rgba(15,130,80,0.08)")
+                          : progress?.trend === "down"
+                          ? (isDark ? "rgba(255,100,80,0.10)"  : "rgba(180,50,30,0.08)")
+                          : `rgba(${ink},0.04)`;
+                        const trendBdr = progress?.trend === "up"
+                          ? (isDark ? "rgba(80,220,160,0.28)"  : "rgba(15,130,80,0.22)")
+                          : progress?.trend === "down"
+                          ? (isDark ? "rgba(255,100,80,0.28)"  : "rgba(180,50,30,0.22)")
+                          : `rgba(${ink},0.12)`;
+
+                        const trendIcon  = progress?.trend === "up" ? "↑" : progress?.trend === "down" ? "↓" : "→";
+                        const trendLabel = progress?.trend === "up" ? "Improving" : progress?.trend === "down" ? "Declining" : "Stable";
+
+                        const metricIcon = progress?.metric === "accuracy" ? "🎯"
+                          : progress?.metric === "reaction" ? "⚡️" : "💥";
+
                         return (
-                          <div key={a.id} className="ts-athleteRow">
+                          <div
+                            key={a.id}
+                            className="ts-athleteRow"
+                            onClick={() => setEditAthleteTarget(a)}
+                            role="button"
+                            tabIndex={0}
+                            onKeyDown={(e) => e.key === "Enter" && setEditAthleteTarget(a)}
+                          >
                             <div className="ts-athleteAvatar" aria-hidden="true">{initials}</div>
                             <div className="ts-athleteInfo">
                               <div className="ts-athleteName">{fullName}</div>
@@ -1782,6 +4749,46 @@ export default function Dashboard() {
                                 </span>
                               )}
                             </div>
+
+                            {/* Progress badge */}
+                            {progress ? (
+                              <div style={{
+                                display: "flex", flexDirection: "column", alignItems: "flex-end",
+                                gap: 3, flexShrink: 0, marginLeft: 4,
+                              }}>
+                                <div style={{
+                                  display: "inline-flex", alignItems: "center", gap: 5,
+                                  padding: "4px 9px", borderRadius: 999,
+                                  background: trendBg, border: `1px solid ${trendBdr}`,
+                                  color: trendColor,
+                                  fontSize: 11, fontWeight: 800, letterSpacing: "0.02em",
+                                  whiteSpace: "nowrap",
+                                }}>
+                                  <span style={{ fontSize: 13, lineHeight: 1 }}>{trendIcon}</span>
+                                  {trendLabel}
+                                </div>
+                                <div style={{
+                                  fontSize: 10, opacity: 0.42, whiteSpace: "nowrap",
+                                  textAlign: "right", paddingRight: 2,
+                                }}>
+                                  {metricIcon} {progress.metric} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
+                                </div>
+                              </div>
+                            ) : athleteProgressLoading ? (
+                              <div style={{ width: 80, height: 28, borderRadius: 999, background: `rgba(${ink},0.05)`, flexShrink: 0 }} />
+                            ) : (
+                              <div style={{
+                                display: "inline-flex", alignItems: "center", gap: 5,
+                                padding: "4px 9px", borderRadius: 999,
+                                background: `rgba(${ink},0.04)`,
+                                border: `1px solid rgba(${ink},0.10)`,
+                                color: `rgba(${ink},0.30)`,
+                                fontSize: 11, fontWeight: 700,
+                                whiteSpace: "nowrap", flexShrink: 0,
+                              }}>
+                                — no data
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1814,7 +4821,22 @@ export default function Dashboard() {
             </div>
 
             {teamsLoading && (
-              <div className="ts-athleteEmpty">Loading teams…</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 14px", borderRadius: 14, border: "1px solid rgba(128,128,128,0.08)" }}>
+                    <Skel w={34} h={34} r={10} />
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6 }}>
+                      <Skel w={`${35 + (i % 3) * 12}%`} h={13} />
+                      <Skel w="22%" h={10} />
+                    </div>
+                    <Skel w={46} h={22} r={999} />
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+                      <Skel w={24} h={16} />
+                      <Skel w={38} h={9} />
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
 
             {!teamsLoading && teamsError && (
@@ -1842,8 +4864,7 @@ export default function Dashboard() {
                           </svg>
                         ) : (
                           <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.4"/>
-                            <path d="M7 4v3l2 1.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+                            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.5"/>
                           </svg>
                         )}
                       </div>
@@ -1906,8 +4927,47 @@ export default function Dashboard() {
           background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
           box-shadow: 0 4px 18px rgba(0,0,0,0.18);
         }
+        /* Dark mode — purple text + border on active tab */
+        :root:not([data-theme="light"]) .ts-tabBtn.isActive{
+          border-color: rgba(180,0,255,0.55);
+          color: rgba(210,140,255,0.96);
+        }
         .ts-tabBtn:active{
           transform: translateY(1px);
+        }
+
+        /* Avatar popover */
+        /* ── Skeleton shimmer ── */
+        @keyframes tsSkeleton {
+          0%   { background-position: -200% center; }
+          100% { background-position:  200% center; }
+        }
+        .ts-skel {
+          border-radius: 6px;
+          background: linear-gradient(90deg,
+            rgba(255,255,255,0.06) 25%,
+            rgba(255,255,255,0.12) 50%,
+            rgba(255,255,255,0.06) 75%
+          );
+          background-size: 200% 100%;
+          animation: tsSkeleton 1.4s ease infinite;
+        }
+        :root[data-theme="light"] .ts-skel {
+          background: linear-gradient(90deg,
+            rgba(20,20,40,0.06) 25%,
+            rgba(20,20,40,0.11) 50%,
+            rgba(20,20,40,0.06) 75%
+          );
+          background-size: 200% 100%;
+        }
+
+        @keyframes tsPopoverIn {
+          from { opacity: 0; transform: translateY(4px) scale(0.97); }
+          to   { opacity: 1; transform: translateY(0)   scale(1);    }
+        }
+        .ts-recentSessionAvatar:hover{
+          border-color: rgba(180,0,255,0.55) !important;
+          background: linear-gradient(135deg, rgba(180,0,255,0.38), rgba(180,0,255,0.18)) !important;
         }
 
         /* Leaderboard */
@@ -2132,11 +5192,18 @@ export default function Dashboard() {
           cursor:pointer;
           transition:background 150ms ease, border-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
         }
+        :root[data-theme="light"] .ts-athleteRow{
+          border-color:rgba(20,20,40,0.08);
+          background:rgba(20,20,40,0.02);
+        }
         .ts-athleteRow:hover{
           background:rgba(180,0,255,0.07);
           border-color:rgba(180,0,255,0.28);
           transform:translateY(-1px);
           box-shadow:0 4px 18px rgba(0,0,0,0.22);
+        }
+        :root[data-theme="light"] .ts-athleteRow:hover{
+          box-shadow:0 4px 18px rgba(0,0,0,0.10);
         }
         .ts-athleteRow:active{
           transform:translateY(0);
@@ -2194,6 +5261,10 @@ export default function Dashboard() {
           font-size:12px;
           white-space:nowrap;
           opacity:0.90;
+        }
+        :root[data-theme="light"] .ts-athletePill{
+          border-color:rgba(20,20,40,0.12);
+          background:rgba(20,20,40,0.04);
         }
         .ts-pillLabel{
           font-size:10px;
@@ -2263,6 +5334,11 @@ export default function Dashboard() {
           border:1px solid rgba(255,255,255,0.12);
           color:rgba(255,255,255,0.55);
         }
+        :root[data-theme="light"] .ts-teamIcon--sub{
+          background:linear-gradient(135deg, rgba(20,20,40,0.07), rgba(20,20,40,0.03));
+          border:1px solid rgba(20,20,40,0.16);
+          color:rgba(20,20,40,0.60);
+        }
         .ts-teamInfo{
           flex:1;
           min-width:0;
@@ -2297,6 +5373,11 @@ export default function Dashboard() {
           background:rgba(255,255,255,0.05);
           border:1px solid rgba(255,255,255,0.12);
           color:rgba(255,255,255,0.55);
+        }
+        :root[data-theme="light"] .ts-teamBadge--sub{
+          background:rgba(20,20,40,0.05);
+          border:1px solid rgba(20,20,40,0.18);
+          color:rgba(20,20,40,0.65);
         }
         .ts-teamCount{
           flex-shrink:0;
@@ -2620,19 +5701,67 @@ export default function Dashboard() {
           border-color:rgba(180,0,255,0.35);
           color:rgba(210,140,255,0.95);
         }
-        .ts-replayProgress{
-          flex:1;
-          min-width:60px;
-          height:3px;
-          border-radius:999px;
-          background:rgba(255,255,255,0.08);
-          overflow:hidden;
+        /* ── Timeline scrubber ── */
+        .ts-replayTimeline{
+          position: relative;
+          height: 20px;
+          display: flex;
+          align-items: center;
+          cursor: pointer;
+          padding: 0 2px;
+          /* Extend click target above/below the thin track */
+          margin: -4px 0;
+          padding-top: 4px;
+          padding-bottom: 4px;
+          box-sizing: content-box;
         }
-        .ts-replayProgressFill{
-          height:100%;
-          border-radius:999px;
-          background:linear-gradient(90deg, rgba(140,0,255,0.70), rgba(200,80,255,0.90));
-          transition:width 100ms linear;
+        /* The track background */
+        .ts-replayTimeline::before{
+          content: "";
+          position: absolute;
+          left: 0; right: 0;
+          top: 50%; transform: translateY(-50%);
+          height: 3px;
+          border-radius: 999px;
+          background: rgba(255,255,255,0.10);
+          pointer-events: none;
+        }
+        /* The filled portion — injected as a child div */
+        .ts-replayTrackFill{
+          position: absolute;
+          left: 0;
+          top: 50%; transform: translateY(-50%);
+          height: 3px;
+          border-radius: 999px;
+          pointer-events: none;
+          transition: width 80ms linear;
+        }
+        /* Playhead knob — var(--text) so it's white in dark mode, black in light mode */
+        .ts-replayHead{
+          position: absolute;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          width: 12px;
+          height: 12px;
+          border-radius: 50%;
+          background: var(--text);
+          box-shadow: 0 1px 4px rgba(0,0,0,0.35);
+          pointer-events: none;
+          transition: left 80ms linear;
+          z-index: 4;
+        }
+        /* Event dots on the timeline */
+        .ts-replayDot{
+          position: absolute;
+          top: 50%;
+          border-radius: 50%;
+          cursor: pointer;
+          transition: background 150ms, transform 150ms, box-shadow 150ms;
+          pointer-events: all;
+        }
+        .ts-replayDot:hover{
+          transform: translate(-50%,-50%) scale(1.8) !important;
+          z-index: 5 !important;
         }
 
         /* Ripple keyframes — identical to hitSimulator + session */

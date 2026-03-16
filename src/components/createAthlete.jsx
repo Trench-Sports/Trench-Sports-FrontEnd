@@ -13,8 +13,14 @@
 //
 // Behaviour:
 //   • Reads the current user's profile (program_id + role) on open
-//   • coach  → core_team_id is auto-resolved from team_members
-//   • admin  → dropdown lists all teams in the program to pick from
+//   • coach  → core team is auto-resolved from team_members;
+//              sub teams scoped to that core team are offered as optional assignment;
+//              athletes.core_team_id always = coach's core team
+//   • admin  → dropdown lists ALL teams in the program (core + sub);
+//              if a sub team is selected, athletes.core_team_id = sub team's parent_team_id;
+//              if a core team is selected, athletes.core_team_id = that team's id
+//   • sub team assignment  → always written as a team_members row
+//                            (athlete is also implicitly on the core team via athletes.core_team_id)
 
 import React, { useEffect, useState, useCallback } from "react";
 import Modal from "./modal";
@@ -124,6 +130,75 @@ function SelectField({ label, required, children, ...selectProps }) {
   );
 }
 
+// ─── HeightField — single input with live ft'in" formatting ──────────────────
+//
+// Typing behaviour:
+//   "5"        → "5"
+//   "56"       → "5'6"   (auto-inserts ' after first digit when second is typed)
+//   "5'6"      → "5'6"
+//   "5'11"     → "5'11"
+//   Backspace  → removes naturally; strips trailing ' if inches cleared
+//   Blur       → appends " if inches are present (e.g. "5'6" → "5'6\"")
+//   Validates  → feet 3–8, inches 0–11
+
+function HeightField({ label = "Height", required, value, onChange }) {
+  const [focused, setFocused] = React.useState(false);
+
+  // Formats a raw digit string into ft'in" form used for display/storage
+  function applyFormat(raw) {
+    // Strip everything except digits
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length === 0) return "";
+    if (digits.length === 1) return digits; // just feet so far, no apostrophe yet
+    // First digit = feet, rest = inches (max 2 inch digits)
+    const ft  = digits[0];
+    const ins = digits.slice(1, 3);
+    // Clamp inches to 11
+    const insNum = parseInt(ins, 10);
+    const insClamped = isNaN(insNum) ? ins : Math.min(insNum, 11).toString();
+    return `${ft}'${insClamped}`;
+  }
+
+  function handleChange(e) {
+    const raw = e.target.value;
+
+    // If user is deleting and the result ends with ', strip it too for cleaner UX
+    const stripped = raw.endsWith("'") ? raw.slice(0, -1) : raw;
+    const formatted = applyFormat(stripped);
+
+    onChange({ target: { value: formatted } });
+  }
+
+  function handleBlur() {
+    setFocused(false);
+    // Append " on blur if we have both feet and inches and it isn't already there
+    if (value && value.includes("'") && !value.endsWith('"')) {
+      onChange({ target: { value: value + '"' } });
+    }
+  }
+
+  return (
+    <div style={F.group}>
+      <label style={F.label}>
+        {label}
+        {required && <span style={{ color: "rgba(180,0,255,0.9)", marginLeft: 3 }}>*</span>}
+      </label>
+      <input
+        type="text"
+        inputMode="numeric"
+        placeholder="5'11&quot;"
+        value={value}
+        onChange={handleChange}
+        onFocus={() => setFocused(true)}
+        onBlur={handleBlur}
+        maxLength={6}
+        style={{ ...F.input, ...(focused ? F.inputFocus : {}) }}
+        aria-label={label}
+      />
+    </div>
+  );
+}
+
 // ─── Sport options ────────────────────────────────────────────────────────────
 
 const SPORTS = [
@@ -154,21 +229,33 @@ const EMPTY_FORM = {
   weight: "",
   sport: "Football",
   position: "",
-  teamId: "",
+  teamId: "", // for admin: any team (core or sub); for coach: a sub team id or "" for core only
 };
 
 /**
- * @param {{ open: boolean, onClose: () => void, onCreated?: (athlete: object) => void }} props
+ * userMeta shape:
+ * {
+ *   userId:      string,
+ *   programId:   string,
+ *   role:        "coach" | "admin",
+ *   coachTeamId: string | null,   // coach's core team id (coach only)
+ * }
+ *
+ * teams shape (populated differently per role):
+ *   coach → sub teams whose parent_team_id === coachTeamId
+ *   admin → ALL teams in the program (core + sub), with parent_team_id included
  */
+
 export default function CreateAthleteModal({ open, onClose, onCreated }) {
   const [form, setForm] = useState(EMPTY_FORM);
-  const [teams, setTeams] = useState([]);       // populated for admins
-  const [userMeta, setUserMeta] = useState(null); // { userId, programId, role, coachTeamId }
+  const [teams, setTeams] = useState([]);
+  const [userMeta, setUserMeta] = useState(null);
+  const [coachCoreName, setCoachCoreName] = useState("");
   const [loading, setLoading] = useState(false);
   const [bootstrapping, setBootstrapping] = useState(false);
   const [error, setError] = useState("");
 
-  // ── Bootstrap: fetch profile + teams when modal opens ──────────────────────
+  // ── Bootstrap ──────────────────────────────────────────────────────────────
   const bootstrap = useCallback(async () => {
     setBootstrapping(true);
     setError("");
@@ -178,7 +265,6 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
       const userId = userData?.user?.id;
       if (!userId) throw new Error("Not authenticated.");
 
-      // Fetch profile (role + program_id)
       const { data: profile, error: pErr } = await supabase
         .from("profiles")
         .select("role, program_id")
@@ -191,7 +277,7 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
       let coachTeamId = null;
 
       if (role === "coach") {
-        // Coaches are tied to a core team via team_members
+        // Resolve the coach's core team
         const { data: membership } = await supabase
           .from("team_members")
           .select("team_id")
@@ -200,18 +286,39 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
           .maybeSingle();
 
         coachTeamId = membership?.team_id ?? null;
+
+        if (coachTeamId) {
+          // Fetch sub teams that belong to this coach's core team only
+          const { data: subTeams, error: stErr } = await supabase
+            .from("teams")
+            .select("id, name, team_type, parent_team_id")
+            .eq("program_id", programId)
+            .eq("parent_team_id", coachTeamId)
+            .order("name");
+
+          if (stErr) throw new Error("Could not load sub teams.");
+          setTeams(subTeams ?? []);
+
+          // Fetch the core team's name for the UI note
+          const { data: coreTeam } = await supabase
+            .from("teams")
+            .select("name")
+            .eq("id", coachTeamId)
+            .maybeSingle();
+          setCoachCoreName(coreTeam?.name ?? "your core team");
+        }
       }
 
       if (role === "admin") {
-        // Admins pick from all teams in the program
-        const { data: programTeams, error: tErr } = await supabase
+        // Admins see all teams: include parent_team_id so we can detect sub teams
+        const { data: allTeams, error: tErr } = await supabase
           .from("teams")
-          .select("id, name, team_type")
+          .select("id, name, team_type, parent_team_id")
           .eq("program_id", programId)
           .order("name");
 
         if (tErr) throw new Error("Could not load teams.");
-        setTeams(programTeams ?? []);
+        setTeams(allTeams ?? []);
       }
 
       setUserMeta({ userId, programId, role, coachTeamId });
@@ -225,37 +332,67 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
   useEffect(() => {
     if (open) {
       setForm(EMPTY_FORM);
+      setTeams([]);
+      setCoachCoreName("");
       setError("");
       bootstrap();
     }
   }, [open, bootstrap]);
 
-  // ── Field helpers ────────────────────────────────────────────────────────────
+  // ── Field helpers ─────────────────────────────────────────────────────────
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
-  // ── Submit ────────────────────────────────────────────────────────────────────
+  // ── Submit ────────────────────────────────────────────────────────────────
 
   async function handleSubmit() {
     setError("");
 
     if (!form.firstName.trim()) return setError("First name is required.");
     if (!form.lastName.trim())  return setError("Last name is required.");
-    if (!form.height.trim())    return setError("Height is required.");
+    if (!form.height.trim())    return setError("Height is required — enter as feet and inches, e.g. 5'11\".");
     if (!form.weight.trim())    return setError("Weight is required.");
 
     if (!userMeta) return setError("Profile not loaded yet — please wait.");
 
     const { userId, programId, role, coachTeamId } = userMeta;
 
-    // Resolve core_team_id
+    // ── Resolve coreTeamId and optional subTeamId ────────────────────────────
+    //
+    // athletes.core_team_id must ALWAYS point to a core (parent) team.
+    // If a sub team is involved, we also write a team_members row for it.
+
     let coreTeamId = null;
+    let subTeamId  = null; // will get a team_members row if set
+
     if (role === "coach") {
       if (!coachTeamId) return setError("No core team found for your account. Contact an admin.");
+
       coreTeamId = coachTeamId;
+
+      if (form.teamId) {
+        // Validate the chosen sub team actually belongs to this coach's core team
+        const chosen = teams.find((t) => t.id === form.teamId);
+        if (!chosen) return setError("Selected team not found.");
+        if (chosen.parent_team_id !== coachTeamId) {
+          return setError("You can only assign athletes to sub teams within your own core team.");
+        }
+        subTeamId = form.teamId;
+      }
     } else if (role === "admin") {
       if (!form.teamId) return setError("Please select a team for this athlete.");
-      coreTeamId = form.teamId;
+
+      const chosen = teams.find((t) => t.id === form.teamId);
+      if (!chosen) return setError("Selected team not found.");
+
+      if (chosen.parent_team_id) {
+        // Sub team selected — core team is the parent
+        coreTeamId = chosen.parent_team_id;
+        subTeamId  = chosen.id;
+      } else {
+        // Core team selected directly
+        coreTeamId = chosen.id;
+      }
     } else {
       return setError(`Unexpected role "${role}" — cannot create athletes.`);
     }
@@ -263,6 +400,7 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
     setLoading(true);
 
     try {
+      // 1. Insert the athlete (core_team_id always points to the core/parent team)
       const payload = {
         program_id:    programId,
         core_team_id:  coreTeamId,
@@ -276,7 +414,7 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
         position:      form.position.trim() || null,
       };
 
-      const { data, error: insertErr } = await supabase
+      const { data: athlete, error: insertErr } = await supabase
         .from("athletes")
         .insert(payload)
         .select()
@@ -284,7 +422,23 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
 
       if (insertErr) throw insertErr;
 
-      onCreated?.(data);
+      // 2. If a sub team was chosen, add a team_members row for it.
+      //    The athlete is already implicitly on the core team via core_team_id.
+      if (subTeamId) {
+        const { error: memberErr } = await supabase
+          .from("team_members")
+          .insert({
+            program_id:  programId,
+            team_id:     subTeamId,
+            athlete_id:  athlete.id,
+            added_by:    userId,
+            member_role: "athlete",
+          });
+
+        if (memberErr) throw new Error(`Athlete created but sub team assignment failed: ${memberErr.message}`);
+      }
+
+      onCreated?.(athlete);
       onClose();
     } catch (err) {
       setError(err.message ?? "Failed to create athlete.");
@@ -293,20 +447,31 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
     }
   }
 
-  // ── Footer buttons ────────────────────────────────────────────────────────────
+  // ── Derived display helpers ───────────────────────────────────────────────
+
+  // For admins: separate the flat list into core teams and sub teams for grouped display
+  const coreTeams = teams.filter((t) => !t.parent_team_id);
+  const subTeams  = teams.filter((t) =>  t.parent_team_id);
+
+  // Selected team object (admin)
+  const selectedTeam = teams.find((t) => t.id === form.teamId);
+  const selectedIsSubTeam = selectedTeam?.parent_team_id != null;
+  const selectedParentName = selectedIsSubTeam
+    ? coreTeams.find((t) => t.id === selectedTeam.parent_team_id)?.name
+    : null;
+
+  // ── Footer ────────────────────────────────────────────────────────────────
 
   const footer = (
-    <>
-      <button
-        type="button"
-        className="ts-btn ts-btnPrimary"
-        onClick={handleSubmit}
-        disabled={loading || bootstrapping}
-        style={loading || bootstrapping ? { opacity: 0.6, cursor: "not-allowed" } : {}}
-      >
-        {loading ? "Creating…" : "Create Athlete"}
-      </button>
-    </>
+    <button
+      type="button"
+      className="ts-btn ts-btnPrimary"
+      onClick={handleSubmit}
+      disabled={loading || bootstrapping}
+      style={loading || bootstrapping ? { opacity: 0.6, cursor: "not-allowed" } : {}}
+    >
+      {loading ? "Creating…" : "Create Athlete"}
+    </button>
   );
 
   return (
@@ -326,7 +491,7 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
 
           {error && <div style={F.error}>{error}</div>}
 
-          {/* Name */}
+          {/* ── Identity ── */}
           <div style={F.sectionLabel}>Identity</div>
           <div style={F.row}>
             <Field
@@ -351,14 +516,12 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
 
           <div style={F.divider} />
 
-          {/* Physical */}
+          {/* ── Physical ── */}
           <div style={F.sectionLabel}>Physical</div>
           <div style={F.row}>
-            <Field
+            <HeightField
               label="Height"
               required
-              type="text"
-              placeholder="e.g. 5'11"
               value={form.height}
               onChange={set("height")}
             />
@@ -374,14 +537,15 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
 
           <div style={F.divider} />
 
-          {/* Sport / Position */}
-          <div style={F.sectionLabel}>Sport Info <span style={{ opacity: 0.5, fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>(optional)</span></div>
+          {/* ── Sport Info ── */}
+          <div style={F.sectionLabel}>
+            Sport Info{" "}
+            <span style={{ opacity: 0.5, fontWeight: 600, textTransform: "none", letterSpacing: 0 }}>
+              (optional)
+            </span>
+          </div>
           <div style={F.row}>
-            <SelectField
-              label="Sport"
-              value={form.sport}
-              onChange={set("sport")}
-            >
+            <SelectField label="Sport" value={form.sport} onChange={set("sport")}>
               {SPORTS.map((s) => (
                 <option key={s} value={s}>{s}</option>
               ))}
@@ -395,34 +559,91 @@ export default function CreateAthleteModal({ open, onClose, onCreated }) {
             />
           </div>
 
-          {/* Team — admins only */}
+          <div style={F.divider} />
+
+          {/* ── Team Assignment ── */}
+          <div style={F.sectionLabel}>Team Assignment</div>
+
+          {/* COACH: optional sub team picker scoped to their core team */}
+          {userMeta?.role === "coach" && (
+            <>
+              {teams.length > 0 ? (
+                <>
+                  <SelectField
+                    label="Sub Team (optional)"
+                    value={form.teamId}
+                    onChange={set("teamId")}
+                  >
+                    <option value="">— Core team only ({coachCoreName}) —</option>
+                    {teams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                        {t.team_type ? ` (${t.team_type})` : ""}
+                      </option>
+                    ))}
+                  </SelectField>
+                  <div style={{ fontSize: "13px", color: "var(--muted)", marginTop: "-4px" }}>
+                    {form.teamId
+                      ? `Athlete will be added to ${teams.find(t => t.id === form.teamId)?.name} and ${coachCoreName}.`
+                      : `Athlete will be added to ${coachCoreName} only.`}
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: "13px", color: "var(--muted)" }}>
+                  Athlete will be added to <strong style={{ color: "var(--text)" }}>{coachCoreName}</strong>.
+                  {" "}No sub teams exist under this team yet.
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ADMIN: all teams grouped by core / sub */}
           {userMeta?.role === "admin" && (
             <>
-              <div style={F.divider} />
-              <div style={F.sectionLabel}>Team Assignment</div>
               <SelectField
-                label="Core Team"
+                label="Team"
                 required
                 value={form.teamId}
                 onChange={set("teamId")}
               >
                 <option value="">— Select a team —</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                    {t.team_type ? ` (${t.team_type})` : ""}
-                  </option>
-                ))}
+                {coreTeams.length > 0 && (
+                  <optgroup label="Core Teams">
+                    {coreTeams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                        {t.team_type ? ` (${t.team_type})` : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {subTeams.length > 0 && (
+                  <optgroup label="Sub Teams">
+                    {subTeams.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
+                        {t.team_type ? ` (${t.team_type})` : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </SelectField>
+
+              {/* Contextual hint for admins */}
+              {selectedIsSubTeam && selectedParentName && (
+                <div style={{ fontSize: "13px", color: "var(--muted)", marginTop: "-4px" }}>
+                  Athlete will be added to <strong style={{ color: "var(--text)" }}>{selectedTeam.name}</strong> and
+                  their parent core team <strong style={{ color: "var(--text)" }}>{selectedParentName}</strong>.
+                </div>
+              )}
+              {selectedTeam && !selectedIsSubTeam && (
+                <div style={{ fontSize: "13px", color: "var(--muted)", marginTop: "-4px" }}>
+                  Athlete will be added to core team <strong style={{ color: "var(--text)" }}>{selectedTeam.name}</strong>.
+                </div>
+              )}
             </>
           )}
 
-          {/* Coaches: show a read-only note */}
-          {userMeta?.role === "coach" && (
-            <div style={{ fontSize: "13px", color: "var(--muted)", marginTop: "2px" }}>
-              This athlete will be added to your core team automatically.
-            </div>
-          )}
         </div>
       )}
     </Modal>
