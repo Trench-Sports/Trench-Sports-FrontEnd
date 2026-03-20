@@ -37,7 +37,7 @@ const SCAN_PERIOD_MS = 37;
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
-const MODES = ["standard", "accuracy", "reaction"] as const;
+const MODES = ["standard", "accuracy", "reaction", "volume"] as const;
 type SessionMode = typeof MODES[number];
 
 const MODE_META: Record<SessionMode, { icon: string; label: string; color: string; glow: string; desc: string }> = {
@@ -55,6 +55,11 @@ const MODE_META: Record<SessionMode, { icon: string; label: string; color: strin
     icon: "⚡️", label: "Reaction",
     color: "#ffcc00", glow: "rgba(255,200,0,0.55)",
     desc: "Wait for the HIT! signal, then strike as fast as you can. Reaction time measured to impact.",
+  },
+  volume: {
+    icon: "🥊", label: "Volume",
+    color: "#ff6a00", glow: "rgba(255,106,0,0.55)",
+    desc: "Wait for the HIT! signal, then throw as many strikes as possible in 5 seconds. Score = total hits.",
   },
 };
 
@@ -118,6 +123,96 @@ function ReactionOverlay({ phase, reactionMs }: { phase: string; reactionMs: num
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
         {reactionMs < 250 ? "Elite ⚡" : reactionMs < 350 ? "Sharp 🔥" : reactionMs < 500 ? "Good 👍" : "Keep Training 💪"}
+      </div>
+    </div>
+  );
+
+  if (phase === "early") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(255,60,60,0.18)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 900, color: "#ff6060" }}>Too Early!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,100,100,0.7)", marginTop: 6, letterSpacing: 1 }}>Wait for the signal</div>
+    </div>
+  );
+
+  return null;
+}
+
+function VolumeOverlay({
+  phase,
+  hits,
+  remainingMs,
+}: {
+  phase: string;
+  hits: number;
+  remainingMs: number;
+}) {
+  if (phase === "waiting") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(0,0,0,0.62)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", letterSpacing: 3, textTransform: "uppercase", marginBottom: 16 }}>
+        Get ready…
+      </div>
+      <div style={{
+        width: 52, height: 52, borderRadius: "50%",
+        border: "3px solid rgba(255,255,255,0.15)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        animation: "tsPulseWait 1.1s ease-in-out infinite",
+      }}>
+        <div style={{ width: 14, height: 14, borderRadius: "50%", background: "rgba(255,255,255,0.25)" }} />
+      </div>
+    </div>
+  );
+
+  if (phase === "signal") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(255,106,0,0.18)", borderRadius: 16, pointerEvents: "none",
+      animation: "tsFlashIn 0.15s ease-out",
+    }}>
+      <div style={{
+        fontSize: 38, fontWeight: 900, color: "#ff6a00",
+        textShadow: "0 0 24px #ff6a00, 0 0 48px rgba(255,106,0,0.6)",
+        letterSpacing: 2, animation: "tsSignalPop 0.2s ease-out",
+      }}>HIT!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,160,90,0.85)", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
+        5 second burst
+      </div>
+      <div style={{ marginTop: 14, fontSize: 34, fontWeight: 900, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
+        {hits}
+      </div>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>
+        {Math.max(0, (remainingMs / 1000)).toFixed(1)}s left
+      </div>
+    </div>
+  );
+
+  if (phase === "result") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 8,
+      background: "rgba(0,0,0,0.50)", borderRadius: 16, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,160,90,0.85)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 }}>
+        Volume Score
+      </div>
+      <div style={{
+        fontSize: 48, fontWeight: 900, color: "#ff6a00",
+        textShadow: "0 0 20px #ff6a00",
+        animation: "tsResultPop 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+        fontVariantNumeric: "tabular-nums",
+      }}>
+        {hits}
+      </div>
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.45)", marginTop: 6 }}>
+        Total hits in 5 seconds
       </div>
     </div>
   );
@@ -739,6 +834,22 @@ export default function Session() {
   const rxTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rxSumMs     = useRef(0);
 
+    // ── Volume mode state ───────────────────────────────────────────────────────
+  const VOLUME_WINDOW_MS = 5000;
+  const [volPhase, setVolPhase] = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
+  const [volHits, setVolHits] = useState(0);
+  const [volBest, setVolBest] = useState<number | null>(null);
+  const [volAttempts, setVolAttempts] = useState(0);
+  const [volAvg, setVolAvg] = useState<number | null>(null);
+  const [volRemainingMs, setVolRemainingMs] = useState(0);
+
+  const volSignalAt = useRef<number | null>(null);
+  const volWindowEndsAt = useRef<number | null>(null);
+  const volTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const volTickTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const volSumRef = useRef(0);
+  const volAttemptsRef = useRef(0);
+
   // ── Accuracy mode state ───────────────────────────────────────────────────────
   const [avgAccuracy, setAvgAccuracy] = useState<number | null>(null);
   const accHitsRef = useRef(0);
@@ -762,10 +873,11 @@ export default function Session() {
   // captureRef tracks sessionActive without closure staleness
   const captureRef = useRef(false);
 
-  // Stable refs so handleNotify (memoised with []) can read current values
+    // Stable refs so handleNotify (memoised with []) can read current values
   const sessionModeRef  = useRef<SessionMode>("standard");
   const rxPhaseRef      = useRef<string>("idle");
   const rxAttemptsRef   = useRef(0);
+  const volPhaseRef     = useRef<string>("idle");
   // Carries the per-event reaction time from the signal block into the frame push
   const pendingRxMsRef  = useRef<number | null>(null);
 
@@ -773,6 +885,8 @@ export default function Session() {
   useEffect(() => { sessionModeRef.current = sessionMode; }, [sessionMode]);
   useEffect(() => { rxPhaseRef.current = rxPhase; }, [rxPhase]);
   useEffect(() => { rxAttemptsRef.current = rxAttempts; }, [rxAttempts]);
+  useEffect(() => { volPhaseRef.current = volPhase; }, [volPhase]);
+  useEffect(() => { volAttemptsRef.current = volAttempts; }, [volAttempts]);
 
   // ── Reaction mode sequence ────────────────────────────────────────────────────
   const scheduleNextReaction = useCallback(() => {
@@ -787,6 +901,62 @@ export default function Session() {
       rxSignalAt.current = performance.now();
     }, delay);
   }, []);
+
+    const finishVolumeWindow = useCallback((finalHits: number) => {
+    setVolPhase("result");
+    volPhaseRef.current = "result";
+    setVolHits(finalHits);
+    setVolAttempts(a => a + 1);
+    volSumRef.current += finalHits;
+    setVolBest(prev => prev === null ? finalHits : Math.max(prev, finalHits));
+    setVolAvg(Math.round((volSumRef.current) / (volAttemptsRef.current + 1)));
+    setVolRemainingMs(0);
+
+    if (volTickTimer.current) {
+      clearInterval(volTickTimer.current);
+      volTickTimer.current = null;
+    }
+
+    setTimeout(() => {
+      if (!captureRef.current) return;
+      scheduleNextVolume();
+    }, 2200);
+  }, []);
+
+    const scheduleNextVolume = useCallback(() => {
+    if (!captureRef.current) return;
+    const delay = 1500 + Math.random() * 2500;
+    setVolPhase("waiting");
+    volPhaseRef.current = "waiting";
+    setVolHits(0);
+    setVolRemainingMs(0);
+    volSignalAt.current = null;
+    volWindowEndsAt.current = null;
+
+    volTimer.current = setTimeout(() => {
+      if (!captureRef.current) return;
+
+      const nowPerf = performance.now();
+      setVolPhase("signal");
+      volPhaseRef.current = "signal";
+      setVolHits(0);
+      setVolRemainingMs(VOLUME_WINDOW_MS);
+      volSignalAt.current = nowPerf;
+      volWindowEndsAt.current = nowPerf + VOLUME_WINDOW_MS;
+
+      if (volTickTimer.current) clearInterval(volTickTimer.current);
+      volTickTimer.current = setInterval(() => {
+        if (!volWindowEndsAt.current) return;
+        const remaining = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+        setVolRemainingMs(remaining);
+      }, 50);
+
+      if (volTimer.current) clearTimeout(volTimer.current);
+      volTimer.current = setTimeout(() => {
+        finishVolumeWindow(volHitsRef.current);
+      }, VOLUME_WINDOW_MS);
+    }, delay);
+  }, [finishVolumeWindow]);
 
   // Fade tick
   useEffect(() => {
@@ -846,6 +1016,28 @@ export default function Session() {
         setTimeout(() => scheduleNextReaction(), 2200);
         // Fall through to still display the hit on the grid
       }
+          // ── Volume mode: wait for signal, then count all hits for 5 seconds ──────
+    if (captureRef.current && sessionModeRef.current === "volume") {
+      const phase = volPhaseRef.current;
+
+      if (phase === "waiting") {
+        if (volTimer.current) clearTimeout(volTimer.current);
+        setVolPhase("early");
+        volPhaseRef.current = "early";
+        setTimeout(() => scheduleNextVolume(), 1800);
+        return;
+      }
+
+      if (phase === "signal" && volWindowEndsAt.current !== null) {
+        const stillOpen = performance.now() <= volWindowEndsAt.current;
+        if (stillOpen) {
+          const hitCount = hits.length;
+          volHitsRef.current += hitCount;
+          setVolHits(volHitsRef.current);
+        }
+      }
+    }
+
     }
 
     // ── Accuracy scoring ──────────────────────────────────────────────────────
@@ -1000,6 +1192,22 @@ export default function Session() {
     captureRef.current   = true;
     setSessionActive(true);
     await sendCommand("start");
+
+        // Reset volume
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
+    setVolPhase("idle");
+    volPhaseRef.current = "idle";
+    setVolHits(0);
+    setVolBest(null);
+    setVolAttempts(0);
+    setVolAvg(null);
+    setVolRemainingMs(0);
+    volHitsRef.current = 0;
+    volSumRef.current = 0;
+    volAttemptsRef.current = 0;
+    volSignalAt.current = null;
+    volWindowEndsAt.current = null;
 
     // Kick off reaction sequence immediately
     if (sessionMode === "reaction") {
