@@ -431,6 +431,7 @@ export default function Dashboard() {
   const [replayEvents, setReplayEvents] = useState<ReplayEvent[]>([]);
   const [heatmapLoading, setHeatmapLoading] = useState(false);
   const [sessionSummary, setSessionSummary] = useState<SessionSummaryData | null>(null);
+  const [heatmapViewMode, setHeatmapViewMode] = useState<"live" | "history">("live");
 
   // ── Replay state ─────────────────────────────────────────────────────────────
   // replayTimeMs  — current playhead position in session-time ms (0 = session start)
@@ -444,6 +445,14 @@ export default function Dashboard() {
   // Wall-clock ms when the current play run started, and the session-time offset it started from
   const replayStartWallRef    = useRef(0);
   const replayStartSessionRef = useRef(0);
+
+  // Auto-set view mode based on session mode: accuracy always shows history
+  useEffect(() => {
+    const mode = (sessionSummary?.mode ?? "standard").toLowerCase();
+    if (mode === "accuracy") {
+      setHeatmapViewMode("history");
+    }
+  }, [sessionSummary?.mode]);
 
   useEffect(() => {
     if (!selectedSessionId || !supabase) return;
@@ -2640,6 +2649,47 @@ export default function Dashboard() {
                       {(sessionSummary.mode ?? "standard").charAt(0).toUpperCase() + (sessionSummary.mode ?? "standard").slice(1)}
                     </div>
                   )}
+                  {/* Heatmap view mode toggle — show only for standard and power modes (not accuracy) */}
+                  {selectedSessionId && replayEvents.length > 0 && (() => {
+                    const mode = (sessionSummary?.mode ?? "standard").toLowerCase();
+                    // Only show toggle for standard and power modes; accuracy always uses history mode
+                    const showToggle = mode !== "accuracy";
+                    if (!showToggle) return null;
+                    return (
+                      <div style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        background: "rgba(255,255,255,0.04)",
+                        border: "1px solid rgba(255,255,255,0.10)",
+                        borderRadius: 7,
+                        padding: "2px 4px",
+                        gap: 1,
+                      }}>
+                        {(["live", "history"] as const).map((viewMode) => (
+                          <button
+                            key={viewMode}
+                            type="button"
+                            onClick={() => setHeatmapViewMode(viewMode)}
+                            style={{
+                              padding: "4px 10px",
+                              borderRadius: 5,
+                              border: heatmapViewMode === viewMode ? `1px solid ${modeAccent}` : "1px solid transparent",
+                              background: heatmapViewMode === viewMode ? `${modeAccent}15` : "transparent",
+                              color: heatmapViewMode === viewMode ? modeAccent : "rgba(255,255,255,0.55)",
+                              font: "inherit",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
+                              textTransform: "capitalize",
+                            }}
+                          >
+                            {viewMode === "live" ? "Live" : "History"}
+                          </button>
+                        ))}
+                      </div>
+                    );
+                  })()}
                   <div className="ts-cardMeta">
                     {heatmapLoading
                       ? "Loading…"
@@ -2877,12 +2927,23 @@ export default function Dashboard() {
                               let intensity = 0;
                               let kpa = 0;
 
-                              if (replayEvents.length > 0) {
+                              // In history view, always show cumulative replay heatmap
+                              if (heatmapViewMode === "history" && replayEvents.length > 0) {
                                 const hits = replayHeatmap.get(key) ?? 0;
                                 intensity = hits / maxReplayHits;
-                                // Derive kpa proxy from mv intensity
                                 kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;
+                              } else if (replayEvents.length > 0) {
+                                // Live mode: only show cells from the most recent event (not cumulative)
+                                // This lets users see if they're hitting the same spot or different spots
+                                const isInActiveEvent = activeEvent?.cells.some(
+                                  cell => cell.r === r && cell.c === c
+                                ) ?? false;
+                                if (isInActiveEvent) {
+                                  intensity = 1.0; // Most recent hit is full intensity
+                                  kpa = 90;
+                                }
                               } else {
+                                // No replay: use static heatmap cells
                                 const cell = heatmapCells.find((hc) => hc.r === r && hc.c === c);
                                 intensity = cell?.intensity ?? 0;
                                 kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;

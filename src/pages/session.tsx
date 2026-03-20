@@ -235,6 +235,9 @@ function VolumeOverlay({
 type BleStatus = "idle" | "scanning" | "connected" | "disconnected" | "unsupported";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+// Identity packet sent by ESP32 immediately after BLE connect
+type DeviceInfo = { id: string; fw: string; rows: number; cols: number } | null;
+
 type Athlete = {
   id: string;
   first_name: string;
@@ -322,6 +325,16 @@ function formatTime(ms: number) {
 
 function genSessionId() {
   return `ses_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// Returns true if `latest` is strictly newer than `current` (semver major.minor.patch)
+function fwIsOutdated(current: string, latest: string): boolean {
+  const parse = (v: string) => v.split(".").map(n => parseInt(n, 10) || 0);
+  const [ca, cb, cc] = parse(current);
+  const [la, lb, lc] = parse(latest);
+  if (la !== ca) return la > ca;
+  if (lb !== cb) return lb > cb;
+  return lc > cc;
 }
 
 function hexAlpha(fraction: number) {
@@ -436,6 +449,8 @@ async function uploadSession(opts: {
   // accuracy mode live stats
   accHitsCount?: number;
   accScoreSum?:  number;
+  // physical device
+  deviceId?:    string;
 }) {
   if (!supabase) throw new Error("Supabase client not initialised");
 
@@ -445,6 +460,7 @@ async function uploadSession(opts: {
     deviceModel = "TSII", samplingHz = 25,
     rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
     accHitsCount = 0, accScoreSum = 0,
+    deviceId,
   } = opts;
 
   const CHUNK = 500;
@@ -464,6 +480,7 @@ async function uploadSession(opts: {
     sampling_hz:   samplingHz,
     mode,
     raw:           frames.map(f => f.raw),
+    ...(deviceId ? { device_id: deviceId } : {}),
   });
   if (sessErr) throw new Error(`sessions: ${sessErr.message}`);
   if (frames.length === 0) return;
@@ -802,6 +819,15 @@ export default function Session() {
   // ── BLE ──────────────────────────────────────────────────────────────────────
   const [bleStatus,    setBleStatus]    = useState<BleStatus>("idle");
   const [bleSupported, setBleSupported] = useState(true);
+  const [deviceInfo,   setDeviceInfo]   = useState<DeviceInfo>(null);
+
+  // ── OTA ───────────────────────────────────────────────────────────────────────
+  type OtaState = "idle" | "available" | "updating" | "done" | "error";
+  const [otaState,    setOtaState]    = useState<OtaState>("idle");
+  const [otaProgress, setOtaProgress] = useState(0);        // 0–100
+  const [otaError,    setOtaError]    = useState<string | null>(null);
+  const [latestFw,    setLatestFw]    = useState<string | null>(null);
+
   const connRef      = useRef<AdapterConnection | null>(null);  // active adapter connection
   const assemblerRef = useRef(new ChunkAssembler());
 
@@ -814,6 +840,31 @@ export default function Session() {
       }
     }
   }, []);
+
+  // ── Firmware version check — fires each time a device connects ───────────────
+  // Fetches /firmware/manifest.json and compares against the hello packet version.
+  // Silent on network failure — OTA is optional, never blocks the session flow.
+  useEffect(() => {
+    if (!deviceInfo) {
+      setOtaState("idle");
+      setOtaProgress(0);
+      setOtaError(null);
+      return;
+    }
+    fetch("/firmware/manifest.json")
+      .then(r => r.json())
+      .then((m: { version: string }) => {
+        setLatestFw(m.version);
+        if (fwIsOutdated(deviceInfo.fw, m.version)) {
+          setOtaState("available");
+        } else {
+          setOtaState("idle");
+        }
+      })
+      .catch(err => {
+        console.warn("[OTA] manifest fetch failed:", err);
+      });
+  }, [deviceInfo]);
 
   // ── Session state ────────────────────────────────────────────────────────────
   const [sessionMode,   setSessionMode]   = useState<SessionMode>("standard");
@@ -985,6 +1036,35 @@ export default function Session() {
     let obj: any;
     try { obj = JSON.parse(maybeJson); } catch { return; }
 
+    // ── Non-data control frames — handled before the hits path ────────────────
+    if (obj.type === "hello") {
+      const info: DeviceInfo = { id: obj.id, fw: obj.fw, rows: obj.rows, cols: obj.cols };
+      setDeviceInfo(info);
+      // Upsert to Supabase devices table so last_seen_at and fw_version stay current
+      if (supabase) {
+        supabase.from("devices").upsert({
+          id:           obj.id,
+          fw_version:   obj.fw,
+          last_seen_at: new Date().toISOString(),
+        }, { onConflict: "id" }).then(({ error }) => {
+          if (error) console.warn("[devices] upsert failed:", error.message);
+        });
+      }
+      return;
+    }
+    if (obj.type === "ota_ok") {
+      setOtaState("done");
+      setOtaProgress(100);
+      console.log(`[OTA] applied — new fw ${obj.fw}`);
+      return;
+    }
+    if (obj.type === "ota_err") {
+      setOtaError(obj.msg ?? "Unknown error");
+      setOtaState("error");
+      console.warn(`[OTA] failed — ${obj.msg}`);
+      return;
+    }
+
     // ESP32 now sends 7-element hit arrays: [r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
     const hits: RichHit[] = obj.hits ?? [];
     if (!hits.length) return;
@@ -1110,6 +1190,7 @@ export default function Session() {
       const conn = await connectToAdapter({
         onDisconnect: () => {
           setBleStatus("disconnected");
+          setDeviceInfo(null);
           captureRef.current = false;
           connRef.current    = null;
           setSessionActive(false);
@@ -1159,6 +1240,94 @@ export default function Session() {
       console.warn("[BLE] sendCommand failed:", err);
     }
   }, []);
+
+  // ── OTA sender — splits a file into base64-encoded chunks over BLE NUS ─────────
+  // Usage: await sendOta("main.py", fileContent, "1.1.0")
+  //
+  // Why base64? Python source contains multi-byte UTF-8 chars (e.g. box-drawing ─
+  // = 3 bytes each) and JSON-escaped newlines (1 → 2 bytes). A 100-char chunk of
+  // comment-divider lines can serialize to 340+ bytes — way over the 185-byte iOS
+  // ATT write MTU. Base64 is all ASCII: every char is exactly 1 byte, so packet
+  // sizes are deterministic. 128 base64 chars = 96 raw bytes; total JSON packet =
+  // 128 + 26-byte envelope = 154 bytes — safely under every platform's MTU.
+  // CHUNK_SIZE must be a multiple of 4 so every chunk is valid base64 on its own.
+  const sendOta = useCallback(async (filename: string, content: string, newFw: string) => {
+    const conn = connRef.current;
+    if (!conn) return;
+    const { RX } = getCharUuids();
+    const CHUNK_SIZE = 128; // multiple of 4 — each chunk is self-contained valid base64
+
+    // UTF-8 encode then base64 so the ESP32 gets the exact original bytes
+    const b64 = btoa(
+      Array.from(new TextEncoder().encode(content), b => String.fromCharCode(b)).join("")
+    );
+
+    await writeUtf8(conn, RX, JSON.stringify({ cmd: "ota_start", filename, size: content.length }));
+    await new Promise(r => setTimeout(r, 100));
+
+    for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
+      await writeUtf8(conn, RX, JSON.stringify({
+        cmd: "ota_chunk",
+        data: b64.slice(i, i + CHUNK_SIZE),
+      }));
+      await new Promise(r => setTimeout(r, 30));  // give ESP32 time to buffer
+    }
+
+    await writeUtf8(conn, RX, JSON.stringify({ cmd: "ota_end", fw: newFw }));
+    console.log(`[OTA] transfer complete — ${content.length} bytes → ${filename} fw=${newFw}`);
+  }, []);
+
+  // ── runOta — fetches firmware + drives sendOta with live progress ─────────────
+  // Called by the "Confirm Update" button. Tracks chunk progress 0→95%, then
+  // waits for the ota_ok/ota_err notify from the device to reach 100% or error.
+  const runOta = useCallback(async () => {
+    if (!latestFw || !connRef.current) return;
+    setOtaState("updating");
+    setOtaProgress(0);
+    setOtaError(null);
+
+    try {
+      // 1. Fetch the firmware file from the public folder
+      const resp = await fetch("/firmware/main.py");
+      if (!resp.ok) throw new Error(`Could not fetch firmware (${resp.status})`);
+      const content = await resp.text();
+
+      // 2. Stream chunks with progress updates
+      const { RX } = getCharUuids();
+      // Base64-encode so every chunk is pure ASCII — predictable 1 byte/char.
+      // 128 base64 chars + 26-byte JSON envelope = 154 bytes per write.
+      // Must be a multiple of 4 so each slice is self-contained valid base64.
+      const CHUNK_SIZE = 128;
+      const b64 = btoa(
+        Array.from(new TextEncoder().encode(content), b => String.fromCharCode(b)).join("")
+      );
+      const totalChunks = Math.ceil(b64.length / CHUNK_SIZE);
+
+      await writeUtf8(connRef.current, RX, JSON.stringify({
+        cmd: "ota_start", filename: "main_new.py", size: content.length,
+      }));
+      await new Promise(r => setTimeout(r, 100));
+
+      for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
+        if (!connRef.current) throw new Error("BLE disconnected during update");
+        await writeUtf8(connRef.current, RX, JSON.stringify({
+          cmd: "ota_chunk",
+          data: b64.slice(i, i + CHUNK_SIZE),
+        }));
+        const sent = Math.floor(i / CHUNK_SIZE) + 1;
+        // Reserve last 5% for the device-side write + NVS update + reset signal
+        setOtaProgress(Math.round((sent / totalChunks) * 95));
+        await new Promise(r => setTimeout(r, 30));
+      }
+
+      await writeUtf8(connRef.current, RX, JSON.stringify({ cmd: "ota_end", fw: latestFw }));
+      // Progress goes to 100% when ota_ok arrives via handleNotify
+    } catch (err: any) {
+      console.error("[OTA] runOta error:", err);
+      setOtaError(err.message ?? "Update failed");
+      setOtaState("error");
+    }
+  }, [latestFw]);
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
@@ -1252,6 +1421,8 @@ export default function Session() {
         // accuracy live stats
         accHitsCount: accHitsRef.current,
         accScoreSum:  accSumRef.current,
+        // physical device identity from hello packet
+        deviceId:    deviceInfo?.id,
       });
       setSaveState("saved");
     } catch (err: any) {
@@ -1435,7 +1606,127 @@ export default function Session() {
                   animation: bleStatus === "scanning" ? "tsBlink 1s ease-in-out infinite" : "none",
                 }} />
                 <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600 }}>{statusConfig.label}</span>
+                {deviceInfo && bleStatus === "connected" && (
+                  <div style={{
+                    marginLeft: "auto",
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "2px 9px", borderRadius: 7,
+                    background: "rgba(180,0,255,0.10)",
+                    border: "1px solid rgba(180,0,255,0.25)",
+                    fontSize: 11, fontWeight: 700, color: "#b400ff",
+                  }}>
+                    {deviceInfo.id}
+                    <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
+                      v{deviceInfo.fw}
+                    </span>
+                  </div>
+                )}
               </div>
+
+              {/* Mode selector — visible once connected, locked during active session */}
+              {bleStatus === "connected" && (
+                <>
+                  {/* ── OTA firmware banner ─────────────────────────────────── */}
+                  {otaState === "available" && !sessionActive && (
+                    <div style={{
+                      marginBottom: 14, padding: "11px 13px", borderRadius: 10,
+                      background: "rgba(255,200,0,0.07)",
+                      border: "1px solid rgba(255,200,0,0.30)",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <div>
+                          <div style={{ fontSize: 11, fontWeight: 800, color: "#ffcc00", letterSpacing: "0.03em" }}>
+                            ⬆ Firmware Update
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                            v{deviceInfo?.fw} → v{latestFw}
+                          </div>
+                        </div>
+                        <button
+                          onClick={runOta}
+                          style={{
+                            flexShrink: 0, padding: "5px 13px", borderRadius: 7,
+                            fontWeight: 700, fontSize: 11, cursor: "pointer",
+                            background: "#ffcc00", border: "none", color: "#000",
+                          }}
+                        >
+                          Update
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {otaState === "updating" && (
+                    <div style={{
+                      marginBottom: 14, padding: "11px 13px", borderRadius: 10,
+                      background: "rgba(255,200,0,0.06)",
+                      border: "1px solid rgba(255,200,0,0.22)",
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#ffcc00" }}>
+                          Updating firmware…
+                        </div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#ffcc00", fontVariantNumeric: "tabular-nums" }}>
+                          {otaProgress}%
+                        </div>
+                      </div>
+                      <div style={{ height: 4, borderRadius: 2, background: "rgba(255,255,255,0.08)" }}>
+                        <div style={{
+                          height: "100%", borderRadius: 2,
+                          background: "linear-gradient(90deg, #ffcc00, #ffaa00)",
+                          width: `${otaProgress}%`,
+                          transition: "width 200ms ease",
+                        }} />
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 7, lineHeight: 1.4 }}>
+                        Do not disconnect — device will reset automatically
+                      </div>
+                    </div>
+                  )}
+
+                  {otaState === "done" && (
+                    <div style={{
+                      marginBottom: 14, padding: "11px 13px", borderRadius: 10,
+                      background: "rgba(0,255,136,0.06)",
+                      border: "1px solid rgba(0,255,136,0.25)",
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#00ff88" }}>
+                        ✓ Update applied
+                      </div>
+                      <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3 }}>
+                        Device is restarting — reconnect in a moment
+                      </div>
+                    </div>
+                  )}
+
+                  {otaState === "error" && (
+                    <div style={{
+                      marginBottom: 14, padding: "11px 13px", borderRadius: 10,
+                      background: "rgba(255,80,80,0.06)",
+                      border: "1px solid rgba(255,80,80,0.25)",
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#ff6060" }}>
+                        ✗ Update failed
+                      </div>
+                      {otaError && (
+                        <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 3, lineHeight: 1.4 }}>
+                          {otaError}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => setOtaState("available")}
+                        style={{
+                          marginTop: 7, fontSize: 10, fontWeight: 700,
+                          color: "#ffcc00", background: "none", border: "none",
+                          cursor: "pointer", padding: 0,
+                        }}
+                      >
+                        Retry →
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
 
               {/* Mode selector — visible once connected, locked during active session */}
               {bleStatus === "connected" && (
