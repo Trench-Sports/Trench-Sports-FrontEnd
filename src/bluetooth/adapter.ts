@@ -31,7 +31,9 @@ export function getBleConfig() {
     SERVICE_UUID: normalizeUuid(import.meta.env.VITE_BLE_SERVICE_UUID as string | undefined),
     CHAR_UUID_RX: normalizeUuid(import.meta.env.VITE_BLE_CHAR_UUID_RX as string | undefined),
     CHAR_UUID_TX: normalizeUuid(import.meta.env.VITE_BLE_CHAR_UUID_TX as string | undefined),
-    NAME_PREFIX: ((import.meta.env.VITE_BLE_NAME_PREFIX as string | undefined) ?? "MPY").trim(),
+    // Default changed from "MPY" → "TS" to match the device name set by boot.py
+    // (e.g. "TS-001", "TS-002"). Override via VITE_BLE_NAME_PREFIX in .env.
+    NAME_PREFIX: ((import.meta.env.VITE_BLE_NAME_PREFIX as string | undefined) ?? "TS").trim(),
   };
 }
 
@@ -49,13 +51,25 @@ export function getBluetoothDiagnostics() {
   };
 }
 
-export async function connectToAdapter(opts?: { onDisconnect?: () => void }): Promise<AdapterConnection> {
+export async function connectToAdapter(opts?: {
+  onDisconnect?: () => void;
+  // Callers can supply these directly so the adapter always has correct values
+  // regardless of whether VITE_BLE_* env vars are configured. session.tsx
+  // passes both explicitly; getBleConfig() values are used as fallbacks only.
+  serviceUuid?: string;
+  namePrefix?: string;
+}): Promise<AdapterConnection> {
   const cfg = getBleConfig();
-  if (!cfg.SERVICE_UUID) throw new Error("Missing VITE_BLE_SERVICE_UUID.");
+
+  // Caller-supplied values take precedence over .env / getBleConfig() defaults.
+  const resolvedServiceUuid = normalizeUuid(opts?.serviceUuid) ?? cfg.SERVICE_UUID;
+  if (!resolvedServiceUuid) {
+    throw new Error("Missing BLE service UUID. Set VITE_BLE_SERVICE_UUID or pass serviceUuid to connectToAdapter.");
+  }
 
   const args = {
-    serviceUuid: cfg.SERVICE_UUID,
-    namePrefix: cfg.NAME_PREFIX,
+    serviceUuid: resolvedServiceUuid,
+    namePrefix:  (opts?.namePrefix?.trim()) ?? cfg.NAME_PREFIX,
     onDisconnect: opts?.onDisconnect,
   };
 
