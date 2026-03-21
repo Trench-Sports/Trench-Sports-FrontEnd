@@ -26,54 +26,51 @@ export async function connectToAdapterNative(args: {
 }): Promise<NativeAdapterConnection> {
   await ensureInit();
 
-  // ── Capacitor BLE filter API ──────────────────────────────────────────────
-  // BleClient.requestDevice() takes FLAT options — namePrefix and
-  // optionalServices as direct keys. A top-level `filters` array (Web
-  // Bluetooth style) is silently ignored by the plugin, which is why an
-  // earlier attempt showed every nearby BLE device.
+  // ── Single requestDevice call with combined filters ───────────────────────
   //
-  // We try two namePrefix passes so a single picker covers both name schemes:
-  //   1. "TS"  — current firmware (boot.py sets device name to TS-001 etc.)
-  //   2. "MPY" — legacy units whose OS-cached name is the MicroPython default
+  // Previous approach opened multiple requestDevice() calls in a waterfall,
+  // which caused multiple picker dialogs to appear back-to-back if the first
+  // filter returned no results — a broken UX.
   //
-  // Cancellation is detected and re-thrown immediately at pass 1 so we never
-  // open a second picker if the user dismissed the first.
+  // The Capacitor BLE plugin accepts an array of filter objects in `services`.
+  // The OS shows a device in the picker if it matches ANY of the provided
+  // filters (OR logic), so combining service UUID + namePrefix in one call
+  // is both correct and shows only one picker dialog.
+  //
+  // Filter logic (device appears if it matches either):
+  //   • services: [NUS UUID]  — matches on the UUID broadcast in the ad payload
+  //                             (main.py fix); works for brand-new unpaired units
+  //   • namePrefix: "TS"      — matches OS-cached name "TS-001" etc.; catches
+  //                             old-firmware units whose ad payload lacks UUID
+  //
+  // optionalServices ensures GATT service discovery succeeds regardless of
+  // which filter triggered the match.
+  //
+  // Note: the Capacitor plugin's TypeScript types don't expose `filters[]` as
+  // an array directly, so we cast to `any`. The underlying native layer on both
+  // iOS (CoreBluetooth) and Android (BluetoothLeScanner) supports multiple
+  // scan filters natively.
 
-  const isCancel = (e: any) => {
-    const msg = (e?.message ?? "").toLowerCase();
-    return msg.includes("cancel") || msg.includes("user denied") || msg.includes("user gesture");
-  };
-
-  // Pass 1 — "TS-*" devices (updated firmware)
-  try {
-    const dev = await BleClient.requestDevice({
-      namePrefix: args.namePrefix.trim() || "TS",
-      optionalServices: [args.serviceUuid],
-    } as any);
-    await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
-    return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
-  } catch (e: any) {
-    if (isCancel(e)) throw e; // user dismissed — stop here
+  const scanFilters: any[] = [
+    { services: [args.serviceUuid] },
+  ];
+  if (args.namePrefix.trim()) {
+    scanFilters.push({ namePrefix: args.namePrefix.trim() });
   }
 
-  // Pass 2 — "MPY-*" / "MPY ESP32" devices (old cached name)
-  try {
-    const dev = await BleClient.requestDevice({
-      namePrefix: "MPY",
-      optionalServices: [args.serviceUuid],
-    } as any);
-    await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
-    return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
-  } catch (e: any) {
-    if (isCancel(e)) throw e;
-  }
-
-  // Pass 3 — no name filter; user picks manually from all nearby devices
   const dev: BleDevice = await BleClient.requestDevice({
+    filters: scanFilters,
     optionalServices: [args.serviceUuid],
   } as any);
+
   await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
-  return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
+
+  return {
+    kind: "native",
+    name: dev.name ?? dev.deviceId,
+    deviceId: dev.deviceId,
+    serviceUuid: args.serviceUuid,
+  };
 }
 
 export async function disconnectNative(conn: NativeAdapterConnection | null) {
@@ -88,13 +85,17 @@ export async function startNotificationsNative(
   onValue: (dv: DataView) => void
 ) {
   await ensureInit();
+
   await BleClient.startNotifications(conn.deviceId, conn.serviceUuid, characteristicUuid, onValue);
+
   return { kind: "native", deviceId: conn.deviceId, service: conn.serviceUuid, characteristic: characteristicUuid };
 }
 
 export async function writeUtf8Native(conn: NativeAdapterConnection, characteristicUuid: string, text: string) {
   await ensureInit();
+
   const u8 = new TextEncoder().encode(text);
   const dv = bytesToDataView(u8);
+
   await BleClient.write(conn.deviceId, conn.serviceUuid, characteristicUuid, dv);
 }
