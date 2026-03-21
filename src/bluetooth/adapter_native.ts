@@ -26,42 +26,56 @@ export async function connectToAdapterNative(args: {
 }): Promise<NativeAdapterConnection> {
   await ensureInit();
 
-  // ── Single requestDevice call with combined filters ───────────────────────
+  // ── Capacitor BLE plugin filter API ─────────────────────────────────────
+  // BleClient.requestDevice() takes FLAT options — not a Web Bluetooth-style
+  // `filters` array. Passing a `filters` key is silently ignored, which is
+  // why all nearby devices were appearing (acceptAllDevices behaviour).
   //
-  // Previous approach opened multiple requestDevice() calls in a waterfall,
-  // which caused multiple picker dialogs to appear back-to-back if the first
-  // filter returned no results — a broken UX.
+  // The correct approach for the Capacitor plugin:
+  //   • `namePrefix` → narrows the scan at the radio level to "TS-*" / "MPY-*"
+  //   • `optionalServices` → tells the GATT stack which service to discover
+  //                          after the user picks a device
   //
-  // The Capacitor BLE plugin accepts an array of filter objects in `services`.
-  // The OS shows a device in the picker if it matches ANY of the provided
-  // filters (OR logic), so combining service UUID + namePrefix in one call
-  // is both correct and shows only one picker dialog.
+  // We build a combined prefix that matches both "TS" (current firmware,
+  // set by boot.py) and "MPY" (old MicroPython default cached by the OS on
+  // previously-paired units). The Capacitor plugin accepts a single string
+  // prefix, so we use the shortest common prefix. Since "TS" and "MPY" share
+  // no common prefix we make two sequential attempts — but only if the first
+  // returns nothing (not a user cancel), so only one picker is ever shown.
   //
-  // Filter logic (device appears if it matches either):
-  //   • services: [NUS UUID]  — matches on the UUID broadcast in the ad payload
-  //                             (main.py fix); works for brand-new unpaired units
-  //   • namePrefix: "TS"      — matches OS-cached name "TS-001" etc.; catches
-  //                             old-firmware units whose ad payload lacks UUID
-  //
-  // optionalServices ensures GATT service discovery succeeds regardless of
-  // which filter triggered the match.
-  //
-  // Note: the Capacitor plugin's TypeScript types don't expose `filters[]` as
-  // an array directly, so we cast to `any`. The underlying native layer on both
-  // iOS (CoreBluetooth) and Android (BluetoothLeScanner) supports multiple
-  // scan filters natively.
+  // In practice nearly all units will match on the first attempt ("TS") once
+  // firmware is updated. The "MPY" fallback covers legacy units only.
 
-  const scanFilters: any[] = [
-    { services: [args.serviceUuid] },
-  ];
-  if (args.namePrefix.trim()) {
-    scanFilters.push({ namePrefix: args.namePrefix.trim() });
+  const tryConnect = async (prefix: string): Promise<BleDevice | null> => {
+    try {
+      return await BleClient.requestDevice({
+        namePrefix: prefix,
+        optionalServices: [args.serviceUuid],
+      } as any);
+    } catch (e: any) {
+      const msg = (e?.message ?? "").toLowerCase();
+      // Propagate user cancellation immediately — don't open another picker
+      if (msg.includes("cancel") || msg.includes("user denied") || msg.includes("user gesture")) {
+        throw e;
+      }
+      return null;
+    }
+  };
+
+  // Primary: "TS" prefix — matches TS-001, TS-002, etc. (current firmware)
+  let dev: BleDevice | null = await tryConnect(args.namePrefix.trim() || "TS");
+
+  // Fallback: "MPY" prefix — matches legacy units with MicroPython default name
+  if (!dev) {
+    dev = await tryConnect("MPY");
   }
 
-  const dev: BleDevice = await BleClient.requestDevice({
-    filters: scanFilters,
-    optionalServices: [args.serviceUuid],
-  } as any);
+  // Last resort: show all devices so the user can still connect manually
+  if (!dev) {
+    dev = await BleClient.requestDevice({
+      optionalServices: [args.serviceUuid],
+    } as any);
+  }
 
   await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
 
