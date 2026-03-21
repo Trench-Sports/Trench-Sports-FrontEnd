@@ -12,6 +12,12 @@ import {
   getBluetoothDiagnostics,
   type AdapterConnection,
 } from "../bluetooth/adapter";
+import {
+  scanForDevices,
+  stopScan,
+  connectToDeviceNative,
+  type ScannedDevice,
+} from "../bluetooth/adapter_native";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -763,6 +769,202 @@ function ImpactRipple({
   );
 }
 
+// ─── BlePickerSheet ───────────────────────────────────────────────────────────
+// In-app BLE device picker for native builds.
+// Replaces the OS requestDevice() picker so ALL nearby BLE devices are shown
+// regardless of OS name-cache state, and the user can see RSSI signal strength.
+function BlePickerSheet({
+  devices,
+  scanning,
+  onSelect,
+  onCancel,
+  serviceUuid,
+}: {
+  devices: ScannedDevice[];
+  scanning: boolean;
+  onSelect: (d: ScannedDevice) => void;
+  onCancel: () => void;
+  serviceUuid: string;
+}) {
+  // TS bags are identified by name prefix "TS" (e.g. "TS-001") or by the NUS
+  // service UUID being in their adv payload — we highlight them distinctly.
+  function isTsBag(d: ScannedDevice) {
+    return d.name.startsWith("TS") && d.name !== d.deviceId;
+  }
+
+  function rssiLabel(rssi: number | null) {
+    if (rssi === null) return { bars: 1, color: "rgba(255,255,255,0.25)", label: "—" };
+    if (rssi >= -55) return { bars: 4, color: "#00ff88", label: "Excellent" };
+    if (rssi >= -67) return { bars: 3, color: "#00dcff", label: "Good" };
+    if (rssi >= -80) return { bars: 2, color: "#ffcc00", label: "Fair" };
+    return { bars: 1, color: "#ff6060", label: "Weak" };
+  }
+
+  // Sort: TS bags first, then by RSSI descending (strongest first)
+  const sorted = [...devices].sort((a, b) => {
+    const aTs = isTsBag(a) ? 0 : 1;
+    const bTs = isTsBag(b) ? 0 : 1;
+    if (aTs !== bTs) return aTs - bTs;
+    return (b.rssi ?? -999) - (a.rssi ?? -999);
+  });
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      background: "rgba(0,0,0,0.60)", backdropFilter: "blur(6px)",
+    }} onClick={onCancel}>
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: "100%", maxWidth: 480,
+          background: "var(--panel)",
+          border: "1px solid rgba(255,255,255,0.10)",
+          borderRadius: "20px 20px 0 0",
+          padding: "0 0 32px",
+          maxHeight: "72vh", display: "flex", flexDirection: "column",
+          animation: "tsSheetUp 0.22s cubic-bezier(0.32,0.72,0,1)",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "16px 20px 12px",
+          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          flexShrink: 0,
+        }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 800 }}>Nearby Devices</div>
+            <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+              {scanning
+                ? "Scanning for BLE devices…"
+                : `${devices.length} device${devices.length !== 1 ? "s" : ""} found`}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {scanning && (
+              <div style={{
+                width: 7, height: 7, borderRadius: "50%",
+                background: "#ffcc00",
+                boxShadow: "0 0 6px 3px rgba(255,200,0,0.45)",
+                animation: "tsBlink 1s ease-in-out infinite",
+                flexShrink: 0,
+              }} />
+            )}
+            <button
+              onClick={onCancel}
+              style={{
+                background: "rgba(255,255,255,0.07)",
+                border: "1px solid rgba(255,255,255,0.10)",
+                color: "var(--text)", borderRadius: 8,
+                padding: "4px 10px", fontSize: 12, fontWeight: 600, cursor: "pointer",
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+
+        {/* Device list */}
+        <div style={{ overflowY: "auto", flex: 1, padding: "10px 12px 0" }}>
+          {sorted.length === 0 ? (
+            <div style={{
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center",
+              padding: "32px 0", gap: 10,
+            }}>
+              <div style={{ fontSize: 28, opacity: 0.25 }}>📡</div>
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>
+                {scanning ? "Looking for devices…" : "No devices found. Make sure the bag is powered on."}
+              </div>
+            </div>
+          ) : sorted.map(d => {
+            const sig   = rssiLabel(d.rssi);
+            const isBag = isTsBag(d);
+            return (
+              <button
+                key={d.deviceId}
+                onClick={() => onSelect(d)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 12,
+                  width: "100%", padding: "11px 12px", marginBottom: 6,
+                  borderRadius: 12, cursor: "pointer", textAlign: "left",
+                  border: isBag
+                    ? "1px solid rgba(180,0,255,0.35)"
+                    : "1px solid rgba(255,255,255,0.07)",
+                  background: isBag
+                    ? "rgba(180,0,255,0.08)"
+                    : "rgba(255,255,255,0.02)",
+                  transition: "background 120ms",
+                }}
+              >
+                {/* Icon */}
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 17,
+                  background: isBag
+                    ? "linear-gradient(135deg, rgba(180,0,255,0.30), rgba(180,0,255,0.12))"
+                    : "rgba(255,255,255,0.05)",
+                  border: isBag
+                    ? "1px solid rgba(180,0,255,0.40)"
+                    : "1px solid rgba(255,255,255,0.08)",
+                }}>
+                  {isBag ? "🥊" : "📶"}
+                </div>
+
+                {/* Name + ID */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700,
+                    color: isBag ? "rgba(220,150,255,1)" : "var(--text)",
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}>
+                    {d.name}
+                    {isBag && (
+                      <span style={{
+                        marginLeft: 6, fontSize: 9, fontWeight: 800,
+                        color: "#b400ff", letterSpacing: "0.08em",
+                        background: "rgba(180,0,255,0.15)",
+                        border: "1px solid rgba(180,0,255,0.30)",
+                        borderRadius: 4, padding: "1px 5px",
+                        verticalAlign: "middle",
+                      }}>TS BAG</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2, fontFamily: "monospace" }}>
+                    {d.deviceId}
+                  </div>
+                </div>
+
+                {/* RSSI bars */}
+                <div style={{
+                  display: "flex", flexDirection: "column",
+                  alignItems: "flex-end", gap: 2, flexShrink: 0,
+                }}>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 14 }}>
+                    {[1, 2, 3, 4].map(b => (
+                      <div key={b} style={{
+                        width: 4, borderRadius: 1,
+                        height: `${b * 25}%`,
+                        background: b <= sig.bars ? sig.color : "rgba(255,255,255,0.12)",
+                        transition: "background 300ms",
+                      }} />
+                    ))}
+                  </div>
+                  <div style={{ fontSize: 9, color: sig.color, fontWeight: 600 }}>
+                    {d.rssi !== null ? `${d.rssi} dBm` : "—"}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
@@ -1186,33 +1388,83 @@ export default function Session() {
   const [bleError,      setBleError]      = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
 
+  // ── Native BLE picker state ───────────────────────────────────────────────
+  const [pickerOpen,    setPickerOpen]    = useState(false);
+  const [pickerDevices, setPickerDevices] = useState<ScannedDevice[]>([]);
+  const [pickerScanning, setPickerScanning] = useState(false);
+  // Resolves/rejects the pending connectBle promise when user picks or cancels
+  const pickerResolveRef = useRef<((d: ScannedDevice | null) => void) | null>(null);
+
+  // Opens the in-app picker for native: starts a scan, resolves when user picks
+  const openNativePicker = useCallback((): Promise<ScannedDevice | null> => {
+    return new Promise(resolve => {
+      pickerResolveRef.current = resolve;
+      setPickerDevices([]);
+      setPickerScanning(true);
+      setPickerOpen(true);
+
+      scanForDevices({
+        durationMs: 10_000,
+        onUpdate: devices => setPickerDevices(devices),
+      }).finally(() => setPickerScanning(false));
+    });
+  }, []);
+
+  const closePicker = useCallback((picked: ScannedDevice | null) => {
+    setPickerOpen(false);
+    setPickerScanning(false);
+    stopScan();
+    pickerResolveRef.current?.(picked);
+    pickerResolveRef.current = null;
+  }, []);
+
   const connectBle = useCallback(async () => {
     if (!bleSupported) return;
     setBleStatus("scanning");
     setBleError(null);
     try {
-      const conn = await connectToAdapter({
-        // namePrefix "TS" matches advertised names like "TS-001", "TS-002", etc.
-        // Used as a secondary filter alongside the NUS service UUID so that new,
-        // never-paired devices (which have no OS-cached name) are still found
-        // via service UUID filtering in the ad payload.
-        namePrefix:  "TS",
-        serviceUuid: NUS_SERVICE_UUID,
-        onDisconnect: () => {
-          setBleStatus("disconnected");
-          setDeviceInfo(null);
-          captureRef.current = false;
-          connRef.current    = null;
-          setSessionActive(false);
-        },
-      });
+      let conn: AdapterConnection;
+
+      if (isNativeApp()) {
+        // ── Native path: show our own in-app picker ─────────────────────────
+        // Opens a bottom sheet that runs a live BLE scan and lists all nearby
+        // devices. The user taps one; we connect directly — no OS picker, no
+        // name-cache dependency.
+        const picked = await openNativePicker();
+        if (!picked) {
+          // User cancelled
+          setBleStatus("idle");
+          setBleError(null);
+          return;
+        }
+        conn = await connectToDeviceNative({
+          device: picked,
+          serviceUuid: NUS_SERVICE_UUID,
+          onDisconnect: () => {
+            setBleStatus("disconnected");
+            setDeviceInfo(null);
+            captureRef.current = false;
+            connRef.current    = null;
+            setSessionActive(false);
+          },
+        });
+      } else {
+        // ── Web Bluetooth path: OS picker as before ─────────────────────────
+        conn = await connectToAdapter({
+          namePrefix:  "TS",
+          serviceUuid: NUS_SERVICE_UUID,
+          onDisconnect: () => {
+            setBleStatus("disconnected");
+            setDeviceInfo(null);
+            captureRef.current = false;
+            connRef.current    = null;
+            setSessionActive(false);
+          },
+        });
+      }
+
       connRef.current = conn;
 
-      // Subscribe to TX notifications — handleNotify receives a DataView directly.
-      // The ESP32 sends a "hello" packet immediately after the central connects
-      // (before any "start" command). The app uses that packet to confirm the
-      // connection is live and to read device identity/firmware version.
-      // Only after hello arrives does the UI allow starting a session.
       const { TX } = getCharUuids();
       await adapterStartNotifications(conn, TX, handleNotify);
 
@@ -1223,7 +1475,6 @@ export default function Session() {
       console.error("[BLE] connect error:", err);
       const msg = err?.message ?? "";
 
-      // User dismissed the picker — back to idle, no error shown
       const userCancelled =
         msg.includes("cancelled") ||
         msg.includes("NotFoundError") ||
@@ -1236,7 +1487,6 @@ export default function Session() {
         return;
       }
 
-      // Real error — increment attempt counter and surface a helpful hint
       setConnectAttempt(n => n + 1);
       setBleStatus("disconnected");
 
@@ -1248,7 +1498,7 @@ export default function Session() {
         setBleError("Could not connect. Make sure the bag is powered on and no other device is already connected to it.");
       }
     }
-  }, [bleSupported, handleNotify]);
+  }, [bleSupported, handleNotify, openNativePicker]);
 
   const disconnectBle = useCallback(async () => {
     captureRef.current = false;
@@ -2167,8 +2417,22 @@ export default function Session() {
         </div>
       </div>
 
+      {/* ── Native BLE device picker sheet ──────────────────────────────── */}
+      {pickerOpen && (
+        <BlePickerSheet
+          devices={pickerDevices}
+          scanning={pickerScanning}
+          serviceUuid={NUS_SERVICE_UUID}
+          onSelect={d => closePicker(d)}
+          onCancel={() => closePicker(null)}
+        />
+      )}
+
       <style>{`
-        /* ── 3-col layout ── */
+        @keyframes tsSheetUp {
+          from { transform: translateY(100%); opacity: 0; }
+          to   { transform: translateY(0);    opacity: 1; }
+        }
         .ts-ses-layout {
           display: grid;
           grid-template-columns: 300px minmax(300px, 1fr) 260px;

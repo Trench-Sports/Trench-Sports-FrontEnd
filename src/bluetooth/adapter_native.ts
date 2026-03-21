@@ -1,5 +1,5 @@
 // src/bluetooth/adapter_native.ts
-import { BleClient, ScanMode, type BleDevice } from "@capacitor-community/bluetooth-le";
+import { BleClient, ScanMode, type BleDevice, type ScanResult } from "@capacitor-community/bluetooth-le";
 
 export type NativeAdapterConnection = {
   kind: "native";
@@ -8,14 +8,21 @@ export type NativeAdapterConnection = {
   serviceUuid: string;
 };
 
+// A scanned device surfaced to the UI picker
+export type ScannedDevice = {
+  deviceId: string;
+  name: string;       // display name — falls back to deviceId if adv name absent
+  rssi: number | null;
+};
+
 let initPromise: Promise<void> | null = null;
 
 async function ensureInit() {
   if (!initPromise) {
     initPromise = BleClient.initialize({
-      // androidNeverForLocation: on Android 12+ (API 31+) BLUETOOTH_SCAN
-      // replaces the location permission — set this so the plugin doesn't
-      // request location unnecessarily. Safe no-op on iOS.
+      // On Android 12+ (API 31+) BLUETOOTH_SCAN replaces the location permission.
+      // Setting this prevents the plugin from requesting location unnecessarily.
+      // Safe no-op on iOS.
       androidNeverForLocation: true,
     });
   }
@@ -26,39 +33,96 @@ function bytesToDataView(u8: Uint8Array) {
   return new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
 }
 
-// ── Filtering strategy ──────────────────────────────────────────────────────
+// ── scanForDevices ────────────────────────────────────────────────────────────
 //
-// Root cause of "new devices not found" on native (iOS/Android via Capacitor):
+// Runs a BLE scan for `durationMs` and calls `onUpdate` each time a new device
+// is found or an RSSI update arrives for a known device. The caller renders the
+// live list; the user picks one; the caller passes it to connectToDeviceNative.
 //
-// The old code used namePrefix as the primary filter. On native platforms this
-// is matched against the OS-cached name from a prior scan or pairing. A device
-// that has never been seen by this phone has no cached name, so it is excluded
-// even when it is advertising right next to the phone.
+// Why scan instead of requestDevice?
+//   requestDevice() delegates filtering to the OS picker, which relies on the
+//   OS name-cache. Brand-new devices with no cached name are silently excluded.
+//   Scanning ourselves gives us every raw advertisement packet so we can show
+//   ALL nearby BLE devices (or filter client-side) regardless of cache state.
 //
-// Additionally, on iOS namePrefix matching is case-sensitive and requires the
-// OS to have decoded the "Complete Local Name" AD structure in a prior scan —
-// which doesn't happen reliably in BALANCED scan mode.
+// Scan strategy:
+//   - ScanMode.LOW_LATENCY for fast discovery (acceptable battery cost for a
+//     short manual scan).
+//   - No service-UUID filter in the scan call — we collect everything and let
+//     the UI label TS bags distinctly. This also catches old firmware units
+//     whose adv payload pre-dates the UUID inclusion.
+//   - Deduplication is by deviceId; RSSI is updated on repeat sightings.
+
+export async function scanForDevices(opts: {
+  durationMs?: number;
+  onUpdate: (devices: ScannedDevice[]) => void;
+}): Promise<ScannedDevice[]> {
+  await ensureInit();
+
+  const { durationMs = 5000, onUpdate } = opts;
+  const seen = new Map<string, ScannedDevice>();
+
+  const emit = () => onUpdate(Array.from(seen.values()));
+
+  await BleClient.requestLEScan(
+    { scanMode: ScanMode.LOW_LATENCY },
+    (result: ScanResult) => {
+      const id   = result.device.deviceId;
+      const name = result.device.name?.trim() ||
+                   result.localName?.trim()   ||
+                   id;
+      const rssi = result.rssi ?? null;
+
+      const existing = seen.get(id);
+      if (!existing || existing.rssi !== rssi || existing.name !== name) {
+        seen.set(id, { deviceId: id, name, rssi });
+        emit();
+      }
+    },
+  );
+
+  // Stop scan after the requested duration
+  await new Promise<void>(resolve => setTimeout(resolve, durationMs));
+  await BleClient.stopLEScan();
+
+  return Array.from(seen.values());
+}
+
+// Aborts an in-progress scan early (e.g. user cancelled the picker)
+export async function stopScan() {
+  try {
+    await BleClient.stopLEScan();
+  } catch {
+    // already stopped — safe to ignore
+  }
+}
+
+// ── connectToDeviceNative ─────────────────────────────────────────────────────
 //
-// Fixes applied:
+// Connects directly to a device the user picked from the scan list.
+// Skips requestDevice entirely — no OS picker, no name-cache dependency.
+
+export async function connectToDeviceNative(opts: {
+  device: ScannedDevice;
+  serviceUuid: string;
+  onDisconnect?: () => void;
+}): Promise<NativeAdapterConnection> {
+  await ensureInit();
+
+  await BleClient.connect(opts.device.deviceId, () => opts.onDisconnect?.());
+
+  return {
+    kind: "native",
+    name: opts.device.name,
+    deviceId: opts.device.deviceId,
+    serviceUuid: opts.serviceUuid,
+  };
+}
+
+// ── connectToAdapterNative (legacy path — kept for web fallback parity) ───────
 //
-//   1. ScanMode.LOW_LATENCY on Android ensures the radio scans aggressively
-//      so the OS name cache is populated before the picker evaluates namePrefix.
-//      iOS ignores ScanMode but it's harmless to set it.
-//
-//   2. Primary filter is now serviceUuid only (attempt 2 below).
-//      The NUS UUID is included in the ESP32's adv payload as AD type 0x07
-//      (Complete list of 128-bit UUIDs) in the current main.py, so it is
-//      present in every live advertisement packet regardless of OS caching.
-//
-//   3. Attempt 1 (serviceUuid + namePrefix) still runs first when a prefix
-//      is available — it keeps the picker clean by excluding unrelated NUS
-//      peripherals (dev boards, etc.) on phones where the name IS cached.
-//
-//   4. Attempt 3 (namePrefix only) is a last-resort for old-firmware units
-//      that pre-date the UUID-in-adv-payload change but have a cached name.
-//
-// All attempts pass optionalServices so GATT service discovery succeeds
-// regardless of which filter matched.
+// Used by connectToAdapter() in adapter.ts when a scan+pick flow is not desired.
+// Falls back through three requestDevice strategies in order of precision.
 
 export async function connectToAdapterNative(args: {
   serviceUuid: string;
@@ -67,14 +131,11 @@ export async function connectToAdapterNative(args: {
 }): Promise<NativeAdapterConnection> {
   await ensureInit();
 
-  const prefix = args.namePrefix.trim();
+  const prefix    = args.namePrefix.trim();
   const hasPrefix = prefix.length > 0;
-
   let dev: BleDevice | null = null;
 
-  // ── Attempt 1: serviceUuid + namePrefix ─────────────────────────────────────
-  // Most precise — only shows TS bags in the picker. Works when the OS has a
-  // cached name for the device (previously paired or scanned on this phone).
+  // Attempt 1: serviceUuid + namePrefix (most precise — clean picker)
   if (hasPrefix) {
     try {
       dev = await BleClient.requestDevice({
@@ -85,13 +146,10 @@ export async function connectToAdapterNative(args: {
       } as any);
     } catch (e: any) {
       if (isUserCancel(e?.message ?? "")) throw e;
-      // Name not cached yet — fall through to UUID-only.
     }
   }
 
-  // ── Attempt 2: serviceUuid only ─────────────────────────────────────────────
-  // Finds brand-new / never-paired devices. Relies on the NUS UUID being
-  // present in the live advertisement packet (current main.py includes it).
+  // Attempt 2: serviceUuid only (brand-new / never-paired devices)
   if (!dev) {
     try {
       dev = await BleClient.requestDevice({
@@ -101,20 +159,16 @@ export async function connectToAdapterNative(args: {
       } as any);
     } catch (e: any) {
       if (isUserCancel(e?.message ?? "")) throw e;
-      // Fall through to name-only last resort.
     }
   }
 
-  // ── Attempt 3: namePrefix only ──────────────────────────────────────────────
-  // Catches old-firmware units whose adv payload pre-dates the UUID inclusion
-  // but whose name is already cached by the OS.
+  // Attempt 3: namePrefix only (old firmware, UUID not in adv payload)
   if (!dev) {
     const opts: any = {
       optionalServices: [args.serviceUuid],
       scanMode: ScanMode.LOW_LATENCY,
     };
     if (hasPrefix) opts.namePrefix = prefix;
-    // Let any error (including user cancel) propagate — all fallbacks exhausted.
     dev = await BleClient.requestDevice(opts);
   }
 
@@ -131,9 +185,9 @@ export async function connectToAdapterNative(args: {
 function isUserCancel(msg: string): boolean {
   const m = msg.toLowerCase();
   return (
-    m.includes("cancel") ||
-    m.includes("user denied") ||
-    m.includes("user cancelled") ||
+    m.includes("cancel")        ||
+    m.includes("user denied")   ||
+    m.includes("user cancelled")||
     m.includes("chooser")
   );
 }
@@ -147,7 +201,7 @@ export async function disconnectNative(conn: NativeAdapterConnection | null) {
 export async function startNotificationsNative(
   conn: NativeAdapterConnection,
   characteristicUuid: string,
-  onValue: (dv: DataView) => void
+  onValue: (dv: DataView) => void,
 ) {
   await ensureInit();
 
