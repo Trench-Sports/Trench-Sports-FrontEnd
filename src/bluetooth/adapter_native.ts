@@ -26,65 +26,54 @@ export async function connectToAdapterNative(args: {
 }): Promise<NativeAdapterConnection> {
   await ensureInit();
 
-  // ── Capacitor BLE plugin filter API ─────────────────────────────────────
-  // BleClient.requestDevice() takes FLAT options — not a Web Bluetooth-style
-  // `filters` array. Passing a `filters` key is silently ignored, which is
-  // why all nearby devices were appearing (acceptAllDevices behaviour).
+  // ── Capacitor BLE filter API ──────────────────────────────────────────────
+  // BleClient.requestDevice() takes FLAT options — namePrefix and
+  // optionalServices as direct keys. A top-level `filters` array (Web
+  // Bluetooth style) is silently ignored by the plugin, which is why an
+  // earlier attempt showed every nearby BLE device.
   //
-  // The correct approach for the Capacitor plugin:
-  //   • `namePrefix` → narrows the scan at the radio level to "TS-*" / "MPY-*"
-  //   • `optionalServices` → tells the GATT stack which service to discover
-  //                          after the user picks a device
+  // We try two namePrefix passes so a single picker covers both name schemes:
+  //   1. "TS"  — current firmware (boot.py sets device name to TS-001 etc.)
+  //   2. "MPY" — legacy units whose OS-cached name is the MicroPython default
   //
-  // We build a combined prefix that matches both "TS" (current firmware,
-  // set by boot.py) and "MPY" (old MicroPython default cached by the OS on
-  // previously-paired units). The Capacitor plugin accepts a single string
-  // prefix, so we use the shortest common prefix. Since "TS" and "MPY" share
-  // no common prefix we make two sequential attempts — but only if the first
-  // returns nothing (not a user cancel), so only one picker is ever shown.
-  //
-  // In practice nearly all units will match on the first attempt ("TS") once
-  // firmware is updated. The "MPY" fallback covers legacy units only.
+  // Cancellation is detected and re-thrown immediately at pass 1 so we never
+  // open a second picker if the user dismissed the first.
 
-  const tryConnect = async (prefix: string): Promise<BleDevice | null> => {
-    try {
-      return await BleClient.requestDevice({
-        namePrefix: prefix,
-        optionalServices: [args.serviceUuid],
-      } as any);
-    } catch (e: any) {
-      const msg = (e?.message ?? "").toLowerCase();
-      // Propagate user cancellation immediately — don't open another picker
-      if (msg.includes("cancel") || msg.includes("user denied") || msg.includes("user gesture")) {
-        throw e;
-      }
-      return null;
-    }
+  const isCancel = (e: any) => {
+    const msg = (e?.message ?? "").toLowerCase();
+    return msg.includes("cancel") || msg.includes("user denied") || msg.includes("user gesture");
   };
 
-  // Primary: "TS" prefix — matches TS-001, TS-002, etc. (current firmware)
-  let dev: BleDevice | null = await tryConnect(args.namePrefix.trim() || "TS");
-
-  // Fallback: "MPY" prefix — matches legacy units with MicroPython default name
-  if (!dev) {
-    dev = await tryConnect("MPY");
-  }
-
-  // Last resort: show all devices so the user can still connect manually
-  if (!dev) {
-    dev = await BleClient.requestDevice({
+  // Pass 1 — "TS-*" devices (updated firmware)
+  try {
+    const dev = await BleClient.requestDevice({
+      namePrefix: args.namePrefix.trim() || "TS",
       optionalServices: [args.serviceUuid],
     } as any);
+    await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
+    return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
+  } catch (e: any) {
+    if (isCancel(e)) throw e; // user dismissed — stop here
   }
 
-  await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
+  // Pass 2 — "MPY-*" / "MPY ESP32" devices (old cached name)
+  try {
+    const dev = await BleClient.requestDevice({
+      namePrefix: "MPY",
+      optionalServices: [args.serviceUuid],
+    } as any);
+    await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
+    return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
+  } catch (e: any) {
+    if (isCancel(e)) throw e;
+  }
 
-  return {
-    kind: "native",
-    name: dev.name ?? dev.deviceId,
-    deviceId: dev.deviceId,
-    serviceUuid: args.serviceUuid,
-  };
+  // Pass 3 — no name filter; user picks manually from all nearby devices
+  const dev: BleDevice = await BleClient.requestDevice({
+    optionalServices: [args.serviceUuid],
+  } as any);
+  await BleClient.connect(dev.deviceId, () => args.onDisconnect?.());
+  return { kind: "native", name: dev.name ?? dev.deviceId, deviceId: dev.deviceId, serviceUuid: args.serviceUuid };
 }
 
 export async function disconnectNative(conn: NativeAdapterConnection | null) {
@@ -99,17 +88,13 @@ export async function startNotificationsNative(
   onValue: (dv: DataView) => void
 ) {
   await ensureInit();
-
   await BleClient.startNotifications(conn.deviceId, conn.serviceUuid, characteristicUuid, onValue);
-
   return { kind: "native", deviceId: conn.deviceId, service: conn.serviceUuid, characteristic: characteristicUuid };
 }
 
 export async function writeUtf8Native(conn: NativeAdapterConnection, characteristicUuid: string, text: string) {
   await ensureInit();
-
   const u8 = new TextEncoder().encode(text);
   const dv = bytesToDataView(u8);
-
   await BleClient.write(conn.deviceId, conn.serviceUuid, characteristicUuid, dv);
 }
