@@ -1192,6 +1192,12 @@ export default function Session() {
     setBleError(null);
     try {
       const conn = await connectToAdapter({
+        // namePrefix "TS" matches advertised names like "TS-001", "TS-002", etc.
+        // Used as a secondary filter alongside the NUS service UUID so that new,
+        // never-paired devices (which have no OS-cached name) are still found
+        // via service UUID filtering in the ad payload.
+        namePrefix:  "TS",
+        serviceUuid: NUS_SERVICE_UUID,
         onDisconnect: () => {
           setBleStatus("disconnected");
           setDeviceInfo(null);

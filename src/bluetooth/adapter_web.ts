@@ -27,7 +27,40 @@ export async function connectToAdapterWeb(args: {
     throw new Error("Web Bluetooth not supported in this browser/context.");
   }
 
-  const filtered: RequestDeviceOptions = {
+  // ── Filtering strategy ────────────────────────────────────────────────────
+  //
+  // Root cause of "new devices not found":
+  //
+  // The old code used `filters: [{ namePrefix }]` as the primary filter.
+  // The Web Bluetooth namePrefix filter matches against the name the OS has
+  // *cached* from a previous pairing — NOT the name in the live advertisement
+  // packet. A brand-new device that has never been paired has no cached name,
+  // so it never appears in the picker even when it's sitting right next to the
+  // phone. Previously-connected devices worked because their name ("MPY ESP32",
+  // the MicroPython GAP default) was already in the OS cache.
+  //
+  // The correct primary filter is `services: [serviceUuid]`. This is evaluated
+  // against the live advertisement packet on every scan — no prior pairing
+  // required. As long as the ESP32 includes the NUS UUID in its ad payload
+  // (fixed in main.py's _adv_payload), any device in range will appear.
+  //
+  // We pass `namePrefix` as a *second* filter option so users on platforms
+  // where service-UUID filtering isn't supported (rare, but exists on some
+  // Android WebViews) still get a narrowed list. Both filters are tried;
+  // if both fail we fall all the way back to acceptAllDevices so the user
+  // can always manually identify their bag.
+  //
+  // Filter cascade:
+  //   1. services UUID — works on all fresh/new devices (radio-level filter)
+  //   2. namePrefix "TS" — narrows to TS-XXX devices (cached-name filter, old devices)
+  //   3. acceptAllDevices — last resort; user picks manually
+
+  const serviceFilter: RequestDeviceOptions = {
+    filters: [{ services: [args.serviceUuid] }],
+    optionalServices: [args.serviceUuid],
+  };
+
+  const namePrefixFilter: RequestDeviceOptions = {
     filters: [{ namePrefix: args.namePrefix }],
     optionalServices: [args.serviceUuid],
   };
@@ -37,10 +70,34 @@ export async function connectToAdapterWeb(args: {
     optionalServices: [args.serviceUuid],
   };
 
-  let device: BluetoothDevice;
+  let device: BluetoothDevice | null = null;
+
+  // Try service-UUID filter first — finds new devices by their ad payload
   try {
-    device = await navAny.bluetooth.requestDevice(filtered);
-  } catch {
+    device = await navAny.bluetooth.requestDevice(serviceFilter);
+  } catch (e: any) {
+    // NotFoundError means no matching devices in range (or user cancelled).
+    // Any other error means the filter itself was rejected — fall through.
+    if (e?.name === "NotFoundError" || (e?.message ?? "").toLowerCase().includes("cancel")) {
+      throw e; // propagate cancellation so the UI goes back to idle
+    }
+  }
+
+  // Try namePrefix filter — catches previously-paired devices whose OS cache
+  // has "TS-001" / "TS-002" etc. but whose ad payload may not yet include UUID
+  // (e.g. units running old firmware before the _adv_payload fix)
+  if (!device) {
+    try {
+      device = await navAny.bluetooth.requestDevice(namePrefixFilter);
+    } catch (e: any) {
+      if (e?.name === "NotFoundError" || (e?.message ?? "").toLowerCase().includes("cancel")) {
+        throw e;
+      }
+    }
+  }
+
+  // Last resort — show all nearby BLE devices
+  if (!device) {
     device = await navAny.bluetooth.requestDevice(fallback);
   }
 
