@@ -15,14 +15,25 @@ import bluetooth
 # Device identity — read from NVS
 # Written once by boot.py; persists across reboots and OTA.
 # Falls back to safe defaults if NVS is unavailable.
+#
+# FIX: boot.py writes identity with set_blob() (standard MicroPython NVS API),
+# but this file was calling get_str() which does NOT exist in standard MicroPython.
+# Changed to get_blob() + decode("utf-8") to match boot.py's write calls.
+# Without this fix every unit always advertises as "TS-UNKNOWN" and users
+# cannot tell devices apart in the BLE picker.
 # ─────────────────────────────────────────
-_DEVICE_ID = "TS-UNKNOWN"
+_DEVICE_ID  = "TS-UNKNOWN"
 _FW_VERSION = "0.0.0"
 try:
     from esp32 import NVS
-    _nvs = NVS("device")
-    _DEVICE_ID  = _nvs.get_str("id")   # e.g. "TS-001"
-    _FW_VERSION = _nvs.get_str("fw")   # e.g. "1.0.0"
+    _nvs    = NVS("device")
+    _id_buf = bytearray(64)
+    _fw_buf = bytearray(32)
+    _nvs.get_blob("id", _id_buf)
+    _nvs.get_blob("fw", _fw_buf)
+    # Trim null bytes that pad the bytearray to its declared size
+    _DEVICE_ID  = _id_buf.rstrip(b"\x00").decode("utf-8")
+    _FW_VERSION = _fw_buf.rstrip(b"\x00").decode("utf-8")
 except Exception:
     pass
 
@@ -136,10 +147,39 @@ _ota_size     = 0
 _ota_buf      = []
 _ota_new_fw   = "0.0.0"
 
+
 def _adv_payload(name: str) -> bytearray:
-    """Minimal advertising payload: Complete Local Name only."""
-    n = name.encode("utf-8")
-    return bytearray(bytes((len(n) + 1, 0x09)) + n)
+    """
+    Advertising payload with two AD structures:
+
+    1. Complete Local Name (type 0x09)
+       Visible in the OS device-name picker and useful for manual identification.
+
+    2. Complete List of 128-bit UUIDs (type 0x07) — the NUS service UUID.
+       FIX: The old payload contained ONLY the name. Web Bluetooth's
+       requestDevice() and most native BLE scanners filter on advertised
+       service UUIDs. Without this AD structure the device is INVISIBLE
+       to any scanner using a service-UUID filter, which is exactly what
+       the app's adapter does. Including the UUID here costs 18 bytes
+       (well within the 31-byte ADV_IND payload limit) and makes the
+       device discoverable on first scan by every platform.
+
+    UUID is encoded little-endian as required by the BT spec.
+    """
+    # ── AD1: Complete Local Name ──────────────────────────────────────────
+    n       = name.encode("utf-8")
+    name_ad = bytes((len(n) + 1, 0x09)) + n
+
+    # ── AD2: Complete list of 128-bit UUICs — NUS service UUID ───────────
+    # "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" in little-endian byte order
+    uuid_bytes = bytes([
+        0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
+        0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E,
+    ])
+    uuid_ad = bytes((len(uuid_bytes) + 1, 0x07)) + uuid_bytes
+
+    return bytearray(name_ad + uuid_ad)
+
 
 class BLEUARTStreamer:
     def __init__(self, name=DEVICE_NAME):
@@ -155,6 +195,10 @@ class BLEUARTStreamer:
         self._connections    = set()
         self._payload        = _adv_payload(name)
         self._is_advertising = False
+        # FIX: hello is now sent unconditionally on connect, before any
+        # "start" command arrives. The old guard (_scanning_enabled check)
+        # created a deadlock: the app waits for hello before sending "start",
+        # but hello was never sent because "start" hadn't arrived yet.
         self._pending_hello  = False
 
         self._advertise()
@@ -475,19 +519,17 @@ def run():
                 last_adv_wdog = now
                 ble._is_advertising = False
                 ble.ensure_advertising()
-            # FIX: was sleep_ms(10) — increased to 20 ms to give the RTOS
-            # more breathing room while we're just waiting for a connection.
             time.sleep_ms(20)
             continue
 
-        # Connected — scan and stream only when app has sent {"cmd":"start"}
-        if not _scanning_enabled:
-            cell_state_reset()   # clear stale state whenever scanning is paused
-            time.sleep_ms(20)    # idle yield — BLE stays alive, TWDT fed
-            continue
-
-        # Send hello immediately after connect (flag set in IRQ, handled here
-        # because gatts_notify is not safe to call from IRQ context).
+        # FIX: hello packet is now sent as soon as the central connects,
+        # BEFORE checking _scanning_enabled. The old code placed the hello
+        # block after the `if not _scanning_enabled: continue` guard, which
+        # meant hello was never dispatched on first connect. This created a
+        # deadlock: the app needs the hello packet to learn device identity
+        # and confirm the connection is live, but the app only sends "start"
+        # after receiving hello — so scanning never started.
+        # Moving hello before the scanning gate breaks the deadlock.
         if ble._pending_hello:
             ble._pending_hello = False
             notify_json_chunked(ble, {
@@ -498,6 +540,12 @@ def run():
                 "cols": 8,
             })
             time.sleep_ms(20)
+            continue
+
+        # Connected — scan and stream only when app has sent {"cmd":"start"}
+        if not _scanning_enabled:
+            cell_state_reset()   # clear stale state whenever scanning is paused
+            time.sleep_ms(20)    # idle yield — BLE stays alive, TWDT fed
             continue
 
         # Apply a completed OTA transfer: write file, update NVS, reset.
@@ -512,7 +560,7 @@ def run():
                 os.rename(_ota_filename, "main.py")
                 from esp32 import NVS
                 nv = NVS("device")
-                nv.set_str("fw", _ota_new_fw)
+                nv.set_blob("fw", _ota_new_fw.encode("utf-8"))
                 nv.commit()
                 notify_json_chunked(ble, {"type": "ota_ok", "fw": _ota_new_fw})
                 time.sleep_ms(500)
@@ -536,9 +584,6 @@ def run():
                     "hits": hits,       # 7-element arrays — see scan_frame_tracked docstring
                 })
 
-        # FIX: was sleep_ms(1) — increased to 2 ms.  Even 1 ms extra yield
-        # per iteration significantly reduces TWDT pressure when the BLE stack
-        # is processing notifications in the background.
         time.sleep_ms(2)
 
 run()

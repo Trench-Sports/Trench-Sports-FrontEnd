@@ -1183,9 +1183,13 @@ export default function Session() {
   }, []);
 
   // ── BLE connect / disconnect ──────────────────────────────────────────────────
+  const [bleError,      setBleError]      = useState<string | null>(null);
+  const [connectAttempt, setConnectAttempt] = useState(0);
+
   const connectBle = useCallback(async () => {
     if (!bleSupported) return;
     setBleStatus("scanning");
+    setBleError(null);
     try {
       const conn = await connectToAdapter({
         onDisconnect: () => {
@@ -1198,20 +1202,45 @@ export default function Session() {
       });
       connRef.current = conn;
 
-      // Subscribe to TX notifications — handleNotify receives a DataView directly
+      // Subscribe to TX notifications — handleNotify receives a DataView directly.
+      // The ESP32 sends a "hello" packet immediately after the central connects
+      // (before any "start" command). The app uses that packet to confirm the
+      // connection is live and to read device identity/firmware version.
+      // Only after hello arrives does the UI allow starting a session.
       const { TX } = getCharUuids();
       await adapterStartNotifications(conn, TX, handleNotify);
 
       setBleStatus("connected");
+      setConnectAttempt(0);
+      setBleError(null);
     } catch (err: any) {
       console.error("[BLE] connect error:", err);
-      // User cancelled the picker → back to idle; actual error → disconnected
       const msg = err?.message ?? "";
-      setBleStatus(
-        msg.includes("cancelled") || msg.includes("NotFoundError") || msg.includes("User cancelled")
-          ? "idle"
-          : "disconnected"
-      );
+
+      // User dismissed the picker — back to idle, no error shown
+      const userCancelled =
+        msg.includes("cancelled") ||
+        msg.includes("NotFoundError") ||
+        msg.includes("User cancelled") ||
+        msg.includes("chooser");
+
+      if (userCancelled) {
+        setBleStatus("idle");
+        setBleError(null);
+        return;
+      }
+
+      // Real error — increment attempt counter and surface a helpful hint
+      setConnectAttempt(n => n + 1);
+      setBleStatus("disconnected");
+
+      if (msg.includes("GATT") || msg.includes("gatt")) {
+        setBleError("GATT connection failed. Make sure the bag is powered on and within range, then try again.");
+      } else if (msg.includes("Bluetooth") || msg.includes("adapter")) {
+        setBleError("Bluetooth adapter error. Check that Bluetooth is enabled on this device.");
+      } else {
+        setBleError("Could not connect. Make sure the bag is powered on and no other device is already connected to it.");
+      }
     }
   }, [bleSupported, handleNotify]);
 
@@ -1779,11 +1808,18 @@ export default function Session() {
                   style={{
                     width: "100%", padding: "10px 0", borderRadius: 11,
                     fontWeight: 700, fontSize: 13, cursor: "pointer",
-                    background: "var(--accent)", border: "1px solid rgba(180,0,255,0.55)", color: "#000",
-                    opacity: bleStatus === "scanning" ? 0.65 : 1, transition: "all 160ms ease",
+                    background: bleStatus === "disconnected" ? "rgba(180,0,255,0.18)" : "var(--accent)",
+                    border: bleStatus === "disconnected" ? "1px solid rgba(180,0,255,0.45)" : "1px solid rgba(180,0,255,0.55)",
+                    color: bleStatus === "disconnected" ? "rgba(220,150,255,0.95)" : "#000",
+                    opacity: bleStatus === "scanning" ? 0.65 : 1,
+                    transition: "all 160ms ease",
                   }}
                 >
-                  {bleStatus === "scanning" ? "Scanning…" : "Connect to Bag"}
+                  {bleStatus === "scanning"
+                    ? "Scanning…"
+                    : bleStatus === "disconnected"
+                    ? `Retry Connection${connectAttempt > 1 ? ` (${connectAttempt})` : ""}`
+                    : "Connect to Bag"}
                 </button>
               ) : (
                 <button
@@ -1798,6 +1834,24 @@ export default function Session() {
                   Disconnect
                 </button>
               )}
+
+              {/* Connection error hint */}
+              {bleError && bleStatus === "disconnected" && (
+                <div style={{
+                  marginTop: 10, padding: "9px 11px", borderRadius: 9,
+                  background: "rgba(255,80,80,0.07)",
+                  border: "1px solid rgba(255,80,80,0.22)",
+                  fontSize: 11, color: "#ff9090", lineHeight: 1.55,
+                }}>
+                  {bleError}
+                  {connectAttempt >= 2 && (
+                    <div style={{ marginTop: 6, color: "rgba(255,180,180,0.75)" }}>
+                      Tip: make sure no other phone or laptop is already paired to this bag — ESP32 only accepts one connection at a time.
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!bleSupported && (
                 <p style={{ fontSize: 12, color: "#ff6060", margin: "10px 0 0", lineHeight: 1.5 }}>
                   Web Bluetooth is not supported in this browser. Use Chrome or Edge on desktop, or open the Trench Sports app on your phone.
