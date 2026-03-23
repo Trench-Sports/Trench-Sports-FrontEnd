@@ -8,6 +8,7 @@ import EditProfileModal from "../components/editProfile";
 import ProgramModal from "../components/program";
 import ManageTeamModal from "../components/manageTeam";
 import { supabase } from "../supabaseClient";
+import StrikeCompass from "../components/strikeCompass";
 
 type Insight = { title: string; body: string; tag: "Power" | "Accuracy" | "Tempo" | "Recovery" };
 
@@ -34,7 +35,14 @@ type ReplayEvent = {
   durationMs: number | null;   // duration_ms
   riseMs:         number | null;   // rise_time_ms
   angleDeg:       number | null;   // angle_deg
-  reactionTimeMs: number | null;   // reaction_time_ms (reaction mode only)
+  reactionTimeMs: number | null;   // reaction_time_ms (reaction + target modes)
+  // ── Target mode ────────────────────────────────────────────────────────────
+  targetZone:  { row: string; col: string } | null;  // accuracy.target_zone
+  zoneHit:     { row: string; col: string } | null;  // accuracy.zone_hit
+  zoneCorrect: boolean | null;                        // accuracy.zone_correct
+  // ── Volume mode ────────────────────────────────────────────────────────────
+  volWindowIdx: number | null;   // temporal.vol_window_idx
+  volHitSeq:    number | null;   // temporal.vol_hit_seq
 };
 
 type SessionSummaryData = {
@@ -235,13 +243,13 @@ export default function Dashboard() {
 
         for (const row of data as any[]) {
           const id   = row.athlete_id;
-          const mode = (row.mode ?? "standard").toLowerCase();
+          const mode = (row.mode ?? "power").toLowerCase();
           if (!id) continue;
 
           if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [] });
           const entry = byAthlete.get(id)!;
 
-          if (mode === "standard") {
+          if (mode === "power") {
             const si = row.quality?.strength_index;
             let val: number | null = null;
             if (si?.max != null) val = Math.round(si.max);
@@ -409,7 +417,7 @@ export default function Dashboard() {
           (data ?? []).map((row: any) => ({
             id: row.session_id,
             timestamp: row.date_of_record ?? "",
-            mode: row.mode ?? "Standard",
+            mode: row.mode ?? "Power",
             athleteFirstName: row.athletes?.first_name ?? "—",
             athleteLastName: row.athletes?.last_name ?? "",
             athleteId: row.athlete_id ?? null,
@@ -448,7 +456,7 @@ export default function Dashboard() {
 
   // Auto-set view mode based on session mode: accuracy always shows history
   useEffect(() => {
-    const mode = (sessionSummary?.mode ?? "standard").toLowerCase();
+    const mode = (sessionSummary?.mode ?? "power").toLowerCase();
     if (mode === "accuracy") {
       setHeatmapViewMode("history");
     }
@@ -481,7 +489,7 @@ export default function Dashboard() {
 
         if (summary) {
           setSessionSummary({
-            mode: summary.mode ?? "standard",
+            mode: summary.mode ?? "power",
             num_events: summary.num_events ?? null,
             session_duration_ms: summary.session_duration_ms ?? null,
             peak_force_stats: summary.peak_force_stats ?? null,
@@ -518,7 +526,7 @@ export default function Dashboard() {
         // 2. Fetch ordered events with all cells — grouped per event for true-time replay
         const { data: events } = await supabase!
           .from("events")
-          .select("event_id, t_start_ms, strength_index, temporal, impulse_index, rise_time_ms, duration_ms, angle_deg, reaction_time_ms, event_cells(r, c, v_min)")
+          .select("event_id, t_start_ms, strength_index, temporal, impulse_index, rise_time_ms, duration_ms, angle_deg, reaction_time_ms, accuracy, event_cells(r, c, v_min)")
           .eq("session_id", selectedSessionId!)
           .order("t_start_ms", { ascending: true });
 
@@ -537,8 +545,15 @@ export default function Dashboard() {
             impulse:    ev.impulse_index   != null ? Math.round(Number(ev.impulse_index) * 10) / 10 : null,
             durationMs: ev.duration_ms     != null ? Math.round(Number(ev.duration_ms))             : null,
             riseMs:     ev.rise_time_ms    != null ? Math.round(Number(ev.rise_time_ms))             : null,
-            angleDeg:       ev.angle_deg        != null ? Math.round(Number(ev.angle_deg))                : null,
-            reactionTimeMs: ev.reaction_time_ms  != null ? Math.round(Number(ev.reaction_time_ms))         : null,
+            angleDeg:       ev.angle_deg        != null ? Math.round(Number(ev.angle_deg))               : null,
+            reactionTimeMs: ev.reaction_time_ms != null ? Math.round(Number(ev.reaction_time_ms))        : null,
+            // Target mode — stored in accuracy jsonb column
+            targetZone:  ev.accuracy?.target_zone  ?? null,
+            zoneHit:     ev.accuracy?.zone_hit     ?? null,
+            zoneCorrect: ev.accuracy?.zone_correct  ?? null,
+            // Volume mode — stored in temporal jsonb column alongside cell_count
+            volWindowIdx: ev.temporal?.vol_window_idx ?? null,
+            volHitSeq:    ev.temporal?.vol_hit_seq    ?? null,
           }));
           setReplayEvents(replayEvs);
         }
@@ -573,7 +588,7 @@ export default function Dashboard() {
     replayStartSessionRef.current = startSessionMs;
 
     const totalMs = sessionSummary?.session_duration_ms ?? replayEvents[replayEvents.length - 1]?.tMs ?? 1;
-    const mode    = (sessionSummary?.mode ?? "standard").toLowerCase();
+    const mode    = (sessionSummary?.mode ?? "power").toLowerCase();
     const accent  = mode === "accuracy" ? "#00dcff" : mode === "reaction" ? "#ffcc00" : "#b400ff";
 
     replayEvents.slice(startIdx).forEach((ev, offset) => {
@@ -677,16 +692,20 @@ export default function Dashboard() {
 
   // ── Mode-aware accent colors ──────────────────────────────────────────────────
   const modeAccent = useMemo(() => {
-    const m = (sessionSummary?.mode ?? "standard").toLowerCase();
+    const m = (sessionSummary?.mode ?? "power").toLowerCase();
     if (m === "accuracy") return "#00dcff";
     if (m === "reaction") return "#ffcc00";
+    if (m === "volume")   return "#ff6a00";
+    if (m === "target")   return "#00ff88";
     return "#b400ff";
   }, [sessionSummary]);
 
   const modeGlow = useMemo(() => {
-    const m = (sessionSummary?.mode ?? "standard").toLowerCase();
+    const m = (sessionSummary?.mode ?? "power").toLowerCase();
     if (m === "accuracy") return "rgba(0,220,255,0.55)";
     if (m === "reaction") return "rgba(255,200,0,0.55)";
+    if (m === "volume")   return "rgba(255,106,0,0.55)";
+    if (m === "target")   return "rgba(0,255,136,0.55)";
     return "rgba(180,0,255,0.55)";
   }, [sessionSummary]);
 
@@ -730,7 +749,7 @@ export default function Dashboard() {
   const summaryStats = useMemo<SummaryStatItem[]>(() => {
     const s = sessionSummary;
     if (!s) return [];
-    const mode = (s.mode ?? "standard").toLowerCase();
+    const mode = (s.mode ?? "power").toLowerCase();
 
     const totalEvents: SummaryStatItem = { label: "Total Events", value: s.num_events ? String(s.num_events) : "—", accent: true };
     const duration: SummaryStatItem    = { label: "Duration",      value: fmtDuration(s.session_duration_ms) };
@@ -783,7 +802,52 @@ export default function Dashboard() {
       ];
     }
 
-    // standard / default
+    if (mode === "target") {
+      const q          = s.quality;
+      const accPct     = q?.target_accuracy_pct;
+      const attempts   = q?.attempts;
+      const correct    = q?.correct_hits;
+      const bestRt     = q?.best_reaction_ms;
+      const avgRtCorr  = q?.avg_reaction_ms_correct;
+      const rtAllStats = q?.reaction_time_ms_all;
+      return [
+        duration,
+        { label: "Accuracy",           value: accPct   != null ? `${Number(accPct).toFixed(1)}%` : "—", accent: true },
+        { label: "Correct / Attempts", value: (correct != null && attempts != null) ? `${correct} / ${attempts}` : "—" },
+        { label: "Best Reaction",      value: fmtNum(bestRt, 0, " ms") },
+        { label: "Avg RT (correct)",   value: fmtNum(avgRtCorr, 0, " ms") },
+        { label: "Avg RT (all)",       value: fmtNum(rtAllStats?.mean, 0, " ms") },
+        location,
+        cadence,
+      ];
+    }
+
+    if (mode === "volume") {
+      const q          = s.quality;
+      const windows    = q?.windows ?? [];
+      const bestWin    = q?.best_window_hits;
+      const avgWin     = q?.avg_window_hits;
+      const siSlope    = q?.si_fatigue_slope;
+      const totalWins  = q?.total_windows;
+      const siStats    = q?.strength_index;
+      const slopeTxt   = siSlope != null
+        ? siSlope < -5  ? `${siSlope} / window (fatigue)`
+        : siSlope > 5   ? `+${siSlope} / window (building)`
+        : `${siSlope} / window (stable)`
+        : "—";
+      return [
+        duration,
+        { label: "Best Window",        value: bestWin  != null ? `${bestWin} hits` : "—", accent: true },
+        { label: "Avg Window",         value: avgWin   != null ? `${Number(avgWin).toFixed(1)} hits` : "—" },
+        { label: "Windows Completed",  value: totalWins != null ? String(totalWins) : "—" },
+        { label: "SI Fatigue Slope",   value: slopeTxt },
+        { label: "Peak Strength",      value: fmtNum(siStats?.max,  0, "") },
+        { label: "Avg Strength",       value: fmtNum(siStats?.mean, 0, "") },
+        cadence,
+      ];
+    }
+
+    // power / default
     const siStats   = s.quality?.strength_index;
     const peakIndex = siStats?.max  ?? null;
     const avgIndex  = siStats?.mean ?? null;
@@ -906,7 +970,7 @@ export default function Dashboard() {
           .from("session_summaries")
           .select("athlete_id, quality, peak_force_stats, num_events, athletes(first_name, last_name)")
           .eq("program_id", programId)
-          .eq("mode", "standard")
+          .eq("mode", "power")
           .not("peak_force_stats", "is", null);
 
         if (userRole === "coach" && coreTeamId) {
@@ -1203,7 +1267,7 @@ export default function Dashboard() {
           }
         }
 
-        const modeFilter = teamLeaderMetric === "strength" ? "standard" : teamLeaderMetric;
+        const modeFilter = teamLeaderMetric === "strength" ? "power" : teamLeaderMetric;
 
         const rows: TeamLeaderRow[] = [];
 
@@ -1302,7 +1366,7 @@ export default function Dashboard() {
           }
         }
 
-        const modeFilter = teamImprovedMetric === "strength" ? "standard"
+        const modeFilter = teamImprovedMetric === "strength" ? "power"
                          : teamImprovedMetric === "form"     ? null
                          : teamImprovedMetric;
         const improved: TeamImprovedRow[] = [];
@@ -1406,7 +1470,7 @@ export default function Dashboard() {
     }
 
     // ── 2. SESSION POWER — from selected session summary ─────────────────────
-    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "standard") {
+    if (sessionSummary && (sessionSummary.mode ?? "power").toLowerCase() === "power") {
       const si      = sessionSummary.quality?.strength_index;
       const peakIdx = si?.max  ?? null;
       const avgIdx  = si?.mean ?? null;
@@ -1463,7 +1527,7 @@ export default function Dashboard() {
     }
 
     // ── 4. ACCURACY — from selected session ──────────────────────────────────
-    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "accuracy") {
+    if (sessionSummary && (sessionSummary.mode ?? "power").toLowerCase() === "accuracy") {
       const q      = sessionSummary.quality;
       const score  = q?.accuracy_pct ?? q?.score;
       const offset = q?.avg_offset_mm ?? (q?.avg_offset_cm != null ? q.avg_offset_cm * 10 : null);
@@ -1520,7 +1584,7 @@ export default function Dashboard() {
     }
 
     // ── 6. REACTION — from selected session ──────────────────────────────────
-    if (sessionSummary && (sessionSummary.mode ?? "standard").toLowerCase() === "reaction") {
+    if (sessionSummary && (sessionSummary.mode ?? "power").toLowerCase() === "reaction") {
       const q        = sessionSummary.quality;
       const bestRt   = q?.best_reaction_ms;
       const avgRt    = q?.avg_reaction_ms;
@@ -1553,11 +1617,11 @@ export default function Dashboard() {
       );
       const modeBreakdown: Record<string, number> = {};
       for (const s of recentSessions) {
-        const m = (s.mode ?? "standard").toLowerCase();
+        const m = (s.mode ?? "power").toLowerCase();
         modeBreakdown[m] = (modeBreakdown[m] ?? 0) + 1;
       }
       const total    = recentSessions.length;
-      const stdPct   = Math.round(((modeBreakdown["standard"] ?? 0) / total) * 100);
+      const stdPct   = Math.round(((modeBreakdown["power"] ?? 0) / total) * 100);
       const accPct   = Math.round(((modeBreakdown["accuracy"] ?? 0) / total) * 100);
       const reactPct = Math.round(((modeBreakdown["reaction"] ?? 0) / total) * 100);
       out.push({
@@ -1565,16 +1629,16 @@ export default function Dashboard() {
         priority: last7days.length < 2 ? "medium" : "low",
         headline: `${total} sessions logged · ${last7days.length} in the last 7 days`,
         numbers: [
-          { label: "Standard", value: `${stdPct}%`,   delta: `${modeBreakdown["standard"] ?? 0} sessions` },
+          { label: "Power", value: `${stdPct}%`,   delta: `${modeBreakdown["power"] ?? 0} sessions` },
           { label: "Accuracy", value: `${accPct}%`,   delta: `${modeBreakdown["accuracy"] ?? 0} sessions` },
           { label: "Reaction", value: `${reactPct}%`, delta: `${modeBreakdown["reaction"] ?? 0} sessions` },
           { label: "Last 7d",  value: `${last7days.length} sessions`, deltaDir: last7days.length >= 3 ? "up" : last7days.length === 0 ? "down" : "neutral" },
         ],
         cue: stdPct > 80
-          ? `Almost all sessions are Standard mode (${stdPct}%). Introduce Accuracy and Reaction sessions — aim for a 60/20/20 split across mode types.`
+          ? `Almost all sessions are Power mode (${stdPct}%). Introduce Accuracy and Reaction sessions — aim for a 60/20/20 split across mode types.`
           : last7days.length < 2
           ? `Only ${last7days.length} session${last7days.length === 1 ? "" : "s"} in the last 7 days. Consistent weekly volume is the #1 driver of improvement — schedule at least 3 sessions this week.`
-          : `Good session cadence. Mode split: ${stdPct}% Standard / ${accPct}% Accuracy / ${reactPct}% Reaction. ${reactPct < 15 ? "Consider adding more Reaction sessions to develop explosive decision-making." : "Keep the balanced mix going."}`,
+          : `Good session cadence. Mode split: ${stdPct}% Power / ${accPct}% Accuracy / ${reactPct}% Reaction. ${reactPct < 15 ? "Consider adding more Reaction sessions to develop explosive decision-making." : "Keep the balanced mix going."}`,
       });
     }
 
@@ -1584,7 +1648,7 @@ export default function Dashboard() {
         priority: "medium",
         headline: "No session data yet",
         numbers: [],
-        cue: "Record your first session to start generating data-driven coaching insights. Connect a device, run a Standard session, and come back here to see power, accuracy, and tempo breakdowns.",
+        cue: "Record your first session to start generating data-driven coaching insights. Connect a device, run a Power session, and come back here to see power, accuracy, and tempo breakdowns.",
       });
     }
 
@@ -1641,6 +1705,7 @@ export default function Dashboard() {
   const [analysisSessions, setAnalysisSessions]       = useState<AthleteSessionRow[]>([]);
   const [analysisLoading, setAnalysisLoading]         = useState(false);
   const [analysisSection, setAnalysisSection]         = useState<"power" | "accuracy" | "reaction" | "form">("power");
+  const [radarWindow, setRadarWindow]                  = useState<"30d" | "90d" | "all">("30d");
 
   // Ref for scrolling to the In-Depth Analysis card
   const analysisCardRef = useRef<HTMLDivElement>(null);
@@ -1679,7 +1744,7 @@ export default function Dashboard() {
           (data ?? []).map((r: any) => ({
             session_id:         r.session_id,
             date_of_record:     r.date_of_record ?? "",
-            mode:               r.mode ?? "standard",
+            mode:               r.mode ?? "power",
             num_events:         r.num_events ?? null,
             session_duration_ms: r.session_duration_ms ?? null,
             cadence_hz_avg:     r.cadence_hz_avg ?? null,
@@ -1699,7 +1764,7 @@ export default function Dashboard() {
   const athleteAnalysis = useMemo(() => {
     if (!analysisSessions.length) return null;
 
-    const stdSessions  = analysisSessions.filter(s => s.mode.toLowerCase() === "standard");
+    const stdSessions  = analysisSessions.filter(s => s.mode.toLowerCase() === "power");
     const accSessions  = analysisSessions.filter(s => s.mode.toLowerCase() === "accuracy");
     const reactSessions= analysisSessions.filter(s => s.mode.toLowerCase() === "reaction");
 
@@ -1797,7 +1862,7 @@ export default function Dashboard() {
   const filteredSessions = useMemo(() => {
     setSessionPage(0);
     return recentSessions.filter((s) => {
-      const modeMatch = sessionModeFilter === "all" || (s.mode ?? "standard").toLowerCase() === sessionModeFilter;
+      const modeMatch = sessionModeFilter === "all" || (s.mode ?? "power").toLowerCase() === sessionModeFilter;
       const athleteName = `${s.athleteFirstName} ${s.athleteLastName}`.trim();
       const athleteMatch = sessionAthleteFilter === "all" || athleteName === sessionAthleteFilter;
       return modeMatch && athleteMatch;
@@ -1824,7 +1889,7 @@ export default function Dashboard() {
     (async () => {
       try {
         const isForm = athleteImprovedMetric === "form";
-        const modeFilter = athleteImprovedMetric === "strength" ? "standard"
+        const modeFilter = athleteImprovedMetric === "strength" ? "power"
                          : athleteImprovedMetric === "form"     ? null  // all modes
                          : athleteImprovedMetric;
 
@@ -1971,7 +2036,7 @@ export default function Dashboard() {
     }
 
     // Scope mode for metric
-    if (metric === "strength") query = (query as any).eq("mode", "standard");
+    if (metric === "strength") query = (query as any).eq("mode", "power");
     if (metric === "accuracy") query = (query as any).eq("mode", "accuracy");
     if (metric === "reaction") query = (query as any).eq("mode", "reaction");
 
@@ -2263,15 +2328,17 @@ export default function Dashboard() {
                     }}>
                       {([
                         { value: "all",      label: "All",      icon: null },
-                        { value: "standard", label: "Standard", icon: "💥" },
+                        { value: "power", label: "Power", icon: "💥" },
                         { value: "accuracy", label: "Accuracy", icon: "🎯" },
                         { value: "reaction", label: "Reaction", icon: "⚡️" },
+                        { value: "volume",   label: "Volume",   icon: "🥊" },
+                        { value: "target",   label: "Target",   icon: "🏹" },
                       ] as { value: string; label: string; icon: string | null }[]).map(({ value, label, icon }) => {
                         const isActive    = sessionModeFilter === value;
                         const isAccented  = isActive && value !== "all";
-                        const accentColor = value === "accuracy" ? "#00dcff" : value === "reaction" ? "#ffcc00" : "#b400ff";
-                        const accentBg    = value === "accuracy" ? "rgba(0,220,255,0.14)"  : value === "reaction" ? "rgba(255,200,0,0.14)"  : "rgba(180,0,255,0.18)";
-                        const accentBdr   = value === "accuracy" ? "rgba(0,220,255,0.40)"  : value === "reaction" ? "rgba(255,200,0,0.38)"  : "rgba(180,0,255,0.45)";
+                        const accentColor = value === "accuracy" ? "#00dcff" : value === "reaction" ? "#ffcc00" : value === "volume" ? "#ff6a00" : value === "target" ? "#00ff88" : "#b400ff";
+                        const accentBg    = value === "accuracy" ? "rgba(0,220,255,0.14)"  : value === "reaction" ? "rgba(255,200,0,0.14)"  : value === "volume" ? "rgba(255,106,0,0.14)"  : value === "target" ? "rgba(0,255,136,0.14)"  : "rgba(180,0,255,0.18)";
+                        const accentBdr   = value === "accuracy" ? "rgba(0,220,255,0.40)"  : value === "reaction" ? "rgba(255,200,0,0.38)"  : value === "volume" ? "rgba(255,106,0,0.40)"  : value === "target" ? "rgba(0,255,136,0.38)"  : "rgba(180,0,255,0.45)";
                         return (
                           <button
                             key={value}
@@ -2521,13 +2588,13 @@ export default function Dashboard() {
                           <div
                             className="ts-recentSessionMode"
                             style={(() => {
-                              const m = (session.mode ?? "standard").toLowerCase();
+                              const m = (session.mode ?? "power").toLowerCase();
                               const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
                               return { background: `${color}14`, border: `1px solid ${color}44`, color };
                             })()}
                           >
                             {(() => {
-                              const m = (session.mode ?? "standard").toLowerCase();
+                              const m = (session.mode ?? "power").toLowerCase();
                               const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
                               return `${icon} ${m.charAt(0).toUpperCase() + m.slice(1)}`;
                             })()}
@@ -2645,22 +2712,23 @@ export default function Dashboard() {
                 <div className="ts-cardTitle">Impact Heatmap</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   {sessionSummary && (
-                    <div className="ts-summaryModePill" data-mode={(sessionSummary.mode ?? "standard").toLowerCase()}>
-                      {(sessionSummary.mode ?? "standard").charAt(0).toUpperCase() + (sessionSummary.mode ?? "standard").slice(1)}
+                    <div className="ts-summaryModePill" data-mode={(sessionSummary.mode ?? "power").toLowerCase()}>
+                      {(sessionSummary.mode ?? "power").charAt(0).toUpperCase() + (sessionSummary.mode ?? "power").slice(1)}
                     </div>
                   )}
-                  {/* Heatmap view mode toggle — show only for standard and power modes (not accuracy) */}
+                  {/* Heatmap view mode toggle — show only for power mode (not accuracy) (not accuracy) */}
                   {selectedSessionId && replayEvents.length > 0 && (() => {
-                    const mode = (sessionSummary?.mode ?? "standard").toLowerCase();
+                    const mode = (sessionSummary?.mode ?? "power").toLowerCase();
                     // Only show toggle for standard and power modes; accuracy always uses history mode
                     const showToggle = mode !== "accuracy";
                     if (!showToggle) return null;
+                    const toggleInk = isDark ? "255,255,255" : "20,20,40";
                     return (
                       <div style={{
                         display: "inline-flex",
                         alignItems: "center",
-                        background: "rgba(255,255,255,0.04)",
-                        border: "1px solid rgba(255,255,255,0.10)",
+                        background: `rgba(${toggleInk},0.04)`,
+                        border: `1px solid rgba(${toggleInk},0.10)`,
                         borderRadius: 7,
                         padding: "2px 4px",
                         gap: 1,
@@ -2675,7 +2743,7 @@ export default function Dashboard() {
                               borderRadius: 5,
                               border: heatmapViewMode === viewMode ? `1px solid ${modeAccent}` : "1px solid transparent",
                               background: heatmapViewMode === viewMode ? `${modeAccent}15` : "transparent",
-                              color: heatmapViewMode === viewMode ? modeAccent : "rgba(255,255,255,0.55)",
+                              color: heatmapViewMode === viewMode ? modeAccent : `rgba(${toggleInk},0.50)`,
                               font: "inherit",
                               fontSize: 11,
                               fontWeight: 700,
@@ -2895,6 +2963,45 @@ export default function Dashboard() {
                         Heavy Bag — 12 × 8 Grid
                       </div>
 
+                      {/* Target mode zone overlay — highlights cued zone on active event */}
+                      {(() => {
+                        const m = (sessionSummary?.mode ?? "power").toLowerCase();
+                        if (m !== "target" || !activeEvent?.targetZone) return null;
+                        const z = activeEvent.targetZone;
+                        // Map zone to grid row/col ranges (1-indexed, matching ESP32)
+                        const rowRange = z.row === "top" ? [9,12] : z.row === "middle" ? [5,8] : [1,4];
+                        const colRange = z.col === "left" ? [1,2] : z.col === "center" ? [3,6] : [7,8];
+                        const correct  = activeEvent.zoneCorrect;
+                        const zColor   = correct === true  ? "#00ff88"
+                                       : correct === false ? "#ff6060"
+                                       : "#00ff88";
+                        // Compute overlay position relative to the 12-row × 8-col grid
+                        // Grid padding: 28px top, 6px bottom/sides
+                        const padTop = 28; const padBot = 6; const padSide = 6;
+                        const rowFrac = (ri: number) => (12 - ri + 0.5) / 12;  // visual top fraction for row ri
+                        const colFrac = (ci: number) => (ci - 0.5) / 8;        // visual left fraction for col ci
+                        const top1 = rowFrac(rowRange[1]);   // top edge = highest row (largest r = higher on grid)
+                        const top2 = rowFrac(rowRange[0] - 1);
+                        const left1 = colFrac(colRange[0]);
+                        const left2 = colFrac(colRange[1] + 1);
+                        return (
+                          <div style={{
+                            position: "absolute",
+                            top:    `calc(${padTop}px + (100% - ${padTop + padBot}px) * ${top1})`,
+                            left:   `calc(${padSide}px + (100% - ${padSide * 2}px) * ${left1})`,
+                            width:  `calc((100% - ${padSide * 2}px) * ${left2 - left1})`,
+                            height: `calc((100% - ${padTop + padBot}px) * ${top2 - top1})`,
+                            border: `2px solid ${zColor}`,
+                            background: `${zColor}18`,
+                            borderRadius: 6,
+                            pointerEvents: "none",
+                            zIndex: 6,
+                            transition: "border-color 200ms, background 200ms",
+                            boxShadow: `0 0 12px 2px ${zColor}44`,
+                          }} />
+                        );
+                      })()}
+
                       {/* Loading overlay */}
                       {heatmapLoading && (
                         <div style={{
@@ -3012,6 +3119,39 @@ export default function Dashboard() {
                         );
                       })}
 
+                      {/* Volume mode window badge */}
+                      {(() => {
+                        const m = (sessionSummary?.mode ?? "power").toLowerCase();
+                        if (m !== "volume" || !activeEvent || activeEvent.volWindowIdx === null) return null;
+                        return (
+                          <div style={{
+                            position: "absolute", top: 8, right: 8,
+                            display: "flex", gap: 4, zIndex: 7, pointerEvents: "none",
+                          }}>
+                            <div style={{
+                              fontSize: 10, fontWeight: 800, letterSpacing: "0.05em",
+                              padding: "2px 7px", borderRadius: 999,
+                              background: "rgba(255,106,0,0.18)",
+                              border: "1px solid rgba(255,106,0,0.45)",
+                              color: "#ff6a00",
+                            }}>
+                              W{(activeEvent.volWindowIdx ?? 0) + 1}
+                            </div>
+                            {activeEvent.volHitSeq != null && (
+                              <div style={{
+                                fontSize: 10, fontWeight: 800, letterSpacing: "0.05em",
+                                padding: "2px 7px", borderRadius: 999,
+                                background: "rgba(255,106,0,0.10)",
+                                border: "1px solid rgba(255,106,0,0.28)",
+                                color: "rgba(255,140,60,0.9)",
+                              }}>
+                                #{activeEvent.volHitSeq}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                       {/* Bottom glow */}
                       <div style={{
                         position: "absolute", inset: 0, pointerEvents: "none",
@@ -3065,7 +3205,7 @@ export default function Dashboard() {
 
                     {/* ── Event Stats — matches Session Stats row style, live-updates on replay ── */}
                     {replayEvents.length > 0 && (() => {
-                      const mode     = (sessionSummary?.mode ?? "standard").toLowerCase();
+                      const mode     = (sessionSummary?.mode ?? "power").toLowerCase();
                       const ev       = activeEvent;
                       const hasEvent = ev !== null;
 
@@ -3102,8 +3242,40 @@ export default function Dashboard() {
                           { label: "Rise Time",        value: evRise },
                           { label: "Angle",            value: evAngle },
                         ];
+                      } else if (mode === "target") {
+                        const zoneLabel = (z: { row: string; col: string } | null) =>
+                          z ? `${z.row.charAt(0).toUpperCase() + z.row.slice(1)} ${z.col.charAt(0).toUpperCase() + z.col.slice(1)}` : "—";
+                        const evTargetZone  = ev?.targetZone  ? zoneLabel(ev.targetZone)  : "—";
+                        const evZoneHit     = ev?.zoneHit     ? zoneLabel(ev.zoneHit)     : "—";
+                        const evZoneCorrect = ev?.zoneCorrect != null
+                          ? ev.zoneCorrect ? "✓ Correct" : "✗ Wrong"
+                          : "—";
+                        const correctColor  = ev?.zoneCorrect === true  ? "#00ff88"
+                                            : ev?.zoneCorrect === false ? "#ff6060"
+                                            : undefined;
+                        eventStatRows = [
+                          { label: "Zone Cued",       value: evTargetZone,   accent: true },
+                          { label: "Zone Hit",        value: evZoneHit },
+                          { label: "Result",          value: evZoneCorrect },
+                          { label: "Reaction Time",   value: evReactionTime },
+                          { label: "Strength Index",  value: evSI },
+                          { label: "Cells Hit",       value: evCells },
+                        ];
+                        // Inject correctColor override — we'll handle it in the render below
+                        (eventStatRows[2] as any).__color = correctColor;
+                      } else if (mode === "volume") {
+                        const evWindow  = ev?.volWindowIdx != null ? `Window ${ev.volWindowIdx + 1}` : "—";
+                        const evHitSeq  = ev?.volHitSeq    != null ? `Hit #${ev.volHitSeq}`          : "—";
+                        eventStatRows = [
+                          { label: "Strength Index",  value: evSI,      accent: true },
+                          { label: "Window",          value: evWindow },
+                          { label: "Hit #",           value: evHitSeq },
+                          { label: "Cells Hit",       value: evCells },
+                          { label: "Duration",        value: evDur },
+                          { label: "Rise Time",       value: evRise },
+                        ];
                       } else {
-                        // standard
+                        // power / default
                         eventStatRows = [
                           { label: "Strength Index",   value: evSI,        accent: true },
                           { label: "Impulse Index",    value: evImpulse },
@@ -3135,41 +3307,48 @@ export default function Dashboard() {
 
                           {/* Rows — identical markup to ts-summaryRow */}
                           <div className="ts-summaryList">
-                            {eventStatRows.map((row) => (
-                              <div
-                                key={row.label}
-                                className={`ts-summaryRow${row.accent ? " isAccent" : ""}`}
-                                style={row.accent ? {
-                                  background: modeAccent + "12",
-                                  borderColor: modeAccent + "30",
-                                } : undefined}
-                              >
-                                <span className="ts-summaryRowLabel">{row.label}</span>
-                                <span
-                                  className="ts-summaryRowValue"
-                                  style={{
-                                    color: row.accent ? modeAccent : undefined,
-                                    opacity: hasEvent ? 1 : 0.30,
-                                    transition: "opacity 200ms ease",
-                                  }}
+                            {eventStatRows.map((row) => {
+                              const customColor = (row as any).__color;
+                              return (
+                                <div
+                                  key={row.label}
+                                  className={`ts-summaryRow${row.accent ? " isAccent" : ""}`}
+                                  style={row.accent ? {
+                                    background: modeAccent + "12",
+                                    borderColor: modeAccent + "30",
+                                  } : undefined}
                                 >
-                                  {row.value}
-                                </span>
-                              </div>
-                            ))}
+                                  <span className="ts-summaryRowLabel">{row.label}</span>
+                                  <span
+                                    className="ts-summaryRowValue"
+                                    style={{
+                                      color: customColor ?? (row.accent ? modeAccent : undefined),
+                                      opacity: hasEvent ? 1 : 0.30,
+                                      transition: "opacity 200ms ease",
+                                    }}
+                                  >
+                                    {row.value}
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </div>
-
-                          {!hasEvent && (
-                            <div style={{
-                              fontSize: 10, opacity: 0.28, textAlign: "center",
-                              marginTop: 7, fontWeight: 500,
-                            }}>
-                              Play or tap a dot to populate
-                            </div>
-                          )}
                         </div>
                       );
                     })()}
+
+                    {/* ── Strike View 3D ──────────────────────────────── */}
+                    {sessionSummary && (
+                      <StrikeCompass
+                        activeEvent={activeEvent ?? null}
+                        activeAngle={activeEvent?.angleDeg ?? null}
+                        anglesDeg={sessionSummary.angles_deg}
+                        isReplaying={isReplaying}
+                        modeAccent={modeAccent}
+                        modeGlow={modeGlow}
+                        isDark={isDark}
+                      />
+                    )}
                   </div>
 
                 </div>
@@ -3538,7 +3717,7 @@ export default function Dashboard() {
                       {analysisSection === "power" && (
                         <div>
                           {a.strengthTrend.length === 0 ? (
-                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No standard sessions recorded yet.</div>
+                            <div style={{ opacity: 0.35, fontSize: 12, padding: "16px 0" }}>No power sessions recorded yet.</div>
                           ) : (
                             <>
                               <StatRow label="Consistency score" value={a.consistencyPct != null ? `${a.consistencyPct}%` : "—"} sub="avg/peak ratio" highlight={a.consistencyPct == null ? undefined : a.consistencyPct >= 80 ? "good" : a.consistencyPct >= 60 ? "warn" : "bad"} />
@@ -3647,6 +3826,384 @@ export default function Dashboard() {
                       )}
 
                     </div>
+
+                    {/* ── Performance Radar Chart ── */}
+                    {(() => {
+                      // ── Helper: derive 5 axis scores from a session slice ────────────
+                      function computeAxes(sessions: typeof analysisSessions) {
+                        const std   = sessions.filter(s => s.mode.toLowerCase() === "power");
+                        const acc   = sessions.filter(s => s.mode.toLowerCase() === "accuracy");
+                        const react = sessions.filter(s => s.mode.toLowerCase() === "reaction");
+
+                        const strPeaks = std.map(s => {
+                          const si = s.quality?.strength_index;
+                          if (si?.max != null) return Math.round(si.max);
+                          const pfs = s.peak_force_stats;
+                          const pMv = pfs?.peak_mv ?? (pfs?.peak_v != null ? pfs.peak_v * 1000 : null);
+                          return pMv != null ? Math.round((pMv / 3320) * 1000) : null;
+                        }).filter((v): v is number => v != null);
+                        const latestPeak  = strPeaks.length > 0 ? strPeaks[strPeaks.length - 1] : null;
+                        const powerScore  = latestPeak != null ? Math.min(100, Math.round(latestPeak / 10)) : null;
+
+                        const accScores   = acc.map(s => {
+                          const v = s.quality?.accuracy_pct ?? s.quality?.score ?? null;
+                          return v != null ? Math.min(100, Math.round(Number(v))) : null;
+                        }).filter((v): v is number => v != null);
+                        const accuracyScore = accScores.length > 0 ? accScores[accScores.length - 1] : null;
+
+                        const reactAvgs   = react.map(s => s.quality?.avg_reaction_ms ?? null).filter((v): v is number => v != null);
+                        const latestReact = reactAvgs.length > 0 ? reactAvgs[reactAvgs.length - 1] : null;
+                        const reactionScore = latestReact != null
+                          ? Math.max(0, Math.min(100, Math.round(((800 - latestReact) / 600) * 100))) : null;
+
+                        const conPairs = std.map(s => {
+                          const si = s.quality?.strength_index;
+                          return si?.max != null && si?.mean != null ? si.mean / si.max : null;
+                        }).filter((v): v is number => v != null);
+                        const consistencyScore = conPairs.length > 0
+                          ? Math.round(conPairs.reduce((a, b) => a + b, 0) / conPairs.length * 100) : null;
+
+                        const volumeScore = Math.min(100, Math.round((sessions.length / 20) * 100));
+
+                        return [
+                          { label: "Power",       score: powerScore,       color: "#b400ff", noDataLabel: "Need power sessions" },
+                          { label: "Accuracy",    score: accuracyScore,    color: "#00dcff", noDataLabel: "Need accuracy sessions" },
+                          { label: "Reaction",    score: reactionScore,    color: "#ffcc00", noDataLabel: "Need reaction sessions" },
+                          { label: "Consistency", score: consistencyScore, color: "#00ff88", noDataLabel: "Need 2+ power sessions" },
+                          { label: "Volume",      score: volumeScore,      color: "#ff6a00", noDataLabel: "" },
+                        ];
+                      }
+
+                      // ── Window slices ────────────────────────────────────────────────
+                      const cut30 = new Date(); cut30.setDate(cut30.getDate() - 30);
+                      const cut90 = new Date(); cut90.setDate(cut90.getDate() - 90);
+                      const sessions30d = analysisSessions.filter(s => s.date_of_record >= cut30.toISOString());
+                      const sessions90d = analysisSessions.filter(s => s.date_of_record >= cut90.toISOString());
+                      const sessionsAll = analysisSessions;
+
+                      // Active polygon is always 30d (most recent performance)
+                      type RadarAxis = { label: string; score: number | null; color: string; noDataLabel: string };
+                      const axes: RadarAxis[]      = computeAxes(sessions30d);
+                      // Ghost / baseline polygon is the comparison window
+                      const ghostAxes: RadarAxis[] = radarWindow === "all"
+                        ? computeAxes(sessionsAll)
+                        : computeAxes(sessions90d);
+                      const ghostLabel = radarWindow === "all" ? "All time" : "90d";
+
+                      const hasAnyData = axes.some(ax => ax.score != null) || sessionsAll.length > 0;
+
+                      // Composite score from 30d active window
+                      const scoredAxes = axes.filter(ax => ax.score != null);
+                      const compositeScore = scoredAxes.length > 0
+                        ? Math.round(scoredAxes.reduce((s, ax) => s + ax.score!, 0) / scoredAxes.length) : null;
+                      const compositeTier  = compositeScore == null ? null
+                        : compositeScore >= 75 ? "Elite"
+                        : compositeScore >= 55 ? "Advanced"
+                        : compositeScore >= 35 ? "Developing"
+                        : "Beginner";
+                      const compositeColor = compositeScore == null ? "rgba(255,255,255,0.4)"
+                        : compositeScore >= 75 ? "#00ff88"
+                        : compositeScore >= 55 ? "#ffcc00"
+                        : compositeScore >= 35 ? "#ff6a00"
+                        : "#ff6060";
+
+                      // SVG radar geometry
+                      const CX = 155, CY = 140, R = 95;
+                      const N = axes.length;
+                      const angleStep = (2 * Math.PI) / N;
+                      const angleFor = (i: number) => -Math.PI / 2 + i * angleStep;
+
+                      function polarToXY(angle: number, radius: number) {
+                        return { x: CX + radius * Math.cos(angle), y: CY + radius * Math.sin(angle) };
+                      }
+
+                      function buildPath(axList: RadarAxis[]) {
+                        return axList.map((ax, i) => {
+                          const r = ((ax.score ?? 0) / 100) * R;
+                          const p = polarToXY(angleFor(i), r);
+                          return `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+                        }).join(" ") + " Z";
+                      }
+
+                      const activePath = buildPath(axes);
+                      const ghostPath  = buildPath(ghostAxes);
+                      const rings = [25, 50, 75, 100];
+
+                      // Label positions
+                      const LABEL_R = R + 24;
+
+                      return (
+                        <div style={{
+                          marginTop: 20,
+                          paddingTop: 16,
+                          borderTop: divider,
+                          flexShrink: 0,
+                        }}>
+                          {/* Header */}
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+                            <div>
+                              <div style={{ fontSize: 12, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase", opacity: 0.55, marginBottom: 2 }}>
+                                Performance Profile
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                                {/* Legend */}
+                                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                  <div style={{ width: 20, height: 2, background: "rgba(180,0,255,0.7)", borderRadius: 1 }} />
+                                  <span style={{ fontSize: 10, opacity: 0.55 }}>30d (current)</span>
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                                  <div style={{ width: 20, height: 2, background: isDark ? "rgba(255,255,255,0.25)" : "rgba(20,20,40,0.25)", borderRadius: 1, borderTop: `1px dashed ${isDark ? "rgba(255,255,255,0.35)" : "rgba(20,20,40,0.35)"}` }} />
+                                  <span style={{ fontSize: 10, opacity: 0.45 }}>{ghostLabel} (baseline)</span>
+                                </div>
+                              </div>
+                            </div>
+                            {/* Window toggle */}
+                            <div style={{
+                              display: "inline-flex", alignItems: "center",
+                              background: isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)",
+                              border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`,
+                              borderRadius: 8, padding: 2, gap: 2,
+                            }}>
+                              {(["90d", "all"] as const).map(w => {
+                                const isActive = radarWindow === w;
+                                return (
+                                  <button
+                                    key={w}
+                                    type="button"
+                                    onClick={() => setRadarWindow(w)}
+                                    style={{
+                                      padding: "4px 10px", borderRadius: 6, border: "none",
+                                      background: isActive
+                                        ? (isDark ? "rgba(180,0,255,0.22)" : "rgba(180,0,255,0.14)")
+                                        : "transparent",
+                                      color: isActive ? "rgba(210,140,255,0.95)" : (isDark ? "rgba(255,255,255,0.40)" : "rgba(20,20,40,0.40)"),
+                                      font: "inherit", fontSize: 11, fontWeight: 700,
+                                      cursor: "pointer", transition: "all 140ms ease",
+                                      letterSpacing: "0.02em",
+                                    }}
+                                  >
+                                    {w === "90d" ? "vs 90d" : "vs All"}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {!hasAnyData ? (
+                            <div style={{ textAlign: "center", padding: "24px 0", opacity: 0.32, fontSize: 12 }}>
+                              Record sessions across different modes to build your performance profile.
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", gap: 20, alignItems: "flex-start", flexWrap: "wrap" }}>
+                              {/* SVG radar */}
+                              <div style={{ flexShrink: 0 }}>
+                                <svg
+                                  width={310} height={280}
+                                  viewBox="0 0 310 280"
+                                  style={{ display: "block", overflow: "visible" }}
+                                >
+                                  {/* Concentric grid rings */}
+                                  {rings.map(pct => {
+                                    const ringR = (pct / 100) * R;
+                                    const ringPts = Array.from({ length: N }, (_, i) => {
+                                      const p = polarToXY(angleFor(i), ringR);
+                                      return `${i === 0 ? "M" : "L"} ${p.x.toFixed(2)} ${p.y.toFixed(2)}`;
+                                    }).join(" ") + " Z";
+                                    return (
+                                      <g key={pct}>
+                                        <path d={ringPts} fill="none"
+                                          stroke={`rgba(${isDark ? "255,255,255" : "20,20,40"},${pct === 100 ? "0.14" : "0.07"})`}
+                                          strokeWidth={pct === 100 ? 1.2 : 0.8}
+                                          strokeDasharray={pct === 100 ? undefined : "3 3"}
+                                        />
+                                        <text
+                                          x={CX} y={CY - ringR - 3}
+                                          textAnchor="middle" fontSize="8"
+                                          fill={`rgba(${isDark ? "255,255,255" : "20,20,40"},0.25)`}
+                                          fontFamily="inherit"
+                                        >{pct}</text>
+                                      </g>
+                                    );
+                                  })}
+
+                                  {/* Spoke lines */}
+                                  {axes.map((_, i) => {
+                                    const outer = polarToXY(angleFor(i), R);
+                                    return (
+                                      <line key={i}
+                                        x1={CX} y1={CY}
+                                        x2={outer.x.toFixed(2)} y2={outer.y.toFixed(2)}
+                                        stroke={`rgba(${isDark ? "255,255,255" : "20,20,40"},0.10)`}
+                                        strokeWidth="1"
+                                      />
+                                    );
+                                  })}
+
+                                  {/* Ghost / baseline polygon — dashed outline, no fill */}
+                                  <path
+                                    d={ghostPath}
+                                    fill="none"
+                                    stroke={isDark ? "rgba(255,255,255,0.22)" : "rgba(20,20,40,0.20)"}
+                                    strokeWidth="1.5"
+                                    strokeDasharray="5 3"
+                                    strokeLinejoin="round"
+                                  />
+
+                                  {/* Active / 30d polygon — solid fill */}
+                                  <path
+                                    d={activePath}
+                                    fill="rgba(180,0,255,0.13)"
+                                    stroke="rgba(180,0,255,0.65)"
+                                    strokeWidth="2"
+                                    strokeLinejoin="round"
+                                  />
+
+                                  {/* Per-axis colored score dots (30d active) */}
+                                  {axes.map((ax, i) => {
+                                    const score = ax.score ?? 0;
+                                    const r = (score / 100) * R;
+                                    const pt = polarToXY(angleFor(i), r);
+                                    if (ax.score == null) return null;
+                                    return (
+                                      <circle key={i}
+                                        cx={pt.x.toFixed(2)} cy={pt.y.toFixed(2)}
+                                        r="4.5"
+                                        fill={ax.color}
+                                        stroke={isDark ? "rgba(10,10,14,0.9)" : "rgba(255,255,255,0.9)"}
+                                        strokeWidth="1.5"
+                                      />
+                                    );
+                                  })}
+
+                                  {/* Composite score in center */}
+                                  {compositeScore != null && (
+                                    <g>
+                                      <rect
+                                        x={CX - 28} y={CY - 26}
+                                        width={56} height={38}
+                                        rx={8}
+                                        fill={isDark ? "rgba(0,0,0,0.55)" : "rgba(255,255,255,0.70)"}
+                                        stroke={compositeColor}
+                                        strokeWidth="1.5"
+                                        strokeOpacity="0.45"
+                                      />
+                                      <text
+                                        x={CX} y={CY - 6}
+                                        textAnchor="middle"
+                                        fontSize="28" fontWeight="900"
+                                        fill={compositeColor}
+                                        fontFamily="inherit"
+                                        style={{ filter: `drop-shadow(0 0 12px ${compositeColor}) drop-shadow(0 0 4px ${compositeColor})` }}
+                                      >{compositeScore}</text>
+                                      <text
+                                        x={CX} y={CY + 9}
+                                        textAnchor="middle"
+                                        fontSize="7" fontWeight="800"
+                                        fill={compositeColor}
+                                        opacity="0.90"
+                                        fontFamily="inherit"
+                                        letterSpacing="0.10em"
+                                      >{compositeTier?.toUpperCase()}</text>
+                                    </g>
+                                  )}
+
+                                  {/* Axis labels — always middle-anchored, score stacks centered below */}
+                                  {axes.map((ax, i) => {
+                                    const angle = angleFor(i);
+                                    const lp = polarToXY(angle, LABEL_R + 6);
+                                    return (
+                                      <g key={i}>
+                                        <text
+                                          x={lp.x.toFixed(2)} y={lp.y.toFixed(2)}
+                                          textAnchor="middle"
+                                          fontSize="10" fontWeight="700"
+                                          fill={ax.score != null ? ax.color : `rgba(${isDark ? "255,255,255" : "20,20,40"},0.28)`}
+                                          fontFamily="inherit"
+                                        >
+                                          {ax.label}
+                                        </text>
+                                        {ax.score != null && (
+                                          <text
+                                            x={lp.x.toFixed(2)} y={(lp.y + 13).toFixed(2)}
+                                            textAnchor="middle"
+                                            fontSize="10" fontWeight="900"
+                                            fill={ax.color}
+                                            fontFamily="inherit"
+                                          >
+                                            {ax.score}
+                                          </text>
+                                        )}
+                                      </g>
+                                    );
+                                  })}
+                                </svg>
+                              </div>
+
+                              {/* Priority callouts */}
+                              <div style={{ flex: 1, minWidth: 140, display: "flex", flexDirection: "column", gap: 7, paddingTop: 4 }}>
+                                <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.35, marginBottom: 2 }}>
+                                  Priority Areas
+                                </div>
+                                {axes
+                                  .filter(ax => ax.score != null)
+                                  .sort((a, b) => (a.score ?? 0) - (b.score ?? 0))
+                                  .map((ax, i) => {
+                                    const score = ax.score!;
+                                    const tier = score >= 75 ? "strong" : score >= 45 ? "developing" : "priority";
+                                    const tierColor = tier === "strong"
+                                      ? (isDark ? "rgba(80,220,160,0.9)" : "rgba(20,140,90,0.9)")
+                                      : tier === "developing"
+                                      ? (isDark ? "rgba(255,200,60,0.9)" : "rgba(160,110,0,0.9)")
+                                      : (isDark ? "rgba(255,100,80,0.9)" : "rgba(180,50,30,0.9)");
+                                    const tierBg = tier === "strong"
+                                      ? (isDark ? "rgba(80,220,160,0.08)" : "rgba(20,140,90,0.06)")
+                                      : tier === "developing"
+                                      ? (isDark ? "rgba(255,200,60,0.07)" : "rgba(160,110,0,0.05)")
+                                      : (isDark ? "rgba(255,100,80,0.09)" : "rgba(180,50,30,0.07)");
+
+                                    return (
+                                      <div key={ax.label} style={{
+                                        display: "flex", alignItems: "center", gap: 8,
+                                        padding: "7px 10px", borderRadius: 8,
+                                        background: i === 0 ? tierBg : `rgba(${isDark ? "255,255,255" : "20,20,40"},0.025)`,
+                                        border: `1px solid ${i === 0 ? ax.color + "33" : `rgba(${isDark ? "255,255,255" : "20,20,40"},0.07)`}`,
+                                      }}>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: ax.color, flexShrink: 0 }} />
+                                            <span style={{ fontSize: 11, fontWeight: 700 }}>{ax.label}</span>
+                                            {i === 0 && <span style={{ fontSize: 9, fontWeight: 800, padding: "1px 5px", borderRadius: 4, background: tierBg, border: `1px solid ${ax.color}44`, color: tierColor, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                                              {tier === "priority" ? "Focus here" : tier}
+                                            </span>}
+                                          </div>
+                                          {/* Bar */}
+                                          <div style={{ height: 4, borderRadius: 2, background: `rgba(${isDark ? "255,255,255" : "20,20,40"},0.08)` }}>
+                                            <div style={{
+                                              height: "100%", borderRadius: 2,
+                                              width: `${score}%`,
+                                              background: ax.color,
+                                              transition: "width 600ms cubic-bezier(0.34,1.2,0.64,1)",
+                                              boxShadow: i === 0 ? `0 0 8px 1px ${ax.color}55` : "none",
+                                            }} />
+                                          </div>
+                                        </div>
+                                        <span style={{ fontSize: 13, fontWeight: 900, color: ax.color, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>{score}</span>
+                                      </div>
+                                    );
+                                  })}
+                                {/* Missing data note */}
+                                {axes.filter(ax => ax.score == null).length > 0 && (
+                                  <div style={{ fontSize: 10, opacity: 0.32, marginTop: 4, lineHeight: 1.5 }}>
+                                    {axes.filter(ax => ax.score == null).map(ax => ax.noDataLabel).filter(Boolean).join(" · ")}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                   </div>
                 );
               })()}
@@ -3670,7 +4227,7 @@ export default function Dashboard() {
 
                 // ── Metric labels & units ───────────────────────────────────
                 const metricMeta: Record<ChartMetric, { label: string; unit: string; mode: string; description: string }> = {
-                  strength: { label: "Strength Index",   unit: "/ 1000", mode: "Standard sessions", description: "Peak strength index (0–1000) per week" },
+                  strength: { label: "Strength Index",   unit: "/ 1000", mode: "Power sessions", description: "Peak strength index (0–1000) per week" },
                   accuracy: { label: "Accuracy Score",   unit: "%",      mode: "Accuracy sessions", description: "Avg accuracy % per week" },
                   reaction: { label: "Reaction Time",    unit: "ms",     mode: "Reaction sessions", description: "Avg reaction time per week (lower = better)" },
                   volume:   { label: "Strike Volume",    unit: "hits",   mode: "All sessions",      description: "Total strikes logged per week" },
@@ -3772,9 +4329,9 @@ export default function Dashboard() {
                       {/* Compare mode pills */}
                       <div className="ts-chartPillGroup" style={{ display: "inline-flex", background: `rgba(${ink},0.04)`, border: `1px solid rgba(${ink},0.11)`, borderRadius: 10, padding: 3, gap: 2 }}>
                         {([
-                          { v: "athlete-athlete", label: "Athlete vs Athlete", shortLabel: "Ath vs Ath" },
-                          { v: "athlete-team",    label: "Athlete vs Team",    shortLabel: "Ath vs Team" },
-                          { v: "team-team",       label: "Team vs Team",       shortLabel: "Team vs Team" },
+                          { v: "athlete-athlete", shortLabel: "Ath vs Ath" },
+                          { v: "athlete-team",shortLabel: "Ath vs Team" },
+                          { v: "team-team", shortLabel: "Team vs Team" },
                         ] as { v: CompareMode; label: string; shortLabel: string }[]).map(({ v, label, shortLabel }) => {
                           const isActive = compareMode === v;
                           return (
@@ -4085,7 +4642,7 @@ export default function Dashboard() {
                     accentBg: isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.06)",
                     accentBdr: isDark ? "rgba(180,0,255,0.28)" : "rgba(180,0,255,0.20)",
                     steps: [
-                      "Record Standard sessions for your athletes",
+                      "Record Power sessions for your athletes",
                       "3+ sessions per athlete generates a Strength Index",
                       "Rankings update automatically after each session",
                     ],
@@ -4152,7 +4709,7 @@ export default function Dashboard() {
                   <span style={{ fontSize: 16 }}>🚀</span>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Ready to get started?</div>
-                    <div style={{ fontSize: 12, opacity: 0.55 }}>Head to the Recent Sessions tab and record your first Standard session.</div>
+                    <div style={{ fontSize: 12, opacity: 0.55 }}>Head to the Recent Sessions tab and record your first Power session.</div>
                   </div>
                 </div>
                 <button
@@ -4242,7 +4799,7 @@ export default function Dashboard() {
             <div className="ts-leaderTop">
               <div className="ts-leaderNote">
                 {leaderMetric === "strength"
-                  ? "Top athletes by Strength Index (0–1000), derived from peak & avg force across all standard sessions."
+                  ? "Top athletes by Strength Index (0–1000), derived from peak & avg force across all power sessions."
                   : leaderMetric === "reaction"
                   ? "Top athletes by avg reaction time — lower is better. Best = fastest single response."
                   : "Top athletes by Accuracy Score (0–100%) across all accuracy sessions."}
@@ -4250,7 +4807,7 @@ export default function Dashboard() {
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="leaderMetric">Mode</label>
                 <select id="leaderMetric" className="ts-select" value={leaderMetric} onChange={(e) => setLeaderMetric(e.target.value as MetricKey)}>
-                  <option value="strength">💥 Standard</option>
+                  <option value="strength">💥 Power</option>
                   <option value="reaction">⚡️ Reaction</option>
                   <option value="accuracy">🎯 Accuracy</option>
                 </select>
@@ -4295,7 +4852,7 @@ export default function Dashboard() {
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
                   <span style={{ fontSize: 22 }}>💥</span>
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No strength data yet</div>
-                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Standard sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Power sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
                 </div>)
                 : strengthRows.map((row, idx) => (
                   <div key={row.athleteId} className="ts-leaderRow" role="row">
@@ -4471,7 +5028,7 @@ export default function Dashboard() {
             <div className="ts-leaderTop">
               <div className="ts-leaderNote">
                 {teamLeaderMetric === "strength"
-                  ? "Teams ranked by avg peak strength index across all standard sessions. Core = full roster, Sub = smaller groups."
+                  ? "Teams ranked by avg peak strength index across all power sessions. Core = full roster, Sub = smaller groups."
                   : teamLeaderMetric === "reaction"
                   ? "Teams ranked by avg reaction time across all reaction sessions — lower is better."
                   : "Teams ranked by avg accuracy score across all accuracy sessions."}
@@ -4479,7 +5036,7 @@ export default function Dashboard() {
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="teamLeaderMetric">Mode</label>
                 <select id="teamLeaderMetric" className="ts-select" value={teamLeaderMetric} onChange={(e) => setTeamLeaderMetric(e.target.value as MetricKey)}>
-                  <option value="strength">💥 Standard</option>
+                  <option value="strength">💥 Power</option>
                   <option value="reaction">⚡️ Reaction</option>
                   <option value="accuracy">🎯 Accuracy</option>
                 </select>
@@ -5930,7 +6487,7 @@ export default function Dashboard() {
           padding:2px 8px;
           border-radius:999px;
         }
-        .ts-summaryModePill[data-mode="standard"]{
+        .ts-summaryModePill[data-mode="power"]{
           background:rgba(180,0,255,0.12);
           border:1px solid rgba(180,0,255,0.28);
           color:rgba(210,130,255,0.95);
@@ -5944,6 +6501,16 @@ export default function Dashboard() {
           background:rgba(255,200,0,0.10);
           border:1px solid rgba(255,200,0,0.26);
           color:rgba(255,210,60,0.95);
+        }
+        .ts-summaryModePill[data-mode="volume"]{
+          background:rgba(255,106,0,0.10);
+          border:1px solid rgba(255,106,0,0.28);
+          color:rgba(255,150,60,0.95);
+        }
+        .ts-summaryModePill[data-mode="target"]{
+          background:rgba(0,255,136,0.10);
+          border:1px solid rgba(0,255,136,0.28);
+          color:rgba(0,220,110,0.95);
         }
 
         /* Summary stat rows */

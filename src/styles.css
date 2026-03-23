@@ -2477,3 +2477,1276 @@ html.is-native .ts-webOnly {
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(180, 0, 255, 0.50);
 }
+
+/* =============================================================================
+   TRENCH SPORTS — Sidebar Nav + Landing Layout
+   Append to / replace nav-related styles in styles.css
+   ============================================================================= */
+
+
+/* ── Shell: sidebar + main side-by-side ─────────────────────────────────────── */
+
+.ts-landingShell {
+    display: flex;
+    min-height: 100vh;
+    position: relative;
+}
+
+.ts-landingMain {
+    flex: 1;
+    min-width: 0;
+    margin-left: 220px; /* matches sidebar width */
+}
+
+/* Hero no longer needs top padding offset for a fixed nav */
+.ts-hero {
+    padding-top: 64px !important;
+}
+
+@media (max-width: 900px) {
+    .ts-landingMain {
+        margin-left: 0;
+        padding-top: 60px; /* room for mobile top bar */
+    }
+    .ts-hero {
+        padding-top: 32px !important;
+    }
+}
+
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────────── */
+
+.ts-sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 220px;
+    height: 100vh;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 16px 24px;
+    background: rgba(7, 7, 10, 0.72);
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(20px);
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+
+.ts-sidebar::-webkit-scrollbar {
+    display: none;
+}
+
+/* Hide sidebar on mobile */
+@media (max-width: 900px) {
+    .ts-sidebar {
+        display: none;
+    }
+}
+
+
+/* Brand row inside sidebar */
+
+.ts-sidebarBrand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 950;
+    font-size: 15px;
+    letter-spacing: 0.2px;
+    margin-bottom: 36px;
+    padding: 0 4px;
+}
+
+.ts-sidebarBrandText {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+
+/* Nav section */
+
+.ts-sidebarNav {
+    flex: 1;
+    position: relative;
+    display: flex;
+    gap: 0;
+}
+
+
+/* The vertical progress track line */
+
+.ts-sidebarTrack {
+    position: absolute;
+    left: 10px;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    background: rgba(255, 255, 255, 0.07);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.ts-sidebarTrackFill {
+    width: 100%;
+    background: linear-gradient(180deg, rgba(180, 0, 255, 0.9), rgba(0, 220, 255, 0.7));
+    border-radius: 2px;
+    transition: height 400ms cubic-bezier(0.4, 0, 0.2, 1);
+    min-height: 12%;
+}
+
+
+/* Nav list */
+
+.ts-sidebarList {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    width: 100%;
+}
+
+
+/* Each nav item button */
+
+.ts-sidebarItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+    opacity: 0.55;
+}
+
+.ts-sidebarItem:hover {
+    opacity: 0.85;
+    background: rgba(255, 255, 255, 0.05);
+    transform: translateX(2px);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
+.ts-sidebarItem--active {
+    opacity: 1;
+    background: rgba(180, 0, 255, 0.10);
+    border-color: rgba(180, 0, 255, 0.25);
+    color: var(--text);
+    transform: translateX(3px);
+}
+
+.ts-sidebarItem--active .ts-sidebarLabel {
+    color: #fff;
+}
+
+
+/* Dot indicator on each item */
+
+.ts-sidebarDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.20);
+    flex: 0 0 auto;
+    transition: background 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+
+.ts-sidebarItem--active .ts-sidebarDot {
+    background: rgba(180, 0, 255, 0.95);
+    box-shadow: 0 0 10px rgba(180, 0, 255, 0.70);
+    transform: scale(1.25);
+}
+
+.ts-sidebarLabel {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+
+/* Sidebar footer: CTA buttons */
+
+.ts-sidebarFooter {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 20px;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    margin-top: 20px;
+}
+
+.ts-sidebarFooter .ts-btnPrimary,
+.ts-sidebarFooter .ts-btnSecondary {
+    font-size: 13px;
+    padding: 10px 14px;
+    border-radius: 12px;
+    justify-content: center;
+}
+
+
+/* ── Mobile top bar (replaces old ts-nav on small screens) ──────────────────── */
+
+.ts-mobileTopBar {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 80;
+    padding: 10px 16px;
+    align-items: center;
+    justify-content: space-between;
+    background: rgba(7, 7, 10, 0.82);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(18px);
+}
+
+@media (max-width: 900px) {
+    .ts-mobileTopBar {
+        display: flex;
+    }
+}
+
+.ts-navBrand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 950;
+    letter-spacing: 0.2px;
+}
+
+.ts-mobileMenuBtn {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+    flex: 0 0 auto;
+}
+
+.ts-hamburger {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    position: relative;
+    transition: background 200ms ease;
+}
+
+.ts-hamburger::before,
+.ts-hamburger::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: transform 200ms ease, top 200ms ease;
+}
+
+.ts-hamburger::before { top: -6px; }
+.ts-hamburger::after  { top:  6px; }
+
+.ts-hamburger--open {
+    background: transparent;
+}
+.ts-hamburger--open::before {
+    top: 0;
+    transform: rotate(45deg);
+}
+.ts-hamburger--open::after {
+    top: 0;
+    transform: rotate(-45deg);
+}
+
+
+/* ── Mobile drawer ───────────────────────────────────────────────────────────── */
+
+.ts-mobileDrawer {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    right: 0;
+    z-index: 75;
+    background: rgba(7, 7, 10, 0.96);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    backdrop-filter: blur(20px);
+    animation: ts-drawerSlide 180ms ease;
+}
+
+@keyframes ts-drawerSlide {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.ts-mobileDrawerList {
+    list-style: none;
+    margin: 0;
+    padding: 12px 16px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.ts-mobileDrawerItem {
+    display: block;
+    width: 100%;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 800;
+    text-align: left;
+    cursor: pointer;
+    opacity: 0.70;
+    transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.ts-mobileDrawerItem:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.ts-mobileDrawerItem--active {
+    opacity: 1;
+    background: rgba(180, 0, 255, 0.10);
+    border-color: rgba(180, 0, 255, 0.25);
+}
+
+
+/* ── Section kicker label ────────────────────────────────────────────────────── */
+
+.ts-kicker {
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.9;
+    margin-bottom: 6px;
+}
+
+
+/* ── Marquee / Logo Ticker ───────────────────────────────────────────────────── */
+
+.ts-marqueeSection {
+    padding: 20px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+    overflow: hidden;
+}
+
+.ts-marqueeLabel {
+    text-align: center;
+    font-size: 12px;
+    font-weight: 800;
+    opacity: 0.45;
+    letter-spacing: 0.8px;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+}
+
+.ts-marqueeTrack {
+    overflow: hidden;
+    position: relative;
+}
+
+.ts-marqueeTrack::before,
+.ts-marqueeTrack::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 80px;
+    z-index: 2;
+    pointer-events: none;
+}
+
+.ts-marqueeTrack::before {
+    left: 0;
+    background: linear-gradient(90deg, var(--bg, #07070a), transparent);
+}
+
+.ts-marqueeTrack::after {
+    right: 0;
+    background: linear-gradient(-90deg, var(--bg, #07070a), transparent);
+}
+
+.ts-marqueeInner {
+    display: flex;
+    width: max-content;
+    animation: ts-marquee 32s linear infinite;
+}
+
+.ts-marqueeItem {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 28px;
+    font-weight: 800;
+    font-size: 13px;
+    opacity: 0.6;
+    white-space: nowrap;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    transition: opacity 160ms ease;
+}
+
+.ts-marqueeItem:hover { opacity: 1; }
+
+.ts-marqueeDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(180, 0, 255, 0.7);
+    flex: 0 0 auto;
+}
+
+@keyframes ts-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-50%); }
+}
+
+
+/* ── How It Works ────────────────────────────────────────────────────────────── */
+
+.ts-howGrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+    margin-top: 32px;
+}
+
+@media (max-width: 860px) {
+    .ts-howGrid { grid-template-columns: 1fr; }
+}
+
+.ts-howCard {
+    position: relative;
+    padding: 24px 20px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(12px);
+    overflow: hidden;
+    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.ts-howCard::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.06) 0%, transparent 60%);
+    pointer-events: none;
+}
+
+.ts-howCard:hover {
+    transform: translateY(-3px);
+    border-color: rgba(180, 0, 255, 0.28);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(180, 0, 255, 0.10);
+}
+
+.ts-howStep {
+    font-size: 11px;
+    font-weight: 950;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.85;
+    margin-bottom: 12px;
+}
+
+.ts-howIcon {
+    font-size: 28px;
+    margin-bottom: 12px;
+    line-height: 1;
+}
+
+
+/* ── Platform Features ───────────────────────────────────────────────────────── */
+
+.ts-featureList {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    margin-top: 32px;
+}
+
+.ts-featureRow {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    align-items: center;
+    padding: 28px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.ts-featureRow:hover {
+    border-color: rgba(180, 0, 255, 0.20);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.20);
+}
+
+.ts-featureRow:nth-child(even) .ts-featureLeft { order: 2; }
+.ts-featureRow:nth-child(even) .ts-featureRight { order: 1; }
+
+@media (max-width: 860px) {
+    .ts-featureRow {
+        grid-template-columns: 1fr;
+        padding: 20px;
+    }
+    .ts-featureRow:nth-child(even) .ts-featureLeft,
+    .ts-featureRow:nth-child(even) .ts-featureRight { order: unset; }
+}
+
+.ts-featureLeft {
+    display: flex;
+    gap: 18px;
+    align-items: flex-start;
+}
+
+.ts-featureNum {
+    font-size: 13px;
+    font-weight: 950;
+    letter-spacing: 1px;
+    color: var(--accent);
+    opacity: 0.7;
+    flex: 0 0 auto;
+    margin-top: 2px;
+}
+
+.ts-featureKicker {
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--accent);
+    opacity: 0.8;
+    margin-bottom: 6px;
+}
+
+.ts-featureTitle {
+    margin: 0 0 8px;
+    font-size: 20px;
+    font-weight: 950;
+    letter-spacing: -0.2px;
+    line-height: 1.2;
+}
+
+.ts-tagRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 14px;
+}
+
+.ts-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 800;
+    background: rgba(180, 0, 255, 0.10);
+    border: 1px solid rgba(180, 0, 255, 0.25);
+    color: var(--text);
+}
+
+.ts-featureRight {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.ts-featureMockup {
+    position: relative;
+    width: 100%;
+    max-width: 340px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(14px);
+    padding: 16px;
+    overflow: hidden;
+}
+
+.ts-featureMockupGlow {
+    position: absolute;
+    top: -30px;
+    right: -30px;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(180, 0, 255, 0.30) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.ts-featureMockupInner { position: relative; z-index: 1; }
+
+.ts-featureMockupBar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.ts-featureMockupTitle {
+    font-weight: 900;
+    font-size: 13px;
+    opacity: 0.85;
+}
+
+.ts-mockupGrid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 4px;
+    margin-bottom: 12px;
+    padding: 8px;
+    background: rgba(0, 0, 0, 0.18);
+    border-radius: 14px;
+}
+
+.ts-mockupCell {
+    aspect-ratio: 1;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.ts-mockupCell--hot {
+    background: rgba(180, 0, 255, 0.45);
+    border-color: rgba(180, 0, 255, 0.40);
+    box-shadow: 0 0 8px rgba(180, 0, 255, 0.28);
+}
+
+.ts-mockupBars {
+    display: flex;
+    align-items: flex-end;
+    gap: 5px;
+    height: 48px;
+    padding: 0 4px;
+}
+
+.ts-mockupBar {
+    flex: 1;
+    border-radius: 4px 4px 0 0;
+    background: linear-gradient(180deg, rgba(180, 0, 255, 0.70), rgba(180, 0, 255, 0.25));
+}
+
+
+/* ── Impact Numbers ──────────────────────────────────────────────────────────── */
+
+.ts-impactSection {
+    position: relative;
+    overflow: hidden;
+}
+
+.ts-impactSection::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse 80% 60% at 50% 50%, rgba(180, 0, 255, 0.09) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.ts-impactGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+    position: relative;
+    z-index: 1;
+}
+
+@media (max-width: 860px) {
+    .ts-impactGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 480px) {
+    .ts-impactGrid { grid-template-columns: 1fr; }
+}
+
+.ts-impactCard {
+    text-align: center;
+    padding: 28px 16px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(10px);
+    transition: transform 200ms ease, border-color 200ms ease;
+}
+
+.ts-impactCard:hover {
+    transform: translateY(-3px);
+    border-color: rgba(180, 0, 255, 0.25);
+}
+
+.ts-impactValue {
+    font-size: clamp(28px, 4vw, 44px);
+    font-weight: 950;
+    letter-spacing: -0.5px;
+    background: linear-gradient(90deg, rgba(180, 0, 255, 1), rgba(0, 220, 255, 1));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    line-height: 1.1;
+    margin-bottom: 8px;
+}
+
+.ts-impactLabel {
+    font-size: 14px;
+    font-weight: 800;
+    opacity: 0.72;
+}
+
+
+/* ── Use Cases ───────────────────────────────────────────────────────────────── */
+
+.ts-useCaseGrid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 28px;
+}
+
+@media (max-width: 980px) {
+    .ts-useCaseGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+    .ts-useCaseGrid { grid-template-columns: 1fr; }
+}
+
+.ts-useCaseCard {
+    padding: 22px 18px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(10px);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.ts-useCaseCard:hover {
+    transform: translateY(-3px);
+    border-color: rgba(180, 0, 255, 0.28);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+}
+
+.ts-useCaseIcon { font-size: 26px; line-height: 1; }
+
+.ts-useCaseLink {
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--accent);
+    text-decoration: none;
+    opacity: 0.85;
+    margin-top: auto;
+    transition: opacity 160ms ease;
+}
+
+.ts-useCaseLink:hover { opacity: 1; }
+
+
+/* ── Testimonials ────────────────────────────────────────────────────────────── */
+
+.ts-testimonialGrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
+}
+
+@media (max-width: 860px) {
+    .ts-testimonialGrid { grid-template-columns: 1fr; }
+}
+
+.ts-testimonialCard {
+    position: relative;
+    padding: 24px 22px;
+    border-radius: 22px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(12px);
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    transition: transform 200ms ease, border-color 200ms ease;
+    overflow: hidden;
+}
+
+.ts-testimonialCard::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.05) 0%, transparent 60%);
+    pointer-events: none;
+}
+
+.ts-testimonialCard:hover {
+    transform: translateY(-3px);
+    border-color: rgba(180, 0, 255, 0.24);
+}
+
+.ts-quoteMarks {
+    font-size: 56px;
+    line-height: 0.8;
+    font-weight: 950;
+    color: var(--accent);
+    opacity: 0.45;
+    font-family: Georgia, serif;
+}
+
+.ts-quoteBody {
+    margin: 0;
+    opacity: 0.88;
+    line-height: 1.6;
+    font-size: 14px;
+    flex: 1;
+}
+
+.ts-quoteMeta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ts-quoteAvatar {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.30), rgba(180, 0, 255, 0.60));
+    border: 1px solid rgba(180, 0, 255, 0.35);
+    display: grid;
+    place-items: center;
+    font-weight: 950;
+    font-size: 13px;
+    color: #fff;
+    flex: 0 0 auto;
+}
+
+.ts-quoteName { font-weight: 900; font-size: 13px; }
+.ts-quoteTitle { font-size: 12px; opacity: 0.72; margin-top: 2px; }
+.ts-quoteOrg { font-size: 12px; opacity: 0.55; font-style: italic; }
+
+
+/* ── Final CTA Banner ────────────────────────────────────────────────────────── */
+
+.ts-ctaBanner {
+    position: relative;
+    padding: 80px 16px;
+    text-align: center;
+    overflow: hidden;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.ts-ctaBannerGlow {
+    position: absolute;
+    inset: 0;
+    background:
+        radial-gradient(ellipse 70% 80% at 50% 50%, rgba(180, 0, 255, 0.12) 0%, transparent 65%),
+        radial-gradient(ellipse 40% 50% at 50% 50%, rgba(0, 220, 255, 0.05) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.ts-ctaBannerInner {
+    position: relative;
+    z-index: 1;
+    max-width: 700px;
+    margin: 0 auto;
+}
+
+.ts-ctaBannerTitle {
+    margin: 8px 0 16px;
+    font-size: clamp(28px, 4vw, 48px);
+    font-weight: 950;
+    letter-spacing: -0.5px;
+    line-height: 1.1;
+}
+
+/* =============================================================================
+   LANDING NAV (landingNav.tsx)
+   Namespaced: lnav-
+   Append to styles.css  —  or import as a separate landingNav.css
+
+   Key constraint: the TopBar is sticky at the top (~74px tall).
+   The sidebar uses top: 0 + padding-top to avoid sitting under it.
+   The main content uses margin-left to clear the sidebar width.
+   ============================================================================= */
+
+/* ── TopBar clearance token ──────────────────────────────────────────────────
+   Matches the TopBar's padding (12px * 2) + logo height (50px) + margin-bottom (14px)
+   = ~88px. Adjust if your TopBar height ever changes.                          */
+:root {
+  --topbar-h: 88px;
+  --lnav-w:   200px;
+}
+
+
+/* ── Shell layout ────────────────────────────────────────────────────────────
+   ts-landingShell sits INSIDE the container div that already holds the TopBar.
+   It starts immediately below the TopBar.                                      */
+
+.ts-landingShell {
+  display: flex;
+  align-items: flex-start;
+  min-height: calc(100vh - var(--topbar-h));
+  position: relative;
+}
+
+.ts-landingMain {
+  flex: 1;
+  min-width: 0;
+  margin-left: var(--lnav-w);
+}
+
+/* Hero no longer fights a fixed nav — normal top padding */
+.ts-heroLanding {
+  padding-top: 48px !important;
+}
+
+@media (max-width: 900px) {
+  .ts-landingMain {
+    margin-left: 0;
+  }
+  .ts-heroLanding {
+    padding-top: 24px !important;
+  }
+}
+
+
+/* =============================================================================
+   LANDING NAV — Left-edge fixed ghost overlay
+   Namespaced: lnav-
+   Append to styles.css (or keep as landingNav.css)
+
+   Design intent:
+   • Fixed to LEFT edge of viewport, vertically centered
+   • Fully transparent — floats over page content, zero layout shift
+   • Ghost at rest: 0.35 opacity, no backgrounds, no borders
+   • Active: purple glowing dot + full-opacity label
+   • Track line sits on the LEFT of the list items
+   ============================================================================= */
+
+
+/* ── Shell: no layout offset needed (nav is position:fixed) ─────────────────*/
+
+.ts-landingShell {
+    display: block;
+    min-height: 100vh;
+    position: relative;
+}
+
+.ts-landingMain {
+    width: 100%;
+}
+
+.ts-heroLanding {
+    padding-top: 48px !important;
+}
+
+
+/* ── Overlay container ────────────────────────────────────────────────────────
+   Fixed to LEFT edge, vertically centered.                                     */
+
+.lnav-overlay {
+    position: fixed;
+    left: 20px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 40;
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+/* Hide on narrow screens */
+@media (max-width: 900px) {
+    .lnav-overlay { display: none; }
+}
+
+
+/* ── Nav wrapper ─────────────────────────────────────────────────────────────*/
+
+.lnav-nav {
+    display: flex;
+    align-items: stretch;
+    position: relative;
+}
+
+/* Track runs along the LEFT side — inside the list padding */
+.lnav-track {
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.10);
+    overflow: hidden;
+}
+
+.lnav-trackFill {
+    width: 100%;
+    min-height: 8%;
+    background: linear-gradient(
+        180deg,
+        rgba(180, 0, 255, 0.85),
+        rgba(0, 220, 255, 0.60)
+    );
+    border-radius: 2px;
+    transition: height 380ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+
+/* ── List ────────────────────────────────────────────────────────────────────*/
+
+.lnav-list {
+    list-style: none;
+    margin: 0;
+    /* Left padding clears the track line */
+    padding: 0 0 0 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+}
+
+
+/* ── Item button ──────────────────────────────────────────────────────────────
+   Dot on LEFT, label on RIGHT.
+   Ghost at rest → brightens on hover → full highlight when active.             */
+
+.lnav-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    opacity: 0.35;
+    letter-spacing: 0.2px;
+    transition:
+        opacity   180ms ease,
+        transform 180ms ease;
+}
+
+.lnav-item:hover {
+    opacity: 0.80;
+    transform: translateX(3px);
+}
+
+.lnav-item--active {
+    opacity: 1;
+    transform: translateX(4px);
+}
+
+
+/* ── Dot ─────────────────────────────────────────────────────────────────────*/
+
+.lnav-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: rgba(255, 255, 255, 0.30);
+    transition:
+        background  200ms ease,
+        box-shadow  200ms ease,
+        transform   200ms ease;
+}
+
+.lnav-item:hover .lnav-dot {
+    background: rgba(255, 255, 255, 0.60);
+}
+
+.lnav-item--active .lnav-dot {
+    background: rgba(180, 0, 255, 0.95);
+    box-shadow:
+        0 0 0 3px rgba(180, 0, 255, 0.15),
+        0 0 10px rgba(180, 0, 255, 0.55);
+    transform: scale(1.4);
+}
+
+
+/* ── Label ───────────────────────────────────────────────────────────────────*/
+
+.lnav-label {
+    white-space: nowrap;
+    line-height: 1.3;
+}
+
+.lnav-item--active .lnav-label {
+    text-shadow: 0 0 18px rgba(180, 0, 255, 0.25);
+}
+
+
+/* ── Mobile floating pill ─────────────────────────────────────────────────────
+   FAB-style pill, bottom-LEFT to match the sidebar side.                       */
+
+.lnav-mobilePill {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    .lnav-mobilePill {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        position: fixed;
+        bottom: 20px;
+        left: 16px;           /* left-anchored to match sidebar side */
+        z-index: 60;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: rgba(7, 7, 10, 0.82);
+        border: 1px solid rgba(180, 0, 255, 0.28);
+        backdrop-filter: blur(16px);
+        box-shadow:
+            0 8px 28px rgba(0, 0, 0, 0.40),
+            0 0 0 1px rgba(180, 0, 255, 0.06);
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 800;
+        color: var(--text);
+        transition: border-color 160ms ease, box-shadow 160ms ease;
+        user-select: none;
+    }
+
+    .lnav-mobilePill:hover {
+        border-color: rgba(180, 0, 255, 0.55);
+        box-shadow:
+            0 10px 32px rgba(0, 0, 0, 0.45),
+            0 0 0 2px rgba(180, 0, 255, 0.12);
+    }
+}
+
+.lnav-pillDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(180, 0, 255, 0.90);
+    box-shadow: 0 0 8px rgba(180, 0, 255, 0.60);
+    flex: 0 0 auto;
+    transition: transform 200ms ease;
+}
+
+.lnav-pillDot--open {
+    transform: scale(1.25);
+}
+
+.lnav-pillLabel {
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lnav-pillChevron {
+    font-size: 11px;
+    opacity: 0.60;
+    transition: transform 200ms ease;
+    line-height: 1;
+}
+
+.lnav-pillChevron--open {
+    transform: rotate(180deg);
+}
+
+
+/* ── Mobile drawer ────────────────────────────────────────────────────────────
+   Opens upward from the pill, left-anchored.                                   */
+
+.lnav-mobileDrawer {
+    position: fixed;
+    bottom: 68px;
+    left: 16px;               /* matches pill position */
+    z-index: 59;
+    width: 200px;
+    border-radius: 18px;
+    background: rgba(7, 7, 10, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    backdrop-filter: blur(20px);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.50);
+    overflow: hidden;
+    animation: lnav-drawerUp 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+@keyframes lnav-drawerUp {
+    from { opacity: 0; transform: translateY(10px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0)    scale(1);    }
+}
+
+.lnav-mobileList {
+    list-style: none;
+    margin: 0;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.lnav-mobileItem {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    border-radius: 12px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 800;
+    text-align: left;
+    cursor: pointer;
+    opacity: 0.55;
+    transition: opacity 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+
+.lnav-mobileItem:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.lnav-mobileItem--active {
+    opacity: 1;
+    background: rgba(180, 0, 255, 0.10);
+    border-color: rgba(180, 0, 255, 0.24);
+}
+
+.lnav-mobileDot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+    background: rgba(180, 0, 255, 0.80);
+    box-shadow: 0 0 6px rgba(180, 0, 255, 0.45);
+}

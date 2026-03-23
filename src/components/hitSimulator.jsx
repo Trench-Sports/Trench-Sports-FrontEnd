@@ -3,7 +3,38 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Types & Constants ────────────────────────────────────────────────────────
 
-const MODES = ["Standard", "Accuracy", "Reaction"];
+const MODES = ["Standard", "Accuracy", "Reaction", "Volume", "Target"];
+
+// ─── Zone definitions for Target mode ────────────────────────────────────────
+// Grid is 10 rows × 6 cols (0-indexed). Zones split into 3×3 named regions.
+// Rows: top=0-2, middle=3-6, bottom=7-9  |  Cols: left=0-1, center=2-3, right=4-5
+const ALL_ZONES = [
+  { row: "top",    col: "left"   }, { row: "top",    col: "center" }, { row: "top",    col: "right"  },
+  { row: "middle", col: "left"   }, { row: "middle", col: "center" }, { row: "middle", col: "right"  },
+  { row: "bottom", col: "left"   }, { row: "bottom", col: "center" }, { row: "bottom", col: "right"  },
+];
+
+function randomZone() {
+  return ALL_ZONES[Math.floor(Math.random() * ALL_ZONES.length)];
+}
+
+// Map a clicked cell (row, col on 10×6) to its named zone
+function cellToZone(row, col) {
+  const zRow = row <= 2 ? "top" : row <= 6 ? "middle" : "bottom";
+  const zCol = col <= 1 ? "left" : col <= 3 ? "center" : "right";
+  return { row: zRow, col: zCol };
+}
+
+function zonesMatch(a, b) { return a.row === b.row && a.col === b.col; }
+
+// Returns the grid row/col bounds for a named zone (for overlay rendering)
+function zoneBounds(zone) {
+  const rowStart = zone.row === "top" ? 0 : zone.row === "middle" ? 3 : 7;
+  const rowEnd   = zone.row === "top" ? 2 : zone.row === "middle" ? 6 : 9;
+  const colStart = zone.col === "left" ? 0 : zone.col === "center" ? 2 : 4;
+  const colEnd   = zone.col === "left" ? 1 : zone.col === "center" ? 3 : 5;
+  return { rowStart, rowEnd, colStart, colEnd };
+}
 
 const MODE_META = {
   Standard: {
@@ -29,6 +60,22 @@ const MODE_META = {
     label: "React & Strike",
     desc: "Wait for the prompt. React and hit as fast as you can. Reaction time is measured from signal to impact.",
     bullets: ["Signal-to-impact latency", "Reaction trend charts", "Fatigue tracking over sets"],
+  },
+  Volume: {
+    icon: "🥊",
+    color: "#ff6a00",
+    glow: "rgba(255,106,0,0.55)",
+    label: "Punch volume",
+    desc: "Wait for the signal, then throw as many strikes as possible inside 5 seconds. Score = total hits per window.",
+    bullets: ["Per-window hit count", "Strength index across window", "Fatigue slope across rounds"],
+  },
+  Target: {
+    icon: "🏹",
+    color: "#00ff88",
+    glow: "rgba(0,255,136,0.55)",
+    label: "Hit the zone",
+    desc: "A zone lights up on the bag — strike it as fast and accurately as you can. Both reaction time and zone accuracy are scored.",
+    bullets: ["Zone accuracy tracking", "Reaction time (correct hits)", "3×3 zone breakdown"],
   },
 };
 
@@ -91,7 +138,7 @@ function ImpactRipple({ x, y, color, id, onDone }) {
 
 // ─── Sub-component: BagGrid ───────────────────────────────────────────────────
 
-function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneClick, activeMode }) {
+function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneClick, activeMode, targetZone }) {
   const ROWS = 10, COLS = 6;
   const cells = Array.from({ length: ROWS * COLS }, (_, i) => {
     const row = Math.floor(i / COLS);
@@ -138,6 +185,14 @@ function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneC
           else                   ringColor = "rgba(255,60,60,0.16)";
         }
 
+        // Target mode zone tint — highlight the cued zone region
+        let zoneHighlight = null;
+        if (mode === "Target" && targetZone) {
+          const b = zoneBounds(targetZone);
+          const inZone = row >= b.rowStart && row <= b.rowEnd && col >= b.colStart && col <= b.colEnd;
+          if (inZone) zoneHighlight = "rgba(0,255,136,0.18)";
+        }
+
         const isHot = impacts.some(imp => imp.cellIndex === i);
         const isHovered = hoveredZone === i;
         const accentColor = MODE_META[mode].color;
@@ -157,6 +212,8 @@ function BagGrid({ mode, impacts, hoveredZone, onZoneEnter, onZoneLeave, onZoneC
                 ? `${accentColor}cc`
                 : ringColor
                 ? ringColor
+                : zoneHighlight
+                ? zoneHighlight
                 : isHovered
                 ? `${accentColor}22`
                 : "rgba(255,255,255,0.04)",
@@ -258,6 +315,264 @@ function ReactionOverlay({ phase, countdown, reactionMs }) {
   return null;
 }
 
+// ─── Sub-component: VolumeOverlay ────────────────────────────────────────────
+
+function VolumeOverlay({ phase, remainingMs, hits, bestHits }) {
+  const VOL_COLOR = "#ff6a00";
+  const pct = Math.min(1, remainingMs / 5000);
+  const r = 24, circ = 2 * Math.PI * r;
+
+  if (phase === "idle") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", gap: 8, zIndex: 5,
+      pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 12, color: "var(--muted)", letterSpacing: 2, textTransform: "uppercase" }}>
+        Click BAG to start
+      </div>
+    </div>
+  );
+
+  if (phase === "waiting") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(0,0,0,0.55)", borderRadius: 12, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 12 }}>
+        Get ready...
+      </div>
+      <div style={{
+        width: 48, height: 48, borderRadius: "50%",
+        border: "3px solid rgba(255,255,255,0.15)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        animation: "tsPulseWait 1s ease-in-out infinite",
+      }}>
+        <div style={{ width: 12, height: 12, borderRadius: "50%", background: "rgba(255,255,255,0.3)" }} />
+      </div>
+    </div>
+  );
+
+  if (phase === "early") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(255,60,60,0.18)", borderRadius: 12, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 900, color: "#ff6060" }}>Too Early!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,100,100,0.7)", marginTop: 6, letterSpacing: 1 }}>Wait for the signal</div>
+    </div>
+  );
+
+  if (phase === "signal") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(255,106,0,0.12)", borderRadius: 12, pointerEvents: "none",
+      animation: "tsFlashInVol 0.15s ease-out",
+    }}>
+      {/* Countdown ring */}
+      <div style={{ position: "relative", width: 64, height: 64, marginBottom: 10 }}>
+        <svg width="64" height="64" style={{ position: "absolute", inset: 0, transform: "rotate(-90deg)" }}>
+          <circle cx="32" cy="32" r={r} fill="none" stroke="rgba(255,106,0,0.15)" strokeWidth="4" />
+          <circle cx="32" cy="32" r={r} fill="none" stroke={VOL_COLOR} strokeWidth="4"
+            strokeDasharray={circ} strokeDashoffset={circ * (1 - pct)}
+            strokeLinecap="round"
+            style={{ transition: "stroke-dashoffset 100ms linear" }}
+          />
+        </svg>
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 13, fontWeight: 900, color: VOL_COLOR,
+        }}>
+          {(remainingMs / 1000).toFixed(1)}s
+        </div>
+      </div>
+      {/* Hit counter */}
+      <div style={{
+        fontSize: 36, fontWeight: 900, color: VOL_COLOR, lineHeight: 1,
+        textShadow: `0 0 20px ${VOL_COLOR}, 0 0 40px rgba(255,106,0,0.5)`,
+        animation: hits > 0 ? "tsResultPop 0.15s cubic-bezier(0.34,1.56,0.64,1)" : "none",
+      }}>
+        {hits}
+      </div>
+      <div style={{ fontSize: 10, color: "rgba(255,106,0,0.7)", letterSpacing: 2, textTransform: "uppercase", marginTop: 4 }}>
+        strikes
+      </div>
+    </div>
+  );
+
+  if (phase === "result") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(0,0,0,0.50)", borderRadius: 12, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,106,0,0.8)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>
+        Window Complete
+      </div>
+      <div style={{
+        fontSize: 48, fontWeight: 900, color: VOL_COLOR, lineHeight: 1,
+        textShadow: `0 0 24px ${VOL_COLOR}`,
+        animation: "tsResultPop 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+      }}>
+        {hits}
+      </div>
+      <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
+        {bestHits != null && hits >= bestHits ? "🏆 New best!" : `Best: ${bestHits ?? hits}`}
+      </div>
+    </div>
+  );
+
+  return null;
+}
+
+// ─── Sub-component: TargetOverlay ─────────────────────────────────────────────
+
+function TargetOverlay({ phase, zone, reactionMs, correct, attempts, correctHits }) {
+  const TGT_COLOR = "#00ff88";
+  const TGT_GLOW  = "rgba(0,255,136,0.55)";
+
+  const zoneLabel = (z) =>
+    z ? `${z.row.charAt(0).toUpperCase() + z.row.slice(1)} ${z.col.charAt(0).toUpperCase() + z.col.slice(1)}` : "";
+
+  const accPct = attempts > 0 ? Math.round((correctHits / attempts) * 100) : null;
+
+  if (phase === "idle") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", gap: 8, zIndex: 5,
+      pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 12, color: "var(--muted)", letterSpacing: 2, textTransform: "uppercase" }}>
+        Click BAG to start
+      </div>
+    </div>
+  );
+
+  if (phase === "waiting") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(0,0,0,0.55)", borderRadius: 12, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", letterSpacing: 2, textTransform: "uppercase", marginBottom: 12 }}>
+        Get ready...
+      </div>
+      <div style={{
+        width: 48, height: 48, borderRadius: "50%",
+        border: "3px solid rgba(255,255,255,0.15)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        animation: "tsPulseWait 1s ease-in-out infinite",
+      }}>
+        <div style={{ width: 12, height: 12, borderRadius: "50%", background: "rgba(255,255,255,0.3)" }} />
+      </div>
+    </div>
+  );
+
+  if (phase === "early") return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(255,60,60,0.18)", borderRadius: 12, pointerEvents: "none",
+    }}>
+      <div style={{ fontSize: 22, fontWeight: 900, color: "#ff6060" }}>Too Early!</div>
+      <div style={{ fontSize: 11, color: "rgba(255,100,100,0.7)", marginTop: 6, letterSpacing: 1 }}>Wait for the zone cue</div>
+    </div>
+  );
+
+  if (phase === "signal" && zone) return (
+    <div style={{
+      position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center", zIndex: 5,
+      background: "rgba(0,0,0,0.68)", borderRadius: 12, pointerEvents: "none",
+      animation: "tsFlashIn 0.15s ease-out",
+    }}>
+      <div style={{
+        fontSize: 22, fontWeight: 900, color: TGT_COLOR,
+        textShadow: `0 0 20px ${TGT_COLOR}, 0 0 40px ${TGT_GLOW}`,
+        letterSpacing: 2, textTransform: "uppercase", marginBottom: 14,
+        animation: "tsSignalPop 0.2s ease-out",
+      }}>
+        {zoneLabel(zone)}
+      </div>
+      {/* 3×3 zone grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 48px)", gridTemplateRows: "repeat(3, 34px)", gap: 4 }}>
+        {["top","middle","bottom"].map(r =>
+          ["left","center","right"].map(c => {
+            const isTarget = zone.row === r && zone.col === c;
+            return (
+              <div key={`${r}-${c}`} style={{
+                borderRadius: 6,
+                border: isTarget ? `2px solid ${TGT_COLOR}` : "1px solid rgba(255,255,255,0.15)",
+                background: isTarget ? `${TGT_COLOR}28` : "rgba(255,255,255,0.03)",
+                boxShadow: isTarget ? `0 0 12px 2px ${TGT_GLOW}` : "none",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 8, fontWeight: 700,
+                color: isTarget ? TGT_COLOR : "rgba(255,255,255,0.20)",
+                textTransform: "uppercase", letterSpacing: "0.04em",
+              }}>
+                {isTarget ? "●" : ""}
+              </div>
+            );
+          })
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: `${TGT_COLOR}88`, letterSpacing: 2, textTransform: "uppercase", marginTop: 12 }}>
+        Strike now
+      </div>
+      {accPct != null && (
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.30)", marginTop: 8 }}>
+          {correctHits}/{attempts} correct · {accPct}%
+        </div>
+      )}
+    </div>
+  );
+
+  if (phase === "result") {
+    const rtColor = correct
+      ? (reactionMs < 350 ? "#00ff88" : reactionMs < 600 ? "#ffcc00" : "#ff9900")
+      : "#ff6060";
+    return (
+      <div style={{
+        position: "absolute", inset: 0, display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", zIndex: 5,
+        background: "rgba(0,0,0,0.50)", borderRadius: 12, pointerEvents: "none",
+      }}>
+        <div style={{
+          fontSize: 13, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6,
+          color: correct ? TGT_COLOR : "#ff6060",
+          animation: "tsSignalPop 0.2s ease-out",
+        }}>
+          {correct ? "✓ Correct Zone" : "✗ Wrong Zone"}
+        </div>
+        {correct && (
+          <>
+            <div style={{
+              fontSize: 36, fontWeight: 900, color: rtColor, lineHeight: 1,
+              textShadow: `0 0 20px ${rtColor}`,
+              animation: "tsResultPop 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+            }}>
+              {reactionMs}ms
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", marginTop: 4 }}>
+              {reactionMs < 300 ? "Elite" : reactionMs < 450 ? "Sharp" : reactionMs < 600 ? "Good" : "Keep Training"}
+            </div>
+          </>
+        )}
+        {accPct != null && (
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.30)", marginTop: 10 }}>
+            {correctHits}/{attempts} correct · {accPct}%
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function HitSimulator() {
@@ -273,6 +588,30 @@ export default function HitSimulator() {
   const rxSignalAt = useRef(null);
   const rxTimer = useRef(null);
 
+  // Volume mode state
+  const VOLUME_WINDOW_MS = 5000;
+  const [volPhase, setVolPhase] = useState("idle"); // idle | waiting | early | signal | result
+  const [volHits, setVolHits] = useState(0);
+  const [volBest, setVolBest] = useState(null);
+  const [volRemainingMs, setVolRemainingMs] = useState(0);
+  const volHitsRef = useRef(0);
+  const volWindowEndsAt = useRef(null);
+  const volTimer = useRef(null);
+  const volTickTimer = useRef(null);
+
+  // Target mode state
+  const [tgtPhase, setTgtPhase] = useState("idle"); // idle | waiting | early | signal | result
+  const [tgtZone, setTgtZone] = useState(null);
+  const [tgtReactMs, setTgtReactMs] = useState(null);
+  const [tgtCorrect, setTgtCorrect] = useState(null);
+  const [tgtAttempts, setTgtAttempts] = useState(0);
+  const [tgtCorrectHits, setTgtCorrectHits] = useState(0);
+  const [tgtBestMs, setTgtBestMs] = useState(null);
+  const tgtZoneRef = useRef(null);
+  const tgtSignalAt = useRef(null);
+  const tgtTimer = useRef(null);
+  const tgtPhaseRef = useRef("idle");
+
   const rippleIdRef = useRef(0);
   const lastHitAt = useRef(null); // wall-clock ms of previous hit, for IEI
   const ROWS = 10, COLS = 6;
@@ -282,11 +621,33 @@ export default function HitSimulator() {
     setImpacts([]);
     setRipples([]);
     setSessionStats({ hits: 0, avgIndex: 0, peakIndex: 0, accuracy: null });
+    // Reaction
     setRxPhase("idle");
     setRxTime(null);
     rxSignalAt.current = null;
-    lastHitAt.current  = null;
     clearTimeout(rxTimer.current);
+    // Volume
+    clearTimeout(volTimer.current);
+    clearInterval(volTickTimer.current);
+    setVolPhase("idle");
+    setVolHits(0);
+    setVolBest(null);
+    setVolRemainingMs(0);
+    volHitsRef.current = 0;
+    volWindowEndsAt.current = null;
+    // Target
+    clearTimeout(tgtTimer.current);
+    setTgtPhase("idle");
+    setTgtZone(null);
+    setTgtReactMs(null);
+    setTgtCorrect(null);
+    setTgtAttempts(0);
+    setTgtCorrectHits(0);
+    setTgtBestMs(null);
+    tgtZoneRef.current = null;
+    tgtSignalAt.current = null;
+    tgtPhaseRef.current = "idle";
+    lastHitAt.current  = null;
   }, [mode]);
 
   // ── Impact ripple cleanup
@@ -299,11 +660,14 @@ export default function HitSimulator() {
     const ROWS = 10, COLS = 6;
     const cx = (COLS - 1) / 2, cy = (ROWS - 1) / 2;
     const dx = (col - cx) / cx, dy = (row - cy) / cy;
-    const dist = Math.sqrt(dx * dx + dy * dy); // 0 = center, ~1 = edge
+    const dist = Math.sqrt(dx * dx + dy * dy);
 
+    const xPct = ((col + 0.5) / COLS) * 100;
+    const yPct = ((row + 0.5) / ROWS) * 100;
+
+    // ── Reaction ──────────────────────────────────────────────────────────────
     if (mode === "Reaction") {
       if (rxPhase === "idle") {
-        // Start the sequence
         setRxPhase("waiting");
         const delay = 1500 + Math.random() * 2000;
         rxTimer.current = setTimeout(() => {
@@ -313,7 +677,6 @@ export default function HitSimulator() {
         return;
       }
       if (rxPhase === "waiting") {
-        // Jumped the gun — penalize
         clearTimeout(rxTimer.current);
         setRxTime(999);
         setRxPhase("result");
@@ -324,15 +687,9 @@ export default function HitSimulator() {
         const rt = Math.round(performance.now() - rxSignalAt.current);
         setRxTime(rt);
         setRxPhase("result");
-        // add ripple at click point
-        const xPct = ((col + 0.5) / COLS) * 100;
-        const yPct = ((row + 0.5) / ROWS) * 100;
         const rid = ++rippleIdRef.current;
         setRipples(r => [...r, { id: rid, x: xPct, y: yPct }]);
-        setImpacts(prev => {
-          const next = [{ cellIndex, ts: Date.now() }, ...prev].slice(0, 4);
-          return next;
-        });
+        setImpacts(prev => [{ cellIndex, ts: Date.now() }, ...prev].slice(0, 4));
         setTimeout(() => setRxPhase("idle"), 2200);
         setSessionStats(s => ({ ...s, hits: s.hits + 1 }));
         return;
@@ -340,11 +697,177 @@ export default function HitSimulator() {
       return;
     }
 
-    // Standard / Accuracy modes
+    // ── Volume ────────────────────────────────────────────────────────────────
+    if (mode === "Volume") {
+      if (volPhase === "idle") {
+        // First click starts the waiting phase
+        setVolPhase("waiting");
+        volHitsRef.current = 0;
+        setVolHits(0);
+        const delay = 1500 + Math.random() * 2000;
+        volTimer.current = setTimeout(() => {
+          const endsAt = performance.now() + VOLUME_WINDOW_MS;
+          volWindowEndsAt.current = endsAt;
+          setVolPhase("signal");
+          setVolRemainingMs(VOLUME_WINDOW_MS);
+          // Tick the countdown every 50ms
+          clearInterval(volTickTimer.current);
+          volTickTimer.current = setInterval(() => {
+            const rem = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+            setVolRemainingMs(rem);
+          }, 50);
+          // End the window after 5s
+          volTimer.current = setTimeout(() => {
+            clearInterval(volTickTimer.current);
+            setVolPhase("result");
+            setVolBest(prev => prev === null ? volHitsRef.current : Math.max(prev, volHitsRef.current));
+            setTimeout(() => {
+              // Auto-start next round after showing result
+              setVolPhase("waiting");
+              volHitsRef.current = 0;
+              setVolHits(0);
+              const d2 = 1500 + Math.random() * 2000;
+              volTimer.current = setTimeout(() => {
+                const e2 = performance.now() + VOLUME_WINDOW_MS;
+                volWindowEndsAt.current = e2;
+                setVolPhase("signal");
+                setVolRemainingMs(VOLUME_WINDOW_MS);
+                clearInterval(volTickTimer.current);
+                volTickTimer.current = setInterval(() => {
+                  const rem = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+                  setVolRemainingMs(rem);
+                }, 50);
+                volTimer.current = setTimeout(() => {
+                  clearInterval(volTickTimer.current);
+                  setVolPhase("result");
+                  setVolBest(prev => prev === null ? volHitsRef.current : Math.max(prev, volHitsRef.current));
+                  setTimeout(() => setVolPhase("idle"), 2200);
+                }, VOLUME_WINDOW_MS);
+              }, d2);
+            }, 2000);
+          }, VOLUME_WINDOW_MS);
+        }, delay);
+        return;
+      }
+      if (volPhase === "waiting") {
+        // Hit before signal — penalise
+        clearTimeout(volTimer.current);
+        setVolPhase("early");
+        setTimeout(() => {
+          setVolPhase("waiting");
+          const delay = 1500 + Math.random() * 2000;
+          volTimer.current = setTimeout(() => {
+            const endsAt = performance.now() + VOLUME_WINDOW_MS;
+            volWindowEndsAt.current = endsAt;
+            setVolPhase("signal");
+            setVolRemainingMs(VOLUME_WINDOW_MS);
+            clearInterval(volTickTimer.current);
+            volTickTimer.current = setInterval(() => {
+              const rem = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+              setVolRemainingMs(rem);
+            }, 50);
+            volTimer.current = setTimeout(() => {
+              clearInterval(volTickTimer.current);
+              setVolBest(prev => prev === null ? volHitsRef.current : Math.max(prev, volHitsRef.current));
+              setVolPhase("result");
+              setTimeout(() => setVolPhase("idle"), 2200);
+            }, VOLUME_WINDOW_MS);
+          }, delay);
+        }, 1500);
+        return;
+      }
+      if (volPhase === "signal") {
+        if (performance.now() <= volWindowEndsAt.current) {
+          volHitsRef.current += 1;
+          setVolHits(volHitsRef.current);
+          const now = Date.now();
+          const iei = lastHitAt.current == null ? null : now - lastHitAt.current;
+          lastHitAt.current = now;
+          const force = +(18 + Math.random() * 22 - dist * 8).toFixed(1);
+          const si = strengthIndex(force, iei);
+          const rid = ++rippleIdRef.current;
+          setRipples(r => [...r, { id: rid, x: xPct, y: yPct, color: MODE_META["Volume"].color }]);
+          setImpacts(prev => [{ cellIndex, si, ts: now }, ...prev].slice(0, 6));
+          setSessionStats(s => {
+            const newHits = s.hits + 1;
+            const newAvg  = Math.round((s.avgIndex * s.hits + si) / newHits);
+            const newPeak = Math.max(s.peakIndex, si);
+            return { ...s, hits: newHits, avgIndex: newAvg, peakIndex: newPeak };
+          });
+        }
+        return;
+      }
+      return;
+    }
+
+    // ── Target ────────────────────────────────────────────────────────────────
+    if (mode === "Target") {
+      if (tgtPhase === "idle") {
+        // First click — start waiting then cue a zone
+        setTgtPhase("waiting");
+        tgtPhaseRef.current = "waiting";
+        const delay = 1500 + Math.random() * 2000;
+        tgtTimer.current = setTimeout(() => {
+          const zone = randomZone();
+          tgtZoneRef.current = zone;
+          tgtSignalAt.current = performance.now();
+          setTgtZone(zone);
+          setTgtPhase("signal");
+          tgtPhaseRef.current = "signal";
+        }, delay);
+        return;
+      }
+      if (tgtPhase === "waiting") {
+        // Too early
+        clearTimeout(tgtTimer.current);
+        setTgtPhase("early");
+        tgtPhaseRef.current = "early";
+        setTimeout(() => {
+          const zone = randomZone();
+          tgtZoneRef.current = zone;
+          tgtSignalAt.current = performance.now();
+          setTgtZone(zone);
+          setTgtPhase("signal");
+          tgtPhaseRef.current = "signal";
+        }, 1500);
+        return;
+      }
+      if (tgtPhase === "signal" && tgtZoneRef.current) {
+        const rt = Math.round(performance.now() - tgtSignalAt.current);
+        const struck = cellToZone(row, col);
+        const correct = zonesMatch(struck, tgtZoneRef.current);
+        setTgtReactMs(rt);
+        setTgtCorrect(correct);
+        setTgtAttempts(a => a + 1);
+        if (correct) {
+          setTgtCorrectHits(h => h + 1);
+          setTgtBestMs(prev => prev === null ? rt : Math.min(prev, rt));
+        }
+        setTgtPhase("result");
+        tgtPhaseRef.current = "result";
+        const rid = ++rippleIdRef.current;
+        const hitColor = correct ? "#00ff88" : "#ff6060";
+        setRipples(r => [...r, { id: rid, x: xPct, y: yPct, color: hitColor }]);
+        setImpacts(prev => [{ cellIndex, correct, rt, ts: Date.now() }, ...prev].slice(0, 4));
+        setSessionStats(s => ({ ...s, hits: s.hits + 1 }));
+        // Schedule next attempt
+        setTimeout(() => {
+          const zone = randomZone();
+          tgtZoneRef.current = zone;
+          tgtSignalAt.current = performance.now();
+          setTgtZone(zone);
+          setTgtPhase("signal");
+          tgtPhaseRef.current = "signal";
+        }, 2200);
+        return;
+      }
+      return;
+    }
+
+    // ── Standard / Accuracy ───────────────────────────────────────────────────
     const force = +(18 + Math.random() * 22 - dist * 8).toFixed(1);
     const speed = +(4.5 + Math.random() * 5 - dist * 1.5).toFixed(1);
 
-    // Accuracy score: 4 centre cells = 100%, outer corner = 0%, linear in between
     let accScore = null;
     if (mode === "Accuracy") {
       const MAX_DIST_H = Math.sqrt(cx * cx + cy * cy);
@@ -359,14 +882,9 @@ export default function HitSimulator() {
     lastHitAt.current = now;
     const si = strengthIndex(force, iei);
 
-    const xPct = ((col + 0.5) / COLS) * 100;
-    const yPct = ((row + 0.5) / ROWS) * 100;
     const rid = ++rippleIdRef.current;
     setRipples(r => [...r, { id: rid, x: xPct, y: yPct, color: MODE_META[mode].color }]);
-    setImpacts(prev => {
-      const next = [{ cellIndex, force, speed, accScore, si, ts: now }, ...prev].slice(0, 3);
-      return next;
-    });
+    setImpacts(prev => [{ cellIndex, force, speed, accScore, si, ts: now }, ...prev].slice(0, 3));
     setSessionStats(s => {
       const newHits  = s.hits + 1;
       const newAvg   = Math.round((s.avgIndex * s.hits + si) / newHits);
@@ -376,7 +894,7 @@ export default function HitSimulator() {
         : null;
       return { hits: newHits, avgIndex: newAvg, peakIndex: newPeak, accuracy: newAcc };
     });
-  }, [mode, rxPhase]);
+  }, [mode, rxPhase, volPhase, tgtPhase]);
 
   const meta = MODE_META[mode];
   const accentColor = meta.color;
@@ -400,6 +918,10 @@ export default function HitSimulator() {
         @keyframes tsFlashIn {
           0%   { background: rgba(255,200,0,0.45); }
           100% { background: rgba(255,200,0,0.18); }
+        }
+        @keyframes tsFlashInVol {
+          0%   { background: rgba(255,106,0,0.35); }
+          100% { background: rgba(255,106,0,0.12); }
         }
         @keyframes tsSignalPop {
           0%   { transform: scale(0.6); opacity: 0; }
@@ -815,6 +1337,28 @@ export default function HitSimulator() {
               <ReactionOverlay phase={rxPhase} reactionMs={rxTime} />
             )}
 
+            {/* Volume overlay */}
+            {mode === "Volume" && (
+              <VolumeOverlay
+                phase={volPhase}
+                remainingMs={volRemainingMs}
+                hits={volHits}
+                bestHits={volBest}
+              />
+            )}
+
+            {/* Target overlay */}
+            {mode === "Target" && (
+              <TargetOverlay
+                phase={tgtPhase}
+                zone={tgtZone}
+                reactionMs={tgtReactMs}
+                correct={tgtCorrect}
+                attempts={tgtAttempts}
+                correctHits={tgtCorrectHits}
+              />
+            )}
+
             {/* Hit grid */}
             <div style={{ position: "absolute", inset: 0 }}>
               <BagGrid
@@ -825,6 +1369,7 @@ export default function HitSimulator() {
                 onZoneLeave={() => setHoveredZone(null)}
                 onZoneClick={handleHit}
                 activeMode={mode}
+                targetZone={mode === "Target" && tgtPhase === "signal" ? tgtZone : null}
               />
             </div>
 
@@ -864,7 +1409,7 @@ export default function HitSimulator() {
             </div>
 
             {/* Session stats */}
-            {mode !== "Reaction" && (
+            {mode === "Standard" || mode === "Accuracy" ? (
               <div className="ts-sim-statsCard">
                 <div className="ts-sim-statsTitle">Session</div>
                 <div className="ts-sim-statsGrid">
@@ -888,10 +1433,7 @@ export default function HitSimulator() {
                   )}
                 </div>
               </div>
-            )}
-
-            {/* Reaction stats */}
-            {mode === "Reaction" && (
+            ) : mode === "Reaction" ? (
               <div className="ts-sim-statsCard">
                 <div className="ts-sim-statsTitle">Session</div>
                 <div className="ts-sim-statsGrid">
@@ -905,17 +1447,91 @@ export default function HitSimulator() {
                   </div>
                 </div>
               </div>
-            )}
+            ) : mode === "Volume" ? (
+              <div className="ts-sim-statsCard">
+                <div className="ts-sim-statsTitle">Session</div>
+                <div className="ts-sim-statsGrid">
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">This Window</span>
+                    <span className="ts-sim-statVal" style={{ color: accentColor }}>{volHits}</span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Best Window</span>
+                    <span className="ts-sim-statVal">{volBest ?? "—"}</span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Avg SI</span>
+                    <span className="ts-sim-statVal">{sessionStats.avgIndex || "—"}</span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Peak SI</span>
+                    <span className="ts-sim-statVal">{sessionStats.peakIndex || "—"}</span>
+                  </div>
+                </div>
+              </div>
+            ) : mode === "Target" ? (
+              <div className="ts-sim-statsCard">
+                <div className="ts-sim-statsTitle">Session</div>
+                <div className="ts-sim-statsGrid">
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Accuracy</span>
+                    <span className="ts-sim-statVal" style={{ color: accentColor }}>
+                      {tgtAttempts > 0 ? `${Math.round((tgtCorrectHits / tgtAttempts) * 100)}%` : "—"}
+                    </span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Correct</span>
+                    <span className="ts-sim-statVal">{tgtAttempts > 0 ? `${tgtCorrectHits}/${tgtAttempts}` : "—"}</span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Best RT</span>
+                    <span className="ts-sim-statVal">{tgtBestMs != null ? `${tgtBestMs}` : "—"}<span style={{ fontSize: 10, fontWeight: 500, color: "rgba(255,255,255,0.4)" }}>{tgtBestMs != null ? "ms" : ""}</span></span>
+                  </div>
+                  <div className="ts-sim-stat">
+                    <span className="ts-sim-statLabel">Attempts</span>
+                    <span className="ts-sim-statVal">{tgtAttempts}</span>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {/* Live impact feed */}
-            {mode !== "Reaction" && impacts.length > 0 && (
+            {mode !== "Reaction" && mode !== "Volume" && mode !== "Target" && impacts.length > 0 && (
               <div className="ts-sim-impactFeed">
                 <div className="ts-sim-feedTitle">Impact Feed</div>
                 {impacts.map((imp, idx) => (
                   <div key={imp.ts + idx} className="ts-sim-feedItem">
-                    <span className="ts-sim-feedLabel">{mode === "Accuracy" ? `Score` : `Strength Index`}</span>
+                    <span className="ts-sim-feedLabel">{mode === "Accuracy" ? "Score" : "Strength Index"}</span>
                     <span className="ts-sim-feedVal" style={{ color: accentColor }}>
                       {mode === "Accuracy" ? `${imp.accScore}%` : imp.si}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Volume impact feed */}
+            {mode === "Volume" && impacts.length > 0 && (
+              <div className="ts-sim-impactFeed">
+                <div className="ts-sim-feedTitle">Strike Feed</div>
+                {impacts.map((imp, idx) => (
+                  <div key={imp.ts + idx} className="ts-sim-feedItem">
+                    <span className="ts-sim-feedLabel">SI</span>
+                    <span className="ts-sim-feedVal" style={{ color: accentColor }}>{imp.si}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Target impact feed */}
+            {mode === "Target" && impacts.length > 0 && (
+              <div className="ts-sim-impactFeed">
+                <div className="ts-sim-feedTitle">Attempt Feed</div>
+                {impacts.map((imp, idx) => (
+                  <div key={imp.ts + idx} className="ts-sim-feedItem">
+                    <span className="ts-sim-feedLabel">{imp.correct ? "✓ Hit" : "✗ Miss"}</span>
+                    <span className="ts-sim-feedVal" style={{ color: imp.correct ? "#00ff88" : "#ff6060" }}>
+                      {imp.correct ? `${imp.rt}ms` : "—"}
                     </span>
                   </div>
                 ))}
@@ -926,6 +1542,10 @@ export default function HitSimulator() {
             <div className="ts-sim-hintText">
               {mode === "Reaction"
                 ? rxPhase === "idle" ? "Click the bag to begin" : ""
+                : mode === "Volume"
+                ? volPhase === "idle" ? "Click the bag to begin" : ""
+                : mode === "Target"
+                ? tgtPhase === "idle" ? "Click the bag to begin" : ""
                 : "Click any zone on the bag"}
             </div>
           </div>
