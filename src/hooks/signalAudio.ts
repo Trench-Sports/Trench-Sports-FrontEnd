@@ -1,8 +1,15 @@
 // src/hooks/signalAudio.ts
 // Synthesised audio cues for reaction and volume mode signals.
 // Uses Web Audio API — no dependencies, works in browser and Capacitor WebView.
-// Mobile audio context is unlocked automatically after the first user gesture
-// (the "Start Session" button tap satisfies this requirement).
+//
+// ⚠️ iOS / Android mobile audio unlock requirement:
+//   AudioContext MUST be created AND resumed inside a synchronous user-gesture
+//   handler (e.g. a tap). Tones that fire later from setTimeout callbacks reuse
+//   the same pre-unlocked context, which stays runnable without needing another
+//   gesture. Call `unlock()` inside your "Start Session" tap handler so every
+//   subsequent playSignal / playZoneCue call works reliably on mobile.
+
+import { useRef } from "react";
 
 type SignalType = "reaction" | "volume" | "early";
 
@@ -45,18 +52,82 @@ function playTone(opts: {
   osc.stop(ctx.currentTime + startAt + opts.duration);
 }
 
-function createContext(): AudioContext | null {
-  try {
-    return new (window.AudioContext || (window as any).webkitAudioContext)();
-  } catch (e) {
-    console.warn("[signalAudio] AudioContext unavailable", e);
-    return null;
-  }
-}
-
 export function useSignalAudio() {
+  // Persistent context ref — created once per hook instance and reused for the
+  // lifetime of the session so iOS never sees a fresh (suspended) context.
+  const ctxRef = useRef<AudioContext | null>(null);
+
+  // ─── unlock ────────────────────────────────────────────────────────────────
+  // Call this synchronously inside a user-gesture handler (e.g. "Start Session"
+  // tap). It creates the AudioContext, immediately resumes it (satisfying iOS's
+  // gesture requirement), and fires a silent 1ms buffer to fully warm it up.
+  // It also pre-warms Speech Synthesis so zone-cue speech works on iOS.
+  function unlock(): void {
+    try {
+      // Reuse existing context if it's still open
+      if (ctxRef.current && ctxRef.current.state !== "closed") {
+        if (ctxRef.current.state === "suspended") {
+          ctxRef.current.resume().catch(() => {});
+        }
+      } else {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx() as AudioContext;
+        ctxRef.current = ctx;
+
+        // Resume immediately — this is the gesture unlock for iOS
+        ctx.resume().then(() => {
+          // Play a 1ms silent buffer to fully unblock the audio pipeline
+          const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          src.start(0);
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn("[signalAudio] unlock failed", e);
+    }
+
+    // Pre-warm Speech Synthesis — iOS requires a speak() call during a gesture
+    // before it will honour later calls from timeouts.
+    try {
+      if ("speechSynthesis" in window) {
+        const warmup = new SpeechSynthesisUtterance("");
+        warmup.volume = 0;
+        window.speechSynthesis.speak(warmup);
+      }
+    } catch (_) {}
+  }
+
+  // ─── getContext ────────────────────────────────────────────────────────────
+  // Returns the pre-unlocked context, creating one if needed (fallback for web
+  // where the gesture restriction doesn't apply).
+  function getContext(): AudioContext | null {
+    try {
+      if (ctxRef.current && ctxRef.current.state !== "closed") {
+        // Resume in case the browser auto-suspended it (e.g. tab switch)
+        if (ctxRef.current.state === "suspended") {
+          ctxRef.current.resume().catch(() => {});
+        }
+        return ctxRef.current;
+      }
+      // Fallback: create a fresh context (works on desktop/web)
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return null;
+      const ctx = new AudioCtx() as AudioContext;
+      ctxRef.current = ctx;
+      ctx.resume().catch(() => {});
+      return ctx;
+    } catch (e) {
+      console.warn("[signalAudio] getContext failed", e);
+      return null;
+    }
+  }
+
+  // ─── playSignal ────────────────────────────────────────────────────────────
   function playSignal(type: SignalType) {
-    const ctx = createContext();
+    const ctx = getContext();
     if (!ctx) return;
 
     try {
@@ -93,17 +164,8 @@ export function useSignalAudio() {
           break;
         }
       }
-
-      // Close context after all tones have finished
-      const longestDuration =
-        type === "reaction" ? 0.35 :
-        type === "volume"   ? 0.45 :
-        0.35;
-      setTimeout(() => ctx.close(), (longestDuration + 0.1) * 1000);
-
     } catch (e) {
       console.warn("[signalAudio] playSignal failed", e);
-      ctx.close();
     }
   }
 
@@ -131,5 +193,16 @@ export function useSignalAudio() {
     }, 180);
   }
 
-  return { playSignal, playZoneCue };
+  // ─── cleanup ───────────────────────────────────────────────────────────────
+  // Call when the session ends to free the audio context.
+  function closeAudio(): void {
+    try {
+      if (ctxRef.current && ctxRef.current.state !== "closed") {
+        ctxRef.current.close().catch(() => {});
+      }
+      ctxRef.current = null;
+    } catch (_) {}
+  }
+
+  return { unlock, playSignal, playZoneCue, closeAudio };
 }

@@ -1289,7 +1289,7 @@ function BlePickerSheet({
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
-  const { playSignal, playZoneCue } = useSignalAudio();
+  const { unlock: unlockAudio, playSignal, playZoneCue, closeAudio } = useSignalAudio();
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -2081,6 +2081,11 @@ export default function Session() {
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
+    // Unlock audio context synchronously inside the user-gesture handler.
+    // This satisfies iOS/Android's requirement that AudioContext be resumed
+    // during a tap — all subsequent playSignal calls will reuse this context.
+    unlockAudio();
+
     sessionIdRef.current = genSessionId();
     framesRef.current    = [];
     frameIndex.current   = 0;
@@ -2175,6 +2180,7 @@ export default function Session() {
     tgtPhaseRef.current = "idle";
     window.speechSynthesis?.cancel();
     setSessionActive(false);
+    closeAudio();
     await sendCommand("stop");
   };
 

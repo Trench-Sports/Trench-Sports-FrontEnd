@@ -185,18 +185,27 @@ export default function Dashboard() {
   const [athleteFilter, setAthleteFilter] = useState("");
 
   useEffect(() => {
-    if (activeTab !== "athletes" || !programId || !supabase) return;
+    if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
+    // Coaches must have their core team resolved before we can scope the query
+    if (userRole === "coach" && coreTeamId === null) return;
 
     async function fetchAthletes() {
       setAthletesLoading(true);
       setAthletesError("");
       try {
-        const { data, error } = await supabase!
+        let query = supabase!
           .from("athletes")
           .select("id, first_name, last_name, height, weight, sport, position")
-          .eq("program_id", programId)
+          .eq("program_id", programId!)
           .order("last_name");
 
+        // Coaches only see athletes on their core team (matched by both program_id
+        // and core_team_id via the athletes.core_team_id FK)
+        if (userRole === "coach" && coreTeamId) {
+          query = query.eq("core_team_id", coreTeamId);
+        }
+
+        const { data, error } = await query;
         if (error) throw error;
         setAthletes(data ?? []);
       } catch (err: any) {
@@ -207,7 +216,7 @@ export default function Dashboard() {
     }
 
     fetchAthletes();
-  }, [activeTab, programId]);
+  }, [activeTab, programId, userRole, coreTeamId]);
 
   // ---------- Athlete progress badges ----------
   type AthleteProgress = {
@@ -221,19 +230,28 @@ export default function Dashboard() {
   const [athleteProgressLoading, setAthleteProgressLoading] = useState(false);
 
   useEffect(() => {
-    if (activeTab !== "athletes" || !programId || !supabase) return;
+    if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
+    // Coaches must have their core team resolved before we can scope the query
+    if (userRole === "coach" && coreTeamId === null) return;
 
     setAthleteProgressLoading(true);
 
     (async () => {
       try {
         // Fetch all sessions across all three modes in one round-trip
-        const { data } = await supabase!
+        let progressQuery = supabase!
           .from("session_summaries")
           .select("athlete_id, date_of_record, mode, quality, peak_force_stats")
           .eq("program_id", programId!)
           .not("athlete_id", "is", null)
           .order("date_of_record", { ascending: true });
+
+        // Coaches are scoped to their core team; admins see the whole program
+        if (userRole === "coach" && coreTeamId) {
+          progressQuery = progressQuery.eq("core_team_id", coreTeamId);
+        }
+
+        const { data } = await progressQuery;
 
         if (!data) return;
 
@@ -301,13 +319,15 @@ export default function Dashboard() {
         setAthleteProgressLoading(false);
       }
     })();
-  }, [activeTab, programId]);
+  }, [activeTab, programId, userRole, coreTeamId]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [teamsLoading, setTeamsLoading] = useState(false);
   const [teamsError, setTeamsError] = useState("");
 
   useEffect(() => {
-    if (activeTab !== "athletes" || !programId || !profile?.role || !supabase) return;
+    if (activeTab !== "athletes" || !programId || !profile?.role || !userRole || !supabase) return;
+    // Coaches must have their core team resolved before we can scope the query
+    if (userRole === "coach" && coreTeamId === null) return;
 
     async function fetchTeams() {
       setTeamsLoading(true);
@@ -316,12 +336,15 @@ export default function Dashboard() {
         let query = supabase!
           .from("teams")
           .select("id, name, team_type, parent_team_id, created_by, program_id, team_members(athlete_id)")
-          .eq("program_id", programId)
+          .eq("program_id", programId!)
           .order("name");
 
-        // Coaches only see sub-teams (non-core)
         if (profile!.role === "coach") {
+          // Coaches only see sub-teams parented under their own core team
           query = query.neq("team_type", "core");
+          if (coreTeamId) {
+            query = query.eq("parent_team_id", coreTeamId);
+          }
         }
 
         const { data, error } = await query;
@@ -340,7 +363,7 @@ export default function Dashboard() {
     }
 
     fetchTeams();
-  }, [activeTab, programId, profile?.role]);
+  }, [activeTab, programId, profile?.role, userRole, coreTeamId]);
 
   // ---------- lightweight "demo" state ----------
   const [connected, setConnected] = useState(false);
