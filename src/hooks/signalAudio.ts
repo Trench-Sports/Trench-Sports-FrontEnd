@@ -59,32 +59,43 @@ export function useSignalAudio() {
 
   // ─── unlock ────────────────────────────────────────────────────────────────
   // Call this synchronously inside a user-gesture handler (e.g. "Start Session"
-  // tap). It creates the AudioContext, immediately resumes it (satisfying iOS's
-  // gesture requirement), and fires a silent 1ms buffer to fully warm it up.
-  // It also pre-warms Speech Synthesis so zone-cue speech works on iOS.
+  // tap). It creates the AudioContext, resumes it, and — critically — starts an
+  // inaudible oscillator SYNCHRONOUSLY within the same gesture call stack.
+  //
+  // Why synchronous matters: WKWebView (Capacitor iOS) requires that an audio
+  // node's .start() is called during the synchronous execution of the gesture
+  // handler. Running .start() inside a .then() callback is async — iOS has
+  // already closed the gesture window by then, so the pipeline never warms up
+  // and subsequent OscillatorNode calls produce no sound.
   function unlock(): void {
     try {
-      // Reuse existing context if it's still open
+      let ctx: AudioContext;
+
       if (ctxRef.current && ctxRef.current.state !== "closed") {
-        if (ctxRef.current.state === "suspended") {
-          ctxRef.current.resume().catch(() => {});
+        ctx = ctxRef.current;
+        if (ctx.state === "suspended") {
+          ctx.resume().catch(() => {});
         }
       } else {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (!AudioCtx) return;
-        const ctx = new AudioCtx() as AudioContext;
+        ctx = new AudioCtx() as AudioContext;
         ctxRef.current = ctx;
-
-        // Resume immediately — this is the gesture unlock for iOS
-        ctx.resume().then(() => {
-          // Play a 1ms silent buffer to fully unblock the audio pipeline
-          const buf = ctx.createBuffer(1, 1, ctx.sampleRate);
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(ctx.destination);
-          src.start(0);
-        }).catch(() => {});
+        ctx.resume().catch(() => {}); // kick off resume; don't await
       }
+
+      // Synchronously start a 1ms, nearly-inaudible oscillator.
+      // This must happen here — in the same synchronous call stack as the tap —
+      // to satisfy WKWebView's gesture-gating requirement for OscillatorNode.
+      const warmOsc  = ctx.createOscillator();
+      const warmGain = ctx.createGain();
+      warmGain.gain.value = 0.001; // inaudible in practice
+      warmOsc.connect(warmGain);
+      warmGain.connect(ctx.destination);
+      warmOsc.frequency.value = 440;
+      warmOsc.start(ctx.currentTime);
+      warmOsc.stop(ctx.currentTime + 0.001);
+
     } catch (e) {
       console.warn("[signalAudio] unlock failed", e);
     }
