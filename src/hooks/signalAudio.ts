@@ -1,15 +1,16 @@
 // src/hooks/signalAudio.ts
 // Synthesised audio cues for reaction and volume mode signals.
-// Uses Web Audio API — no dependencies, works in browser and Capacitor WebView.
 //
-// ⚠️ iOS / Android mobile audio unlock requirement:
-//   AudioContext MUST be created AND resumed inside a synchronous user-gesture
-//   handler (e.g. a tap). Tones that fire later from setTimeout callbacks reuse
-//   the same pre-unlocked context, which stays runnable without needing another
-//   gesture. Call `unlock()` inside your "Start Session" tap handler so every
-//   subsequent playSignal / playZoneCue call works reliably on mobile.
+// Platform strategy:
+//   Native (Capacitor iOS/Android) — speechSynthesis for all cues.
+//     WKWebView's OscillatorNode is unreliable outside a gesture handler, but
+//     speechSynthesis works everywhere (same path as the zone label cues).
+//   Web (desktop/mobile browser) — Web Audio API oscillators as before.
+//
+// Call `unlock()` inside your "Start Session" tap handler in both cases.
 
 import { useRef } from "react";
+import { platform } from "../platform";
 
 type SignalType = "reaction" | "volume" | "early";
 
@@ -136,8 +137,47 @@ export function useSignalAudio() {
     }
   }
 
+  // ─── speakCue ──────────────────────────────────────────────────────────────
+  // Uses speechSynthesis to deliver a short cue word — the same audio path
+  // as zone labels, which already work reliably on native.
+  function speakCue(word: string, rate: number, pitch: number): void {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utt   = new SpeechSynthesisUtterance(word);
+      utt.rate    = rate;
+      utt.pitch   = pitch;
+      utt.volume  = 1.0;
+      window.speechSynthesis.speak(utt);
+    } catch (e) {
+      console.warn("[signalAudio] speakCue failed", e);
+    }
+  }
+
   // ─── playSignal ────────────────────────────────────────────────────────────
   function playSignal(type: SignalType) {
+    // ── Native path: use speechSynthesis (same mechanism as zone labels) ──────
+    // OscillatorNode is unreliable in WKWebView outside a gesture handler, but
+    // speechSynthesis works consistently on both iOS and Android native.
+    if (platform.isNative) {
+      switch (type) {
+        case "reaction":
+          // "Go!" — energetic, rising-pitch feel to match the original two-pulse alarm
+          speakCue("Go!", 1.5, 1.4);
+          break;
+        case "volume":
+          // "Go!" — same "start now" read as the triple beep
+          speakCue("Go!", 1.5, 1.4);
+          break;
+        case "early":
+          // "Early!" — tells the athlete exactly what went wrong, lower pitch reads as "stop"
+          speakCue("Early!", 1.3, 0.8);
+          break;
+      }
+      return;
+    }
+
+    // ── Web path: Web Audio API oscillators ───────────────────────────────────
     const ctx = getContext();
     if (!ctx) return;
 
@@ -181,14 +221,30 @@ export function useSignalAudio() {
   }
 
   // ─── Zone cue — plays the alert tone then speaks the zone label ──────────────
-  // The alert beep fires immediately; speech is queued ~180ms later so it lands
-  // cleanly after the tone rather than overlapping with it.
   function playZoneCue(zone: ZoneTarget): void {
-    // 1. Fire the same sharp reaction alert tone
-    playSignal("reaction");
-
-    // 2. Speak the zone label after the beep finishes
     if (!("speechSynthesis" in window)) return;
+
+    if (platform.isNative) {
+      // On native, speechSynthesis is the only reliable audio path.
+      // Speak the zone label directly — no pre-beep needed since the voice
+      // itself is the alert. A leading "Go" utterance would be cancelled by
+      // the zone label's cancel() call 180ms later before it finishes.
+      try {
+        window.speechSynthesis.cancel();
+        const label = `${zone.row} ${zone.col}`;
+        const utt   = new SpeechSynthesisUtterance(label);
+        utt.rate    = 1.15;
+        utt.pitch   = 1.1;
+        utt.volume  = 1.0;
+        window.speechSynthesis.speak(utt);
+      } catch (e) {
+        console.warn("[signalAudio] playZoneCue speech failed", e);
+      }
+      return;
+    }
+
+    // Web path: fire the tone first, then speak the zone label after the beep.
+    playSignal("reaction");
     setTimeout(() => {
       try {
         window.speechSynthesis.cancel();
