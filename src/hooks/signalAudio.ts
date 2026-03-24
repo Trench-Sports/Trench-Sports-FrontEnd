@@ -101,13 +101,28 @@ export function useSignalAudio() {
       console.warn("[signalAudio] unlock failed", e);
     }
 
-    // Pre-warm Speech Synthesis — iOS requires a speak() call during a gesture
-    // before it will honour later calls from timeouts.
+    // Pre-warm Speech Synthesis with the actual cue words.
+    // An empty-string utterance doesn't trigger real synthesis, so the engine
+    // stays cold and the first real "Go!" has noticeable latency. Speaking the
+    // exact words at near-zero volume forces iOS to pre-synthesize and buffer
+    // them — when the real cue fires they play with minimal delay.
     try {
       if ("speechSynthesis" in window) {
-        const warmup = new SpeechSynthesisUtterance("");
-        warmup.volume = 0;
-        window.speechSynthesis.speak(warmup);
+        window.speechSynthesis.cancel();
+        const cues = platform.isNative
+          ? [
+              { text: "Go!",    rate: 1.5, pitch: 1.4 },
+              { text: "Early!", rate: 1.3, pitch: 0.8 },
+            ]
+          : [{ text: " ", rate: 1.0, pitch: 1.0 }]; // web just needs gesture unlock
+
+        cues.forEach(({ text, rate, pitch }) => {
+          const utt   = new SpeechSynthesisUtterance(text);
+          utt.volume  = 0.01; // near-silent but non-zero — forces full synthesis pipeline
+          utt.rate    = rate;
+          utt.pitch   = pitch;
+          window.speechSynthesis.speak(utt);
+        });
       }
     } catch (_) {}
   }
