@@ -2301,64 +2301,108 @@ export default function Dashboard() {
 
 
                 return (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 14 }}>
 
-                    {/* ── Athlete dropdown ── */}
-                    <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
-                      <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"
-                        style={{ position: "absolute", left: 10, pointerEvents: "none", opacity: 0.55, flexShrink: 0 }}>
-                        <circle cx="7" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
-                        <path d="M2 12c0-2.761 2.239-4 5-4s5 1.239 5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
-                      </svg>
-                      <select
-                        value={sessionAthleteFilter}
-                        onChange={(e) => setSessionAthleteFilter(e.target.value)}
-                        style={{
-                          background: sessionAthleteFilter !== "all" ? "rgba(180,0,255,0.14)" : subtleBg,
-                          border: sessionAthleteFilter !== "all"
-                            ? "1px solid rgba(180,0,255,0.45)"
-                            : `1px solid ${subtleBdr}`,
-                          borderRadius: 10,
-                          color: sessionAthleteFilter !== "all" ? "rgba(210,140,255,0.95)" : "inherit",
-                          font: "inherit",
-                          fontSize: 12,
-                          fontWeight: 700,
-                          padding: "7px 14px 7px 30px",
-                          cursor: "pointer",
-                          outline: "none",
-                          appearance: "none",
-                          minWidth: 148,
-                          boxShadow: sessionAthleteFilter !== "all" ? "0 0 0 1px rgba(180,0,255,0.2)" : "none",
-                          transition: "background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease",
-                        }}
-                      >
-                        <option value="all">All Athletes</option>
-                        {sessionAthletes.map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
+                    {/* ── Row 1: Athlete dropdown + optional Clear ── */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+
+                      {/* Athlete dropdown — fills remaining space */}
+                      <div style={{ position: "relative", display: "flex", flex: 1, minWidth: 0 }}>
+                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"
+                          style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", opacity: 0.55, flexShrink: 0 }}>
+                          <circle cx="7" cy="4.5" r="2.5" stroke="currentColor" strokeWidth="1.4"/>
+                          <path d="M2 12c0-2.761 2.239-4 5-4s5 1.239 5 4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/>
+                        </svg>
+                        <select
+                          value={sessionAthleteFilter}
+                          onChange={(e) => setSessionAthleteFilter(e.target.value)}
+                          style={{
+                            width: "100%",
+                            background: sessionAthleteFilter !== "all" ? "rgba(180,0,255,0.14)" : subtleBg,
+                            border: sessionAthleteFilter !== "all"
+                              ? "1px solid rgba(180,0,255,0.45)"
+                              : `1px solid ${subtleBdr}`,
+                            borderRadius: 10,
+                            color: sessionAthleteFilter !== "all" ? "rgba(210,140,255,0.95)" : "inherit",
+                            font: "inherit",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            padding: "7px 14px 7px 30px",
+                            cursor: "pointer",
+                            outline: "none",
+                            appearance: "none",
+                            boxSizing: "border-box",
+                            boxShadow: sessionAthleteFilter !== "all" ? "0 0 0 1px rgba(180,0,255,0.2)" : "none",
+                            transition: "background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease",
+                          }}
+                        >
+                          <option value="all">All Athletes</option>
+                          {sessionAthletes.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Clear button — only when a filter is active */}
+                      {(sessionModeFilter !== "all" || sessionAthleteFilter !== "all") && (
+                        <button
+                          type="button"
+                          onClick={() => { setSessionModeFilter("all"); setSessionAthleteFilter("all"); }}
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 5,
+                            flexShrink: 0,
+                            background: "transparent",
+                            border: `1px solid ${clearBdr}`,
+                            borderRadius: 10,
+                            color: clearFg,
+                            font: "inherit",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: "7px 11px",
+                            cursor: "pointer",
+                            letterSpacing: "0.04em",
+                            transition: "color 140ms ease, border-color 140ms ease",
+                          }}
+                          onMouseEnter={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.color = clearFgHover;
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdrHover;
+                          }}
+                          onMouseLeave={(e) => {
+                            (e.currentTarget as HTMLButtonElement).style.color = clearFg;
+                            (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdr;
+                          }}
+                        >
+                          <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                            <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                          </svg>
+                          Clear
+                        </button>
+                      )}
                     </div>
 
-                    {/* ── Session type — segmented pill group ── */}
+                    {/* ── Row 2: Mode pills — equal-width cells, always fill card ── */}
                     <div style={{
-                      display: "inline-flex",
-                      alignItems: "center",
+                      display: "flex",
+                      width: "100%",
                       background: subtleBg,
                       border: `1px solid ${subtleBdr}`,
                       borderRadius: 10,
                       padding: 3,
                       gap: 2,
+                      boxSizing: "border-box",
                     }}>
                       {([
                         { value: "all",      label: "All",      icon: null },
-                        { value: "power", label: "Power", icon: "💥" },
+                        { value: "power",    label: "Power",    icon: "💥" },
                         { value: "accuracy", label: "Accuracy", icon: "🎯" },
                         { value: "reaction", label: "Reaction", icon: "⚡️" },
                         { value: "volume",   label: "Volume",   icon: "🥊" },
                         { value: "target",   label: "Target",   icon: "🏹" },
                       ] as { value: string; label: string; icon: string | null }[]).map(({ value, label, icon }) => {
-                        const isActive    = sessionModeFilter === value;
-                        const isAccented  = isActive && value !== "all";
+                        const isActive   = sessionModeFilter === value;
+                        const isAccented = isActive && value !== "all";
                         const accentColor = value === "accuracy" ? "#00dcff" : value === "reaction" ? "#ffcc00" : value === "volume" ? "#ff6a00" : value === "target" ? "#00ff88" : "#b400ff";
                         const accentBg    = value === "accuracy" ? "rgba(0,220,255,0.14)"  : value === "reaction" ? "rgba(255,200,0,0.14)"  : value === "volume" ? "rgba(255,106,0,0.14)"  : value === "target" ? "rgba(0,255,136,0.14)"  : "rgba(180,0,255,0.18)";
                         const accentBdr   = value === "accuracy" ? "rgba(0,220,255,0.40)"  : value === "reaction" ? "rgba(255,200,0,0.38)"  : value === "volume" ? "rgba(255,106,0,0.40)"  : value === "target" ? "rgba(0,255,136,0.38)"  : "rgba(180,0,255,0.45)";
@@ -2368,10 +2412,13 @@ export default function Dashboard() {
                             type="button"
                             onClick={() => setSessionModeFilter(value)}
                             style={{
-                              display: "inline-flex",
+                              flex: "1 1 0",           // equal width regardless of label length
+                              minWidth: 0,             // allow shrinking below content size
+                              display: "flex",
                               alignItems: "center",
+                              justifyContent: "center",
                               gap: 4,
-                              padding: "5px 11px",
+                              padding: "6px 4px",
                               borderRadius: 7,
                               border: isActive
                                 ? `1px solid ${isAccented ? accentBdr : activeBdr}`
@@ -2387,53 +2434,18 @@ export default function Dashboard() {
                               fontWeight: 700,
                               cursor: "pointer",
                               letterSpacing: "0.01em",
-                              transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
                               whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                              transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
                             }}
                           >
-                            {icon && <span className="ts-filterModeIcon" style={{ fontSize: 11, lineHeight: 1 }}>{icon}</span>}
-                            {label}
+                            <span className="ts-filterModeIcon" style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>{icon ?? ""}</span>
+                            <span className="ts-filterModeLabel">{label}</span>
                           </button>
                         );
                       })}
                     </div>
-
-                    {/* ── Clear — only when a non-default filter is active ── */}
-                    {(sessionModeFilter !== "all" || sessionAthleteFilter !== "all") && (
-                      <button
-                        type="button"
-                        onClick={() => { setSessionModeFilter("all"); setSessionAthleteFilter("all"); }}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 5,
-                          background: "transparent",
-                          border: `1px solid ${clearBdr}`,
-                          borderRadius: 10,
-                          color: clearFg,
-                          font: "inherit",
-                          fontSize: 11,
-                          fontWeight: 700,
-                          padding: "7px 11px",
-                          cursor: "pointer",
-                          letterSpacing: "0.04em",
-                          transition: "color 140ms ease, border-color 140ms ease",
-                        }}
-                        onMouseEnter={(e) => {
-                          (e.currentTarget as HTMLButtonElement).style.color = clearFgHover;
-                          (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdrHover;
-                        }}
-                        onMouseLeave={(e) => {
-                          (e.currentTarget as HTMLButtonElement).style.color = clearFg;
-                          (e.currentTarget as HTMLButtonElement).style.borderColor = clearBdr;
-                        }}
-                      >
-                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                          <path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
-                        </svg>
-                        Clear
-                      </button>
-                    )}
                   </div>
                 );
               })()}
@@ -5730,22 +5742,11 @@ export default function Dashboard() {
           }
         }
 
-        /* ── Recent Sessions card specific ── */
+        /* ── Recent Sessions — filter bar ── */
 
-        /* Filter row wraps on mobile */
-        @media (max-width: 600px) {
-          .ts-cardTop {
-            flex-direction: column;
-            align-items: flex-start;
-            gap: 6px;
-          }
-        }
-
-        /* Hide mode filter emojis on mobile so the pill group fits within the card */
-        @media (max-width: 600px) {
-          .ts-filterModeIcon {
-            display: none;
-          }
+        /* Hide emoji icons only on very small phones to reclaim label space */
+        @media (max-width: 1024px) {
+          .ts-filterModeIcon { display: none; }
         }
 
         /* ── Charts & Graphs — hidden on mobile ── */

@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ─── Types & Constants ────────────────────────────────────────────────────────
 
-const MODES = ["Standard", "Accuracy", "Reaction", "Volume", "Target"];
+const MODES = ["Power", "Accuracy", "Reaction", "Volume", "Target"];
 
 // ─── Zone definitions for Target mode ────────────────────────────────────────
 // Grid is 10 rows × 6 cols (0-indexed). Zones split into 3×3 named regions.
@@ -37,7 +37,7 @@ function zoneBounds(zone) {
 }
 
 const MODE_META = {
-  Standard: {
+  Power: {
     icon: "💥",
     color: "#b400ff",
     glow: "rgba(180,0,255,0.55)",
@@ -576,7 +576,7 @@ function TargetOverlay({ phase, zone, reactionMs, correct, attempts, correctHits
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function HitSimulator() {
-  const [mode, setMode] = useState("Standard");
+  const [mode, setMode] = useState("Power");
   const [impacts, setImpacts] = useState([]);
   const [ripples, setRipples] = useState([]);
   const [hoveredZone, setHoveredZone] = useState(null);
@@ -864,7 +864,7 @@ export default function HitSimulator() {
       return;
     }
 
-    // ── Standard / Accuracy ───────────────────────────────────────────────────
+    // ── Power / Accuracy ───────────────────────────────────────────────────
     const force = +(18 + Math.random() * 22 - dist * 8).toFixed(1);
     const speed = +(4.5 + Math.random() * 5 - dist * 1.5).toFixed(1);
 
@@ -1409,7 +1409,7 @@ export default function HitSimulator() {
             </div>
 
             {/* Session stats */}
-            {mode === "Standard" || mode === "Accuracy" ? (
+            {mode === "Power" || mode === "Accuracy" ? (
               <div className="ts-sim-statsCard">
                 <div className="ts-sim-statsTitle">Session</div>
                 <div className="ts-sim-statsGrid">
