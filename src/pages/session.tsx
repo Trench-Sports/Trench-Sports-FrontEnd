@@ -45,6 +45,7 @@ const FADE_TTL_MS    = 400;
 // Mirrors ESP32 SCAN_PERIOD_MS — used as a duration floor for single-frame events
 // where t_start == t_end (contact resolved and released within one scan cycle).
 const SCAN_PERIOD_MS = 37;
+const VOLUME_WINDOW_MS = 5000;  // 5-second recording window for volume mode
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
@@ -368,18 +369,16 @@ function VolumeOverlay({
       animation: "tsFlashIn 0.15s ease-out",
     }}>
       <div style={{
-        fontSize: 38, fontWeight: 900, color: "#ff6a00",
+        fontSize: 48, fontWeight: 900, color: "#ff6a00",
         textShadow: "0 0 24px #ff6a00, 0 0 48px rgba(255,106,0,0.6)",
         letterSpacing: 2, animation: "tsSignalPop 0.2s ease-out",
+        marginBottom: 20,
       }}>HIT!</div>
-      <div style={{ fontSize: 11, color: "rgba(255,160,90,0.85)", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
-        5 second burst
-      </div>
-      <div style={{ marginTop: 14, fontSize: 34, fontWeight: 900, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ marginTop: 0, fontSize: 42, fontWeight: 900, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
         {hits}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>
-        {Math.max(0, (remainingMs / 1000)).toFixed(1)}s left
+      <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginTop: 8 }}>
+        {((VOLUME_WINDOW_MS - remainingMs) / 1000).toFixed(1)}s / 5.0s
       </div>
     </div>
   );
@@ -1410,7 +1409,6 @@ export default function Session() {
   const rxSumMs     = useRef(0);
 
     // ── Volume mode state ───────────────────────────────────────────────────────
-  const VOLUME_WINDOW_MS = 5000;
   const [volPhase, setVolPhase] = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
   const [volHits, setVolHits] = useState(0);
   const [volBest, setVolBest] = useState<number | null>(null);
@@ -1544,46 +1542,69 @@ export default function Session() {
       volTickTimer.current = null;
     }
 
-    setTimeout(() => {
-      if (!captureRef.current) return;
-      scheduleNextVolume();
+    // In volume mode, auto-end the session after showing result
+    const endTimer = setTimeout(() => {
+      if (captureRef.current) {
+        setSessionActive(false);
+        captureRef.current = false;
+      }
     }, 2200);
+    
+    return () => clearTimeout(endTimer);
   }, []);
 
     const scheduleNextVolume = useCallback(() => {
     if (!captureRef.current) return;
+    
+    // Clear any existing timers
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
+
     const delay = 1500 + Math.random() * 2500;
     setVolPhase("waiting");
     volPhaseRef.current = "waiting";
     setVolHits(0);
+    volHitsRef.current = 0;
     setVolRemainingMs(0);
-    volSignalAt.current = null;
-    volWindowEndsAt.current = null;
 
     volTimer.current = setTimeout(() => {
       if (!captureRef.current) return;
 
-      const nowPerf = performance.now();
+      const signalStartTime = performance.now();
+      const windowEndTime = signalStartTime + VOLUME_WINDOW_MS;
+
       setVolPhase("signal");
       volPhaseRef.current = "signal";
       setVolHits(0);
-      setVolRemainingMs(VOLUME_WINDOW_MS);
-      volSignalAt.current = nowPerf;
-      volWindowEndsAt.current = nowPerf + VOLUME_WINDOW_MS;
-      volWindowIdxRef.current += 1;       // new window — advance the index
-      volWindowHitSeqRef.current = 0;     // reset per-window hit counter
+      volHitsRef.current = 0;
+      setVolRemainingMs(0);
+      volSignalAt.current = signalStartTime;
+      volWindowEndsAt.current = windowEndTime;
+      volWindowIdxRef.current += 1;
+      volWindowHitSeqRef.current = 0;
 
+      // Play the signal tone
+      playSignal("volume");
+
+      // Start countdown timer - updates every 50ms
       if (volTickTimer.current) clearInterval(volTickTimer.current);
       volTickTimer.current = setInterval(() => {
-        if (!volWindowEndsAt.current) return;
-        const remaining = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+        const now = performance.now();
+        const elapsed = Math.max(0, now - signalStartTime);
+        const remaining = Math.max(0, VOLUME_WINDOW_MS - elapsed);
+        
         setVolRemainingMs(remaining);
+        
+        // When window closes, end it
+        if (elapsed >= VOLUME_WINDOW_MS) {
+          if (volTickTimer.current) {
+            clearInterval(volTickTimer.current);
+            volTickTimer.current = null;
+          }
+          finishVolumeWindow(volHitsRef.current);
+        }
       }, 50);
 
-      if (volTimer.current) clearTimeout(volTimer.current);
-      volTimer.current = setTimeout(() => {
-        finishVolumeWindow(volHitsRef.current);
-      }, VOLUME_WINDOW_MS);
     }, delay);
   }, [finishVolumeWindow]);
 
@@ -1600,6 +1621,16 @@ export default function Session() {
       setElapsedMs(Date.now() - (startTimeRef.current ?? Date.now()));
     }, 250);
     return () => clearInterval(id);
+  }, [sessionActive]);
+
+  // Session cleanup when deactivated
+  useEffect(() => {
+    if (sessionActive) return;
+    // Clean up all mode timers on session end
+    if (rxTimer.current) clearTimeout(rxTimer.current);
+    if (tgtTimer.current) clearTimeout(tgtTimer.current);
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
   }, [sessionActive]);
 
   // ── BLE notify handler ────────────────────────────────────────────────────────
@@ -2174,10 +2205,14 @@ export default function Session() {
     captureRef.current = false;
     if (rxTimer.current) clearTimeout(rxTimer.current);
     if (tgtTimer.current) clearTimeout(tgtTimer.current);
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
     setRxPhase("idle");
     rxPhaseRef.current = "idle";
     setTgtPhase("idle");
     tgtPhaseRef.current = "idle";
+    setVolPhase("idle");
+    volPhaseRef.current = "idle";
     window.speechSynthesis?.cancel();
     setSessionActive(false);
     closeAudio();
@@ -2761,6 +2796,11 @@ export default function Session() {
             {/* Reaction overlay */}
             {sessionMode === "reaction" && sessionActive && (
               <ReactionOverlay phase={rxPhase} reactionMs={rxTime} />
+            )}
+
+            {/* Volume overlay */}
+            {sessionMode === "volume" && sessionActive && (
+              <VolumeOverlay phase={volPhase} hits={volHits} remainingMs={volRemainingMs} />
             )}
 
             {/* Target overlay */}
