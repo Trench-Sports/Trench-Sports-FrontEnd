@@ -83,7 +83,7 @@ const MODE_META: Record<SessionMode, { icon: string; label: string; color: strin
 // ─── Target mode — zone mapping ───────────────────────────────────────────────
 // Grid is 12 rows × 8 cols (1-indexed from ESP32).
 // Rows:    top = 9–12, middle = 5–8, bottom = 1–4
-// Columns: left = 1–2, center = 3–6, right = 7–8
+// Columns: left = 7–8, center = 3–6, right = 1–2  (C8 renders leftmost, C1 rightmost)
 const ALL_ZONES: ZoneTarget[] = [
   { row: "top",    col: "left"   }, { row: "top",    col: "center" }, { row: "top",    col: "right"  },
   { row: "middle", col: "left"   }, { row: "middle", col: "center" }, { row: "middle", col: "right"  },
@@ -648,7 +648,8 @@ async function uploadSession(opts: {
   tgtAttempts?:     number;
   tgtCorrectHits?:  number;
   tgtCorrectSumMs?: number;
-  tgtBestMs?:       number | null;
+  tgtBestMs?:            number | null;   // best RT across all attempts
+  tgtBestCorrectMs?:     number | null;   // best RT for correct-zone hits only
   // physical device
   deviceId?:    string;
 }) {
@@ -660,7 +661,7 @@ async function uploadSession(opts: {
     deviceModel = "TSII", samplingHz = 25,
     rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
     accHitsCount = 0, accScoreSum = 0,
-    tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null,
+    tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null, tgtBestCorrectMs = null,
     deviceId,
   } = opts;
 
@@ -904,31 +905,49 @@ async function uploadSession(opts: {
     : null;
 
   // Target stats — reaction time split by correct vs all attempts
+  // Derive attempt counts from frames — single source of truth, immune to
+  // stale-state issues at save time. Only frames with a target_zone stamped
+  // count as attempts; zone_correct === true marks a correct hit.
   const tgtRxAll     = frames.filter(f => f.reaction_time_ms !== null && f.target_zone !== null)
                              .map(f => f.reaction_time_ms as number);
   const tgtRxCorrect = frames.filter(f => f.reaction_time_ms !== null && f.zone_correct === true)
                              .map(f => f.reaction_time_ms as number);
+  // Frame-derived counts are always consistent with the stored events
+  const tgtAttemptsFromFrames  = frames.filter(f => f.target_zone !== null).length;
+  const tgtCorrectFromFrames   = frames.filter(f => f.zone_correct === true).length;
+
   const targetQuality = mode === "target"
     ? {
-        attempts:              tgtAttempts,
-        correct_hits:          tgtCorrectHits,
-        target_accuracy_pct:   tgtAttempts > 0
-                                 ? +(tgtCorrectHits / tgtAttempts * 100).toFixed(1)
+        // Use frame-derived counts — not the live-ref counters — as the authoritative
+        // values written to the DB. They match the event rows exactly.
+        attempts:              tgtAttemptsFromFrames,
+        correct_hits:          tgtCorrectFromFrames,
+        target_accuracy_pct:   tgtAttemptsFromFrames > 0
+                                 ? +(tgtCorrectFromFrames / tgtAttemptsFromFrames * 100).toFixed(1)
                                  : null,
-        best_reaction_ms:      tgtBestMs,
-        // Correct-only avg is more meaningful — penalises missing the zone, not hesitating
-        avg_reaction_ms_correct: tgtCorrectHits > 0
-                                   ? +(tgtCorrectSumMs / tgtCorrectHits).toFixed(0)
+        // best RT across all attempts (tgtBestAllMsRef.current passed in at call site)
+        best_reaction_ms:         tgtBestMs,
+        // best RT for correct-zone hits only — the more meaningful competitive benchmark
+        best_reaction_ms_correct: tgtBestCorrectMs,
+        // Correct-only avg is more informative: measures decision+execution speed on good hits
+        avg_reaction_ms_correct: tgtCorrectFromFrames > 0
+                                   ? +(tgtCorrectSumMs / tgtCorrectFromFrames).toFixed(0)
                                    : null,
+        // All-attempts avg RT
+        avg_reaction_ms_all: tgtAttemptsFromFrames > 0
+                               ? +(tgtRxAll.reduce((a, b) => a + b, 0) / tgtRxAll.length).toFixed(0)
+                               : null,
+        // Full distribution stats for both splits
         reaction_time_ms_all:     tgtRxAll.length     ? statSummary(tgtRxAll)     : null,
         reaction_time_ms_correct: tgtRxCorrect.length ? statSummary(tgtRxCorrect) : null,
       }
     : null;
 
-  // Volume stats — per-window breakdown with SI slope for fatigue detection
+  // Volume stats — per-window breakdown with SI fatigue tracking
   const volumeQuality = (() => {
     if (mode !== "volume") return null;
-    // Group frames by window index (only frames that were inside an open window)
+
+    // Group frames by window index (only frames inside an open window)
     const windowMap = new Map<number, BleFrame[]>();
     for (const f of frames) {
       if (f.vol_window_idx === null) continue;
@@ -941,41 +960,89 @@ async function uploadSession(opts: {
     const windows = Array.from(windowMap.entries())
       .sort(([a], [b]) => a - b)
       .map(([idx, wFrames]) => {
-        // Sort by sequence so slope is meaningful
+        // Sort by sequence so intra-window slope is meaningful
         const sorted = [...wFrames].sort((a, b) => (a.vol_hit_seq ?? 0) - (b.vol_hit_seq ?? 0));
+        // IEI-free SI — pure force component, no cadence bias within a burst window
         const siPerHit = sorted.map(f => {
           const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
-          return strengthIndex(null, peakMv);   // IEI-free SI — pure force component
+          return strengthIndex(null, peakMv);
         });
-        // IEI between consecutive hits in this window (epoch_ms diff)
+        // IEI between consecutive hits in this window (wall-clock ms)
         const ieiWithin = sorted.slice(1).map((f, i) => f.epoch_ms - sorted[i].epoch_ms);
-        // Linear SI slope: (last SI − first SI) / hit count → negative = fatigue
-        const siSlope = siPerHit.length >= 2
-          ? +((siPerHit[siPerHit.length - 1] - siPerHit[0]) / (siPerHit.length - 1)).toFixed(1)
+
+        const avgSi  = siPerHit.length
+          ? +(siPerHit.reduce((a, b) => a + b, 0) / siPerHit.length).toFixed(1)
           : null;
+        const peakSi = siPerHit.length ? Math.max(...siPerHit) : null;
+        const minSi  = siPerHit.length ? Math.min(...siPerHit) : null;
+
+        // Intra-window SI slope via least-squares linear regression over hit sequence.
+        // More robust than (last - first): handles noisy mid-window readings.
+        let siSlopeIntra: number | null = null;
+        if (siPerHit.length >= 2) {
+          const n    = siPerHit.length;
+          const xBar = (n - 1) / 2;
+          const yBar = siPerHit.reduce((a, b) => a + b, 0) / n;
+          const ssXX = siPerHit.map((_, i) => (i - xBar) ** 2).reduce((a, b) => a + b, 0);
+          const ssXY = siPerHit.map((v, i) => (i - xBar) * (v - yBar)).reduce((a, b) => a + b, 0);
+          siSlopeIntra = ssXX > 0 ? +(ssXY / ssXX).toFixed(1) : 0;
+        }
+
         return {
-          window_idx:   idx,
-          hits:         sorted.length,
-          avg_si:       siPerHit.length ? +(siPerHit.reduce((a, b) => a + b, 0) / siPerHit.length).toFixed(1) : null,
-          si_values:    siPerHit,
-          si_slope:     siSlope,
-          avg_iei_ms:   ieiWithin.length ? +(ieiWithin.reduce((a, b) => a + b, 0) / ieiWithin.length).toFixed(0) : null,
+          window_idx:    idx,
+          hits:          sorted.length,
+          avg_si:        avgSi,
+          peak_si:       peakSi,
+          min_si:        minSi,
+          si_values:     siPerHit,       // per-hit SI in vol_hit_seq order
+          si_slope:      siSlopeIntra,   // SI change per hit within this window
+          avg_iei_ms:    ieiWithin.length
+            ? +(ieiWithin.reduce((a, b) => a + b, 0) / ieiWithin.length).toFixed(0)
+            : null,
           iei_ms_values: ieiWithin,
         };
       });
 
-    // Global SI fatigue slope across all windows — avg_si of first window vs last
+    // ── Global SI fatigue slope (across windows) ──────────────────────────────
+    // Least-squares linear regression over window avg_si values ordered by window_idx.
+    // Uses all windows, not just first-vs-last, so a single outlier window won't
+    // skew the reading. Unit: SI points per window (negative = fatigue).
     const windowAvgSis = windows.map(w => w.avg_si).filter((v): v is number => v !== null);
-    const globalSiSlope = windowAvgSis.length >= 2
-      ? +((windowAvgSis[windowAvgSis.length - 1] - windowAvgSis[0]) / (windowAvgSis.length - 1)).toFixed(1)
-      : null;
+    let globalSiSlope: number | null = null;
+    if (windowAvgSis.length >= 2) {
+      const n    = windowAvgSis.length;
+      const xBar = (n - 1) / 2;
+      const yBar = windowAvgSis.reduce((a, b) => a + b, 0) / n;
+      const ssXX = windowAvgSis.map((_, i) => (i - xBar) ** 2).reduce((a, b) => a + b, 0);
+      const ssXY = windowAvgSis.map((v, i) => (i - xBar) * (v - yBar)).reduce((a, b) => a + b, 0);
+      globalSiSlope = ssXX > 0 ? +(ssXY / ssXX).toFixed(1) : 0;
+    }
+
+    // Classify trend — threshold of ±10 SI/window separates real fatigue/building
+    // from noise. Below that, session-to-session variance dominates.
+    const SI_TREND_THRESHOLD = 10;
+    const siTrend: "fatigue" | "building" | "stable" =
+      globalSiSlope === null              ? "stable"
+      : globalSiSlope <= -SI_TREND_THRESHOLD ? "fatigue"
+      : globalSiSlope >=  SI_TREND_THRESHOLD ? "building"
+      : "stable";
+
+    // Session-level SI values in chronological hit order for dashboard charting
+    const allHitSiValues = frames
+      .filter(f => f.vol_window_idx !== null)
+      .map(f => {
+        const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
+        return strengthIndex(null, peakMv);
+      });
 
     return {
       windows,
       best_window_hits:  Math.max(...windows.map(w => w.hits)),
       avg_window_hits:   +(windows.reduce((s, w) => s + w.hits, 0) / windows.length).toFixed(1),
-      si_fatigue_slope:  globalSiSlope,   // negative = SI decreasing across windows (fatigue)
       total_windows:     windows.length,
+      si_fatigue_slope:  globalSiSlope,   // SI pts/window via linear regression; negative = fatigue
+      si_trend:          siTrend,         // "fatigue" | "building" | "stable"
+      si_all_values:     allHitSiValues,  // per-hit SI chronological for charting
     };
   })();
 
@@ -1440,15 +1507,20 @@ export default function Session() {
   const [tgtReactMs,  setTgtReactMs]  = useState<number | null>(null);       // reaction time ms
   const [tgtAttempts, setTgtAttempts] = useState(0);                         // total attempts
   const [tgtHits,     setTgtHits]     = useState(0);                         // correct zone hits
-  const [tgtBestMs,   setTgtBestMs]   = useState<number | null>(null);
+  const [tgtBestMs,   setTgtBestMs]   = useState<number | null>(null);       // best RT display (all attempts)
   const [tgtAvgMs,    setTgtAvgMs]    = useState<number | null>(null);
   const tgtPhaseRef    = useRef<string>("idle");
   const tgtZoneRef     = useRef<ZoneTarget | null>(null);
   const tgtSignalAt    = useRef<number | null>(null);
   const tgtTimer       = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tgtSumMs       = useRef(0);
-  const tgtCorrectSumMs = useRef(0);    // reaction time sum for correct-zone hits only
-  const tgtAttemptsRef = useRef(0);
+  const tgtCorrectSumMs  = useRef(0);    // reaction time sum for correct-zone hits only
+  const tgtAttemptsRef   = useRef(0);
+  const tgtHitsRef       = useRef(0);    // mirrors tgtHits state — always current at save time
+  // Best RT refs — tracked separately from state so saveSession always reads
+  // the latest value (setState is async and can be one attempt stale at save time)
+  const tgtBestAllMsRef     = useRef<number | null>(null);   // best RT across all attempts
+  const tgtBestCorrectMsRef = useRef<number | null>(null);   // best RT for correct-zone hits only
 
   // ── Grid / data ──────────────────────────────────────────────────────────────
   const [grid,    setGrid]    = useState<GridState>(new Map());
@@ -1489,7 +1561,7 @@ export default function Session() {
   useEffect(() => { volPhaseRef.current = volPhase; }, [volPhase]);
   useEffect(() => { volAttemptsRef.current = volAttempts; }, [volAttempts]);
   useEffect(() => { tgtPhaseRef.current = tgtPhase; }, [tgtPhase]);
-  useEffect(() => { tgtAttemptsRef.current = tgtAttempts; }, [tgtAttempts]);
+  // tgtAttemptsRef and tgtHitsRef are updated directly in the hit handler — no useEffect sync needed
 
   // ── Target mode sequence ──────────────────────────────────────────────────────
   const scheduleNextTarget = useCallback(() => {
@@ -1761,14 +1833,22 @@ export default function Session() {
         setTgtCorrect(isCorrect);
         setTgtPhase("result");
         tgtPhaseRef.current = "result";
-        setTgtAttempts(a => a + 1);
+        // Increment attempt counters — ref immediately, state for display
+        tgtAttemptsRef.current += 1;
+        setTgtAttempts(tgtAttemptsRef.current);
         tgtSumMs.current += rt;
+        // Track best RT across all attempts (for display) and correct-only (for quality)
+        tgtBestAllMsRef.current = tgtBestAllMsRef.current === null
+          ? rt : Math.min(tgtBestAllMsRef.current, rt);
+        setTgtBestMs(tgtBestAllMsRef.current);
         if (isCorrect) {
-          setTgtHits(h => h + 1);
+          tgtHitsRef.current += 1;
+          setTgtHits(tgtHitsRef.current);
           tgtCorrectSumMs.current += rt;
+          tgtBestCorrectMsRef.current = tgtBestCorrectMsRef.current === null
+            ? rt : Math.min(tgtBestCorrectMsRef.current, rt);
         }
-        setTgtBestMs(prev => prev === null ? rt : Math.min(prev, rt));
-        setTgtAvgMs(Math.round((tgtSumMs.current + rt) / (tgtAttemptsRef.current + 1)));
+        setTgtAvgMs(Math.round(tgtSumMs.current / tgtAttemptsRef.current));
         setTimeout(() => scheduleNextTarget(), 2400);
         // Fall through to display hit on grid
       }
@@ -2192,11 +2272,14 @@ export default function Session() {
       setTgtHits(0);
       setTgtBestMs(null);
       setTgtAvgMs(null);
-      tgtSumMs.current      = 0;
-      tgtCorrectSumMs.current = 0;
-      tgtAttemptsRef.current = 0;
-      tgtZoneRef.current   = null;
-      tgtSignalAt.current  = null;
+      tgtSumMs.current          = 0;
+      tgtCorrectSumMs.current    = 0;
+      tgtAttemptsRef.current     = 0;
+      tgtHitsRef.current         = 0;
+      tgtBestAllMsRef.current    = null;
+      tgtBestCorrectMsRef.current = null;
+      tgtZoneRef.current         = null;
+      tgtSignalAt.current        = null;
       scheduleNextTarget();
     }
   };
@@ -2248,10 +2331,12 @@ export default function Session() {
         accHitsCount: accHitsRef.current,
         accScoreSum:  accSumRef.current,
         // target live stats
+        // All target counters read from refs — never stale at save time
         tgtAttempts:     tgtAttemptsRef.current,
-        tgtCorrectHits:  tgtHits,
+        tgtCorrectHits:  tgtHitsRef.current,
         tgtCorrectSumMs: tgtCorrectSumMs.current,
-        tgtBestMs:       tgtBestMs,
+        tgtBestMs:           tgtBestAllMsRef.current,
+        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
         // physical device identity from hello packet
         deviceId:    deviceInfo?.id,
       });

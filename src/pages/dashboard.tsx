@@ -826,46 +826,57 @@ export default function Dashboard() {
     }
 
     if (mode === "target") {
-      const q          = s.quality;
-      const accPct     = q?.target_accuracy_pct;
-      const attempts   = q?.attempts;
-      const correct    = q?.correct_hits;
-      const bestRt     = q?.best_reaction_ms;
-      const avgRtCorr  = q?.avg_reaction_ms_correct;
-      const rtAllStats = q?.reaction_time_ms_all;
+      const q               = s.quality;
+      const accPct          = q?.target_accuracy_pct;
+      const attempts        = q?.attempts;
+      const correct         = q?.correct_hits;
+      // best_reaction_ms_correct is the meaningful competitive benchmark —
+      // only counts hits that landed in the correct zone.
+      // best_reaction_ms covers all attempts as a fallback.
+      const bestRtCorrect   = q?.best_reaction_ms_correct ?? q?.best_reaction_ms;
+      const avgRtCorrect    = q?.avg_reaction_ms_correct;
+      const avgRtAll        = q?.avg_reaction_ms_all ?? q?.reaction_time_ms_all?.mean;
       return [
         duration,
-        { label: "Accuracy",           value: accPct   != null ? `${Number(accPct).toFixed(1)}%` : "—", accent: true },
+        { label: "Accuracy",           value: accPct != null ? `${Number(accPct).toFixed(1)}%` : "—", accent: true },
         { label: "Correct / Attempts", value: (correct != null && attempts != null) ? `${correct} / ${attempts}` : "—" },
-        { label: "Best Reaction",      value: fmtNum(bestRt, 0, " ms") },
-        { label: "Avg RT (correct)",   value: fmtNum(avgRtCorr, 0, " ms") },
-        { label: "Avg RT (all)",       value: fmtNum(rtAllStats?.mean, 0, " ms") },
+        { label: "Best RT (correct)",  value: fmtNum(bestRtCorrect, 0, " ms") },
+        { label: "Avg RT (correct)",   value: fmtNum(avgRtCorrect,  0, " ms") },
+        { label: "Avg RT (all)",       value: fmtNum(avgRtAll,      0, " ms") },
         location,
         cadence,
       ];
     }
 
     if (mode === "volume") {
-      const q          = s.quality;
-      const windows    = q?.windows ?? [];
-      const bestWin    = q?.best_window_hits;
-      const avgWin     = q?.avg_window_hits;
-      const siSlope    = q?.si_fatigue_slope;
-      const totalWins  = q?.total_windows;
-      const siStats    = q?.strength_index;
-      const slopeTxt   = siSlope != null
-        ? siSlope < -5  ? `${siSlope} / window (fatigue)`
-        : siSlope > 5   ? `+${siSlope} / window (building)`
-        : `${siSlope} / window (stable)`
+      const q         = s.quality;
+      const bestWin   = q?.best_window_hits;
+      const avgWin    = q?.avg_window_hits;
+      const totalWins = q?.total_windows;
+      const siStats   = q?.strength_index;
+      const siSlope   = q?.si_fatigue_slope;   // SI pts/window from linear regression
+      const siTrend   = q?.si_trend as "fatigue" | "building" | "stable" | undefined;
+
+      // Format slope: show sign explicitly, round to 1 dp, label units clearly
+      const slopeTxt = siSlope != null
+        ? `${siSlope > 0 ? "+" : ""}${siSlope} SI / window`
         : "—";
+
+      // Human-readable trend label derived from server-side classification
+      const trendTxt =
+        siTrend === "fatigue"  ? "▼ Fatiguing"  :
+        siTrend === "building" ? "▲ Building"   :
+        siTrend === "stable"   ? "→ Stable"     : "—";
+
       return [
         duration,
-        { label: "Best Window",        value: bestWin  != null ? `${bestWin} hits` : "—", accent: true },
-        { label: "Avg Window",         value: avgWin   != null ? `${Number(avgWin).toFixed(1)} hits` : "—" },
-        { label: "Windows Completed",  value: totalWins != null ? String(totalWins) : "—" },
-        { label: "SI Fatigue Slope",   value: slopeTxt },
-        { label: "Peak Strength",      value: fmtNum(siStats?.max,  0, "") },
-        { label: "Avg Strength",       value: fmtNum(siStats?.mean, 0, "") },
+        { label: "Best Window",       value: bestWin  != null ? `${bestWin} hits` : "—", accent: true },
+        { label: "Avg Window",        value: avgWin   != null ? `${Number(avgWin).toFixed(1)} hits` : "—" },
+        { label: "Windows",           value: totalWins != null ? String(totalWins) : "—" },
+        { label: "SI Trend",          value: trendTxt },
+        { label: "SI Slope",          value: slopeTxt },
+        { label: "Peak Strength",     value: fmtNum(siStats?.max,  0, "") },
+        { label: "Avg Strength",      value: fmtNum(siStats?.mean, 0, "") },
         cadence,
       ];
     }
@@ -2624,13 +2635,13 @@ export default function Dashboard() {
                             className="ts-recentSessionMode"
                             style={(() => {
                               const m = (session.mode ?? "power").toLowerCase();
-                              const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : "#b400ff";
+                              const color = m === "accuracy" ? "#00dcff" : m === "reaction" ? "#ffcc00" : m === "volume" ? "#ff6a00" : m === "target" ? "#00ff88" : "#b400ff";
                               return { background: `${color}14`, border: `1px solid ${color}44`, color };
                             })()}
                           >
                             {(() => {
                               const m = (session.mode ?? "power").toLowerCase();
-                              const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : "💥";
+                              const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : m === "volume" ? "🥊" : m === "target" ? "🏹" : "💥";
                               return `${icon} ${m.charAt(0).toUpperCase() + m.slice(1)}`;
                             })()}
                           </div>
@@ -3300,14 +3311,28 @@ export default function Dashboard() {
                         (eventStatRows[2] as any).__color = correctColor;
                       } else if (mode === "volume") {
                         const evWindow  = ev?.volWindowIdx != null ? `Window ${ev.volWindowIdx + 1}` : "—";
-                        const evHitSeq  = ev?.volHitSeq    != null ? `Hit #${ev.volHitSeq}`          : "—";
+                        const evHitSeq  = ev?.volHitSeq    != null ? `${ev.volHitSeq}`                : "—";
+
+                        // SI vs window average — shows whether this hit is above or below
+                        // the window mean, giving per-hit fatigue context during replay
+                        const winData   = sessionSummary?.quality?.windows as any[] | undefined;
+                        const winEntry  = winData?.find((w: any) => w.window_idx === ev?.volWindowIdx);
+                        const winAvgSi  = winEntry?.avg_si as number | undefined;
+                        const siNum     = ev?.si != null ? Number(ev.si) : null;
+                        const siVsAvg   = siNum != null && winAvgSi != null
+                          ? (() => {
+                              const diff = Math.round(siNum - winAvgSi);
+                              return diff > 0 ? `+${diff} vs avg` : diff < 0 ? `${diff} vs avg` : "= avg";
+                            })()
+                          : "—";
+
                         eventStatRows = [
                           { label: "Strength Index",  value: evSI,      accent: true },
+                          { label: "vs Window Avg",   value: siVsAvg },
                           { label: "Window",          value: evWindow },
                           { label: "Hit #",           value: evHitSeq },
                           { label: "Cells Hit",       value: evCells },
                           { label: "Duration",        value: evDur },
-                          { label: "Rise Time",       value: evRise },
                         ];
                       } else {
                         // power / default
