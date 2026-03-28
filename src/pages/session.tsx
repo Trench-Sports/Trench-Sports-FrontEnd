@@ -96,7 +96,7 @@ function randomZone(): ZoneTarget {
 
 function hitZone(row: number, col: number): ZoneTarget {
   const zRow: ZoneRow = row >= 9 ? "top" : row >= 5 ? "middle" : "bottom";
-  const zCol: ZoneCol = col <= 2 ? "left" : col <= 6 ? "center" : "right";
+  const zCol: ZoneCol = col <= 2 ? "right" : col <= 6 ? "center" : "left";
   return { row: zRow, col: zCol };
 }
 
