@@ -1,6 +1,8 @@
 // src/pages/mobile/dashboard.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import ProfileHeader from "../components/profileHeader.jsx";
+import ProfileHeader from "../../components/profileHeader";
+import type { Profile } from "../../components/profileHeader";
+import { supabase } from "../../supabaseClient";
 
 type Stat = { label: string; value: string; sub?: string };
 type Insight = { title: string; body: string; tag: "Power" | "Accuracy" | "Tempo" | "Recovery" };
@@ -17,16 +19,68 @@ function formatTime(ms: number) {
 }
 
 export default function Dashboard() {
-  // ---------- profile header demo data (swap for real user/profile data) ----------
-  const profile = useMemo(
-    () => ({
-      name: "Jaylen Coleman",
-      title: "Analyst",
-      team: "Trench SPORTS",
-      avatarUrl: "", // put a URL here when available
-    }),
-    []
-  );
+  // ---------- profile header — populated from Supabase ----------
+  const [profile, setProfile] = useState<Profile | null>(null);
+
+  useEffect(() => {
+    if (!supabase) return;
+
+    async function fetchProfile() {
+      const { data: userData } = await supabase!.auth.getUser();
+      const user = userData?.user;
+      if (!user) return;
+
+      // Fetch profile joined with program name
+      const { data, error } = await supabase!
+        .from("profiles")
+        .select("first_name, last_name, role, city, state, program_id, programs(name)")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (error || !data) return;
+
+      const role: string = data.role ?? "";
+      const fullName = [data.first_name, data.last_name].filter(Boolean).join(" ") || "—";
+
+      if (role === "athlete") {
+        // For athletes, attempt to look up height/weight from the athletes table
+        // by matching program_id and name
+        const pid: string | null = (data as any).program_id ?? null;
+        let height: string | null = null;
+        let weight: string | null = null;
+
+        if (pid) {
+          const { data: athleteRow } = await supabase!
+            .from("athletes")
+            .select("height, weight")
+            .eq("program_id", pid)
+            .eq("first_name", data.first_name ?? "")
+            .eq("last_name", data.last_name ?? "")
+            .maybeSingle();
+
+          height = athleteRow?.height ?? null;
+          weight = athleteRow?.weight ?? null;
+        }
+
+        setProfile({
+          name: fullName,
+          role,
+          height,
+          weight,
+        });
+      } else {
+        // Admin / Coach: show name, role, location, program name
+        setProfile({
+          name: fullName,
+          role,
+          location: [data.city, data.state].filter(Boolean).join(", "),
+          program: (data.programs as any)?.name ?? "",
+        });
+      }
+    }
+
+    fetchProfile();
+  }, []);
 
   // ---------- lightweight "demo" state ----------
   const [connected, setConnected] = useState(false);
@@ -165,11 +219,10 @@ export default function Dashboard() {
 
   return (
     <div className="ts-dash">
-      {/* NEW: Profile Header */}
+      {/* Profile Header — real user data, role-based display */}
       <ProfileHeader
         profile={profile}
         onEdit={() => alert("Edit profile (wire this up)")}
-        onShare={() => alert("Share profile (wire this up)")}
       />
 
       <div className="ts-dashTop">

@@ -42,10 +42,16 @@ function getCharUuids() {
 const NUM_ROWS       = 12;
 const NUM_COLS       = 8;
 const FADE_TTL_MS    = 400;
-// Mirrors ESP32 SCAN_PERIOD_MS — used as a duration floor for single-frame events
-// where t_start == t_end (contact resolved and released within one scan cycle).
-const SCAN_PERIOD_MS = 37;
-const VOLUME_WINDOW_MS = 5000;  // 5-second recording window for volume mode
+// SCAN_PERIOD_MS is now per-device — derived from the hello packet and stored in
+// deviceInfoRef so handleNotify always reads the correct value without closure staleness.
+// Model II  @ 80 MHz  → 37 ms (~27 Hz)
+// Model III @ 160 MHz → 8 ms  (~120 Hz)
+// Used as a duration floor for single-frame events where t_start == t_end.
+// The constant below is a safe fallback before a hello has been received.
+const SCAN_PERIOD_MS_DEFAULT = 37;
+const VOLUME_WINDOW_MS  = 5000;   // 5-second recording window for volume mode
+const SESSION_MAX_MS    = 30_000; // hard cap — session auto-stops after 30 s
+const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
@@ -424,8 +430,19 @@ function VolumeOverlay({
 type BleStatus = "idle" | "scanning" | "connected" | "disconnected" | "unsupported";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-// Identity packet sent by ESP32 immediately after BLE connect
-type DeviceInfo = { id: string; fw: string; rows: number; cols: number } | null;
+// Identity packet sent by ESP32 immediately after BLE connect.
+// hw / mode are populated from the hello packet and used to branch
+// between Model II (single-frame) and Model III (batch) data paths.
+type DeviceInfo = {
+  id:           string;
+  fw:           string;
+  hw:           string;        // "II" | "III"
+  rows:         number;
+  cols:         number;
+  mode:         string;        // "batch" (Model III) | "single" (Model II)
+  scanPeriodMs: number;        // 8 ms (Model III @ 120 Hz) | 37 ms (Model II @ 27 Hz)
+  samplingHz:   number;        // 120 (Model III) | 25 (Model II)
+} | null;
 
 type Athlete = {
   id: string;
@@ -635,8 +652,9 @@ async function uploadSession(opts: {
   startedAtMs:  number;
   endedAtMs:    number;
   mode?:        string;
-  deviceModel?: string;
-  samplingHz?:  number;
+  deviceModel?:   string;
+  samplingHz?:    number;
+  scanPeriodMs?:  number;   // duration floor for single-frame events — 8 (Model III) | 37 (Model II)
   // reaction mode live stats
   rxBestMs?:    number | null;
   rxAvgMs?:     number | null;
@@ -658,7 +676,7 @@ async function uploadSession(opts: {
   const {
     sessionId, programId, athleteId, coreTeamId,
     createdBy, frames, startedAtMs, endedAtMs, mode = "power",
-    deviceModel = "TSII", samplingHz = 25,
+    deviceModel = "TSII", samplingHz = 25, scanPeriodMs = SCAN_PERIOD_MS_DEFAULT,
     rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
     accHitsCount = 0, accScoreSum = 0,
     tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null, tgtBestCorrectMs = null,
@@ -734,9 +752,10 @@ async function uploadSession(opts: {
 
     // duration = full contact window from first cell onset to last active scan.
     // Single-frame events (all cells new, t_start == t_end) get a floor of
-    // SCAN_PERIOD_MS — the contact lasted at most one scan cycle.
+    // scanPeriodMs — the contact lasted at most one scan cycle (8 ms on Model III,
+    // 37 ms on Model II).
     const rawDuration = tEnd - tStart;
-    const duration    = rawDuration > 0 ? rawDuration : SCAN_PERIOD_MS;
+    const duration    = rawDuration > 0 ? rawDuration : scanPeriodMs;
 
     // Rise time: from the event onset to when the loudest cell peaked.
     // We use v_peak_mv (index 5) to find the dominant cell, then read
@@ -1355,7 +1374,7 @@ function BlePickerSheet({
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
-  const { unlock: unlockAudio, playSignal, playZoneCue, closeAudio } = useSignalAudio();
+  const { unlock: unlockAudio, playSignal, playVolumeEnd, playZoneCue, closeAudio } = useSignalAudio();
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -1417,9 +1436,13 @@ export default function Session() {
   const [otaProgress, setOtaProgress] = useState(0);        // 0–100
   const [otaError,    setOtaError]    = useState<string | null>(null);
   const [latestFw,    setLatestFw]    = useState<string | null>(null);
+  const [latestFwFile, setLatestFwFile] = useState<string | null>(null); // model-specific path from manifest
 
   const connRef      = useRef<AdapterConnection | null>(null);  // active adapter connection
   const assemblerRef = useRef(new ChunkAssembler());
+  // Mirrors deviceInfo state — readable inside handleNotify without closure staleness.
+  // Updated synchronously in the hello handler before any data frames arrive.
+  const deviceInfoRef = useRef<DeviceInfo>(null);
 
   useEffect(() => {
     if (!isNativeApp()) {
@@ -1432,20 +1455,29 @@ export default function Session() {
   }, []);
 
   // ── Firmware version check — fires each time a device connects ───────────────
-  // Fetches /firmware/manifest.json and compares against the hello packet version.
+  // Fetches /firmware/manifest.json and looks up the entry for this device's hw
+  // model (II / III) so each model can be updated independently.
   // Silent on network failure — OTA is optional, never blocks the session flow.
   useEffect(() => {
     if (!deviceInfo) {
       setOtaState("idle");
       setOtaProgress(0);
       setOtaError(null);
+      setLatestFw(null);
+      setLatestFwFile(null);
       return;
     }
     fetch("/firmware/manifest.json")
       .then(r => r.json())
-      .then((m: { version: string }) => {
-        setLatestFw(m.version);
-        if (fwIsOutdated(deviceInfo.fw, m.version)) {
+      .then((m: { models: Record<string, { version: string; file: string }> }) => {
+        const entry = m.models?.[deviceInfo.hw];
+        if (!entry) {
+          console.warn(`[OTA] no manifest entry for hw="${deviceInfo.hw}"`);
+          return;
+        }
+        setLatestFw(entry.version);
+        setLatestFwFile(`/${entry.file}`);
+        if (fwIsOutdated(deviceInfo.fw, entry.version)) {
           setOtaState("available");
         } else {
           setOtaState("idle");
@@ -1457,13 +1489,15 @@ export default function Session() {
   }, [deviceInfo]);
 
   // ── Session state ────────────────────────────────────────────────────────────
-  const [sessionMode,   setSessionMode]   = useState<SessionMode>("power");
-  const [sessionActive, setSessionActive] = useState(false);
-  const [saveState,     setSaveState]     = useState<SaveState>("idle");
-  const [saveError,     setSaveError]     = useState<string | null>(null);
-  const [elapsedMs,     setElapsedMs]     = useState(0);
-  const startTimeRef  = useRef<number | null>(null);
-  const sessionIdRef  = useRef("");
+  const [sessionMode,    setSessionMode]    = useState<SessionMode>("power");
+  const [sessionActive,  setSessionActive]  = useState(false);
+  const [sessionWarning, setSessionWarning] = useState(false); // true during final 5 s
+  const [saveState,      setSaveState]      = useState<SaveState>("idle");
+  const [saveError,      setSaveError]      = useState<string | null>(null);
+  const [elapsedMs,      setElapsedMs]      = useState(0);
+  const startTimeRef        = useRef<number | null>(null);
+  const sessionIdRef        = useRef("");
+  const sessionWarningFired = useRef(false); // prevents double-firing the 5 s cue
 
   // ── Reaction mode state ───────────────────────────────────────────────────────
   const [rxPhase,   setRxPhase]   = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
@@ -1541,6 +1575,7 @@ export default function Session() {
   const captureRef = useRef(false);
 
       // Stable refs so handleNotify (memoised with []) can read current values
+  const programIdRef    = useRef<string | null>(null);  // stable ref — readable inside handleNotify (memoised [])
   const sessionModeRef  = useRef<SessionMode>("power");
   const rxPhaseRef      = useRef<string>("idle");
   const rxAttemptsRef   = useRef(0);
@@ -1555,6 +1590,7 @@ export default function Session() {
   const pendingVolHitSeqRef    = useRef<number | null>(null);
 
   // Keep refs in sync with state
+  useEffect(() => { programIdRef.current    = programId;    }, [programId]);
   useEffect(() => { sessionModeRef.current = sessionMode; }, [sessionMode]);
   useEffect(() => { rxPhaseRef.current = rxPhase; }, [rxPhase]);
   useEffect(() => { rxAttemptsRef.current = rxAttempts; }, [rxAttempts]);
@@ -1600,6 +1636,9 @@ export default function Session() {
   }, []);
 
     const finishVolumeWindow = useCallback((finalHits: number) => {
+    // Alert the athlete that the 5-second window is over
+    playVolumeEnd();
+
     setVolPhase("result");
     volPhaseRef.current = "result";
     setVolHits(finalHits);
@@ -1623,7 +1662,7 @@ export default function Session() {
     }, 2200);
     
     return () => clearTimeout(endTimer);
-  }, []);
+  }, [playVolumeEnd]);
 
     const scheduleNextVolume = useCallback(() => {
     if (!captureRef.current) return;
@@ -1686,13 +1725,28 @@ export default function Session() {
     return () => clearInterval(id);
   }, []);
 
-  // Timer
+  // Timer — also drives the 30 s hard cap and the 5 s warning cue
   useEffect(() => {
     if (!sessionActive) return;
     const id = setInterval(() => {
-      setElapsedMs(Date.now() - (startTimeRef.current ?? Date.now()));
+      const elapsed = Date.now() - (startTimeRef.current ?? Date.now());
+      setElapsedMs(elapsed);
+
+      // 5-second warning (fires once at 25 s)
+      if (elapsed >= SESSION_WARN_MS && !sessionWarningFired.current) {
+        sessionWarningFired.current = true;
+        setSessionWarning(true);
+        playVolumeEnd(); // descending 3-tone on web, "Stop!" on native
+      }
+
+      // Hard cap — auto-stop at 30 s
+      if (elapsed >= SESSION_MAX_MS) {
+        clearInterval(id);
+        stopSession();
+      }
     }, 250);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionActive]);
 
   // Session cleanup when deactivated
@@ -1719,17 +1773,73 @@ export default function Session() {
 
     // ── Non-data control frames — handled before the hits path ────────────────
     if (obj.type === "hello") {
-      const info: DeviceInfo = { id: obj.id, fw: obj.fw, rows: obj.rows, cols: obj.cols };
+      // Derive per-device timing constants from the hello packet.
+      // Model III sends hw:"III" and mode:"batch"; Model II omits both fields.
+      const isModelIII    = obj.hw === "III";
+      const info: DeviceInfo = {
+        id:           obj.id,
+        fw:           obj.fw,
+        hw:           obj.hw   ?? "II",
+        rows:         obj.rows,
+        cols:         obj.cols,
+        mode:         obj.mode ?? "single",
+        scanPeriodMs: isModelIII ? 8  : 37,
+        samplingHz:   isModelIII ? 120 : 25,
+      };
       setDeviceInfo(info);
-      // Upsert to Supabase devices table so last_seen_at and fw_version stay current
-      if (supabase) {
-        supabase.from("devices").upsert({
-          id:           obj.id,
-          fw_version:   obj.fw,
-          last_seen_at: new Date().toISOString(),
-        }, { onConflict: "id" }).then(({ error }) => {
+      deviceInfoRef.current = info;
+      console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
+      // ── Device claim check ────────────────────────────────────────────────
+      // Three outcomes:
+      //   1. Claimed by a different program → disconnect immediately, show error.
+      //   2. Unclaimed → claim it for this program (sets program_id + claimed_at).
+      //   3. Same program → allow, just update last_seen_at / fw metadata.
+      if (supabase && programIdRef.current) {
+        (async () => {
+          const deviceId    = obj.id as string;
+          const myProgramId = programIdRef.current!;
+
+          const { data: existing } = await supabase!
+            .from("devices")
+            .select("program_id, claimed_at")
+            .eq("id", deviceId)
+            .maybeSingle();
+
+          // ── Blocked: device belongs to a different program ──────────────────
+          if (existing?.program_id && existing.program_id !== myProgramId) {
+            console.warn(`[devices] ${deviceId} is claimed by another program — blocking`);
+            setDeviceInfo(null);
+            deviceInfoRef.current = null;
+            setBleStatus("disconnected");
+            setBleError("This device is registered to a different program and can't be used here.");
+            adapterDisconnect(connRef.current);
+            connRef.current = null;
+            return;
+          }
+
+          // ── Allowed: build upsert payload ───────────────────────────────────
+          const upsertData: Record<string, unknown> = {
+            id:           deviceId,
+            fw_version:   obj.fw,
+            last_seen_at: new Date().toISOString(),
+            hw:           info.hw,
+            mode:         info.mode,
+            // Keep features in sync for dashboards that read features->>'hw'
+            features:     { hw: info.hw, mode: info.mode },
+          };
+
+          // ── Claim: first time this device is seen by any program ─────────────
+          if (!existing?.program_id) {
+            upsertData.program_id = myProgramId;
+            upsertData.claimed_at = new Date().toISOString();
+            console.log(`[devices] claiming ${deviceId} for program ${myProgramId}`);
+          }
+
+          const { error } = await supabase!
+            .from("devices")
+            .upsert(upsertData, { onConflict: "id" });
           if (error) console.warn("[devices] upsert failed:", error.message);
-        });
+        })();
       }
       return;
     }
@@ -1746,12 +1856,19 @@ export default function Session() {
       return;
     }
 
-    // ESP32 now sends 7-element hit arrays: [r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
-    const hits: RichHit[] = obj.hits ?? [];
-    if (!hits.length) return;
+    // ── Normalise both packet shapes into a list of { hits, t } frame objects ──
+    // Model II  sends: { hits: [...], t: number }          → one frame per packet
+    // Model III sends: { type:"batch", frames:[{hits,t}] } → N frames per packet
+    // All per-frame logic below is identical for both hardware generations.
+    const isBatch = obj.type === "batch" && Array.isArray(obj.frames);
+    const rawFrames: Array<{ hits: RichHit[]; t: number }> = isBatch
+      ? (obj.frames as Array<any>).map(f => ({ hits: (f.hits ?? []) as RichHit[], t: (f.t ?? 0) as number }))
+      : [{ hits: (obj.hits ?? []) as RichHit[], t: (obj.t ?? 0) as number }];
+
+    for (const { hits, t: frameT } of rawFrames) {
+      if (!hits.length) continue;
 
     const epochMs = Date.now();
-    const frameT: number = obj.t ?? 0;
 
     // ── Reaction mode: first incoming hit resolves the current phase ──────────
     if (captureRef.current && sessionModeRef.current === "reaction") {
@@ -1763,7 +1880,7 @@ export default function Session() {
         rxPhaseRef.current = "early";
         playSignal("early");
         setTimeout(() => scheduleNextReaction(), 1800);
-        return;
+        continue;
       }
       if (phase === "signal" && rxSignalAt.current !== null) {
         const rt = Math.round(performance.now() - rxSignalAt.current);
@@ -1789,7 +1906,7 @@ export default function Session() {
         setVolPhase("early");
         volPhaseRef.current = "early";
         setTimeout(() => scheduleNextVolume(), 1800);
-        return;
+        continue;
       }
 
       if (phase === "signal" && volWindowEndsAt.current !== null) {
@@ -1815,7 +1932,7 @@ export default function Session() {
         tgtPhaseRef.current = "early";
         playSignal("early");
         setTimeout(() => scheduleNextTarget(), 1800);
-        return;
+        continue;
       }
       if (phase === "signal" && tgtSignalAt.current !== null && tgtZoneRef.current !== null) {
         const rt       = Math.round(performance.now() - tgtSignalAt.current);
@@ -1878,7 +1995,7 @@ export default function Session() {
         t_device_ms:      frameT,
         epoch_ms:         epochMs,
         hits,
-        raw:              obj,
+        raw:              isBatch ? { t: frameT, hits } : obj,
         reaction_time_ms: pendingRxMsRef.current,
         // Target mode — stamped in the target block above when phase === "signal"
         target_zone:      pendingTgtZoneRef.current,
@@ -1924,6 +2041,8 @@ export default function Session() {
     setFeed(prev => [...newItems, ...prev].slice(0, 60));
 
     setPeakMv(prev => Math.max(prev, ...hits.map(h => h[5])));  // h[5] = v_peak_mv
+
+    } // end for (batch dispatcher loop)
   }, []);
 
   // ── BLE connect / disconnect ──────────────────────────────────────────────────
@@ -2082,6 +2201,11 @@ export default function Session() {
     const conn = connRef.current;
     connRef.current = null;
     await adapterDisconnect(conn);
+    // Clear device identity so stale hw/mode/samplingHz can't bleed into
+    // the next connection if a different hardware generation reconnects
+    // before its hello packet arrives.
+    setDeviceInfo(null);
+    deviceInfoRef.current = null;
     setBleStatus("disconnected");
   }, []);
 
@@ -2142,14 +2266,14 @@ export default function Session() {
   // Called by the "Confirm Update" button. Tracks chunk progress 0→95%, then
   // waits for the ota_ok/ota_err notify from the device to reach 100% or error.
   const runOta = useCallback(async () => {
-    if (!latestFw || !connRef.current) return;
+    if (!latestFw || !latestFwFile || !connRef.current) return;
     setOtaState("updating");
     setOtaProgress(0);
     setOtaError(null);
 
     try {
-      // 1. Fetch the firmware file from the public folder
-      const resp = await fetch("/firmware/main.py");
+      // 1. Fetch the model-specific firmware file from the public folder
+      const resp = await fetch(latestFwFile);
       if (!resp.ok) throw new Error(`Could not fetch firmware (${resp.status})`);
       const content = await resp.text();
 
@@ -2229,6 +2353,8 @@ export default function Session() {
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
+    setSessionWarning(false);
+    sessionWarningFired.current = false;
     startTimeRef.current = Date.now();
     captureRef.current   = true;
     setSessionActive(true);
@@ -2297,6 +2423,8 @@ export default function Session() {
     setVolPhase("idle");
     volPhaseRef.current = "idle";
     window.speechSynthesis?.cancel();
+    setSessionWarning(false);
+    sessionWarningFired.current = false;
     setSessionActive(false);
     closeAudio();
     await sendCommand("stop");
@@ -2321,8 +2449,11 @@ export default function Session() {
         startedAtMs: startTimeRef.current ?? Date.now(),
         endedAtMs:   Date.now(),
         mode:        sessionMode,
-        deviceModel: "TSII",
-        samplingHz:  25,
+        // Derive hardware metadata from the hello packet — never hardcoded.
+        // Falls back to Model II defaults when deviceInfo is unavailable.
+        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   deviceInfo?.samplingHz   ?? 25,
+        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
         // reaction live stats
         rxBestMs:    rxBestMs,
         rxAvgMs:     rxAvgMs,
@@ -2346,6 +2477,19 @@ export default function Session() {
       setSaveError(err.message ?? "Unknown error");
       setSaveState("error");
     }
+  };
+
+  // ── Discard session — wipes accumulated frames without saving ─────────────────
+  const discardSession = () => {
+    framesRef.current  = [];
+    frameIndex.current = 0;
+    feedCounter.current = 0;
+    setFeed([]);
+    setGrid(new Map());
+    setPeakMv(0);
+    setElapsedMs(0);
+    setSaveState("idle");
+    setSaveError(null);
   };
 
   // ── Derived stats ─────────────────────────────────────────────────────────────
@@ -2544,6 +2688,16 @@ export default function Session() {
                     {deviceInfo.id}
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
                       v{deviceInfo.fw}
+                    </span>
+                    {/* Hardware generation badge — distinguishes Model II from Model III */}
+                    <span style={{
+                      fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+                      color: deviceInfo.hw === "III" ? "#00ff88" : "#b400ff",
+                      background: deviceInfo.hw === "III" ? "rgba(0,255,136,0.12)" : "rgba(180,0,255,0.12)",
+                      border: `1px solid ${deviceInfo.hw === "III" ? "rgba(0,255,136,0.30)" : "rgba(180,0,255,0.30)"}`,
+                      borderRadius: 4, padding: "1px 5px",
+                    }}>
+                      {deviceInfo.hw === "III" ? "III · 120Hz" : "II · 27Hz"}
                     </span>
                   </div>
                 )}
@@ -2780,6 +2934,18 @@ export default function Session() {
                 position: "absolute", top: 10, right: 10, zIndex: 9,
                 display: "flex", gap: 8,
               }}>
+                {/* 5-second warning banner — shown inside the bag when time is nearly up */}
+                {sessionWarning && (
+                  <div style={{
+                    padding: "5px 12px", borderRadius: 8, fontWeight: 800, fontSize: 11,
+                    background: "rgba(255,80,80,0.22)", border: "1px solid rgba(255,80,80,0.50)",
+                    color: "#ff8080", backdropFilter: "blur(8px)",
+                    animation: "tsBlink 0.7s ease-in-out infinite",
+                    letterSpacing: "0.04em",
+                  }}>
+                    {Math.max(0, Math.ceil((SESSION_MAX_MS - elapsedMs) / 1000))}s left
+                  </div>
+                )}
                 <button
                   onClick={stopSession}
                   style={{
@@ -3068,23 +3234,41 @@ export default function Session() {
               ))}
             </div>
 
-            {/* Save */}
+            {/* Save / Discard — shown after session ends with recorded data */}
             {canSave && (
-              <button
-                onClick={saveSession}
-                disabled={saveState === "saving" || saveState === "saved"}
-                style={{
-                  width: "100%", marginTop: 12, padding: "10px 0",
-                  borderRadius: 10, fontWeight: 700, fontSize: 13,
-                  background: saveBtnStyle[saveState].bg,
-                  border:     `1px solid ${saveBtnStyle[saveState].border}`,
-                  color:      saveBtnStyle[saveState].color,
-                  cursor: saveState === "saving" || saveState === "saved" ? "default" : "pointer",
-                  transition: "all 200ms",
-                }}
-              >
-                {saveBtnStyle[saveState].label}
-              </button>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <button
+                  onClick={saveSession}
+                  disabled={saveState === "saving"}
+                  style={{
+                    flex: 1, padding: "10px 0",
+                    borderRadius: 10, fontWeight: 700, fontSize: 13,
+                    background: saveBtnStyle[saveState].bg,
+                    border:     `1px solid ${saveBtnStyle[saveState].border}`,
+                    color:      saveBtnStyle[saveState].color,
+                    cursor: saveState === "saving" ? "default" : "pointer",
+                    transition: "all 200ms",
+                  }}
+                >
+                  {saveBtnStyle[saveState].label}
+                </button>
+                <button
+                  onClick={discardSession}
+                  disabled={saveState === "saving"}
+                  title="Discard this session — data will not be saved"
+                  style={{
+                    padding: "10px 14px", borderRadius: 10, fontWeight: 700, fontSize: 13,
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    color: "var(--muted)",
+                    cursor: saveState === "saving" ? "default" : "pointer",
+                    transition: "all 200ms",
+                    opacity: saveState === "saving" ? 0.45 : 1,
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
             )}
 
             {saveState === "saved" && !canSave && (

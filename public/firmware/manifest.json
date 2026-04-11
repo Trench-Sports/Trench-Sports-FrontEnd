@@ -1,1 +1,14 @@
-{ "version": "1.1.1", "notes": "BLE Link" }
+{
+  "models": {
+    "II": {
+      "version": "1.1.1",
+      "file":    "firmware/model_II/main.py",
+      "notes":   "BLE Link"
+    },
+    "III": {
+      "version": "1.1.1",
+      "file":    "firmware/model_III/main.py",
+      "notes":   "BLE Link"
+    }
+  }
+}

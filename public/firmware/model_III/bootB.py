@@ -5,11 +5,14 @@
 import machine
 import time
 
-# ── FIX 1: Drop CPU to 80 MHz ───────────────────────────────────────────
-# Default is 240 MHz. 80 MHz cuts peak current draw by ~40%,
-# which is the single biggest software win for LiPo stability.
-# BLE and I2C still work fine at 80 MHz.
-machine.freq(80_000_000)
+# ── CPU frequency ────────────────────────────────────────────────────────
+# Raised from 80 MHz → 160 MHz to support batch scan mode (~120 Hz).
+# At 160 MHz Python loop overhead drops from ~3–4 ms to ~1.5–2 ms per frame,
+# pushing scan rate from ~71 Hz to ~120 Hz.
+# Power draw is higher than 80 MHz but still well below 240 MHz default.
+# If battery life is more critical than scan rate, revert to 80_000_000
+# and set SCAN_PERIOD_MS back to 14 in mainB.py.
+machine.freq(160_000_000)
 
 # ── FIX 2: Disable brown-out detector ───────────────────────────────────
 # The ESP32 resets itself if VIN droops below ~2.43V even momentarily.

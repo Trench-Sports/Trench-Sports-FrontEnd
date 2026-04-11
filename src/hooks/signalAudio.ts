@@ -235,6 +235,38 @@ export function useSignalAudio() {
     }
   }
 
+  // ─── playVolumeEnd ─────────────────────────────────────────────────────────
+  // Signals the end of the 5-second volume window — tells the athlete to stop.
+  //
+  // Native: speaks "Stop!" — clear, imperative, same reliable path as other cues.
+  // Web:    three descending tones (C5 → A4 → F4), a classic "time's up" cadence
+  //         that reads as "done" rather than "go" or "error".
+  function playVolumeEnd(): void {
+    if (platform.isNative) {
+      speakCue("Stop!", 1.2, 0.75);
+      return;
+    }
+
+    const ctx = getContext();
+    if (!ctx) return;
+
+    try {
+      // Three short descending pulses: C5 (523 Hz) → A4 (440 Hz) → F4 (349 Hz)
+      // Sine + square layered for body — distinct from the square-only "go" signals
+      const steps = [
+        { freq: 523, startAt: 0    },
+        { freq: 440, startAt: 0.14 },
+        { freq: 349, startAt: 0.28 },
+      ];
+      steps.forEach(({ freq, startAt }) => {
+        playTone({ ctx, frequency: freq, gain: 0.70, duration: 0.10, type: "square", startAt });
+        playTone({ ctx, frequency: freq, gain: 0.22, duration: 0.10, type: "sine",   startAt });
+      });
+    } catch (e) {
+      console.warn("[signalAudio] playVolumeEnd failed", e);
+    }
+  }
+
   // ─── Zone cue — plays the alert tone then speaks the zone label ──────────────
   function playZoneCue(zone: ZoneTarget): void {
     if (!("speechSynthesis" in window)) return;
@@ -286,5 +318,5 @@ export function useSignalAudio() {
     } catch (_) {}
   }
 
-  return { unlock, playSignal, playZoneCue, closeAudio };
+  return { unlock, playSignal, playVolumeEnd, playZoneCue, closeAudio };
 }

@@ -1,21 +1,31 @@
-# mainA.py — ESP32-WROOM-32D  (MicroPython)
-# Build A hardware: 2× MCP3204-CI/P SPI ADC  (no I²C, no MUX)
+# mainB.py — ESP32-WROOM-32D  (MicroPython)
+# Build B hardware: 1× MCP3208-CI/P SPI ADC  (no I²C, no MUX)
 #
 # Differences from main.py (ADS1015 + 74HC4052 build):
-#   • I²C + ADS1015 A/B replaced by SPI + MCP3204_A (cs GPIO5) + MCP3204_B (cs GPIO4)
-#   • 74HC4052 MUX removed entirely — columns wire directly to ADC channels
-#   • Row GPIOs remapped to free GPIO18/19/23 for VSPI
-#   • Conversion wait eliminated — MCP3204 samples during the SPI clock cycle
-#   • SCAN_PERIOD_MS 37→14, MAX_NOTIFY_HZ 25→50 (see timing note below)
+#   • I²C + ADS1015 A/B replaced by SPI + single MCP3208 (cs GPIO5)
+#   • 74HC4052 MUX removed entirely — all 8 columns wire directly to CH0–CH7
+#   • Row GPIOs remapped to free GPIO18/19/23 for VSPI (same as mainA.py)
+#   • Conversion wait eliminated — MCP3208 samples during the SPI clock cycle
+#   • SCAN_PERIOD_MS 37→14→8, MAX_NOTIFY_HZ 25→50 (see timing note below)
 #   • LSB_V based on VREF=3.3V/4096 counts instead of ADS1015 PGA
-#   • hello packet carries "hw":"MCP3204x2" for app identification
+#   • hello packet carries "hw":"III" for app identification
+#   • GPIO4 is unassigned / spare vs Build A (was CS_ADC_B)
 #
-# MCP3204 pinout used (PDIP-14):
-#   CH0–CH3 → pins 1–4    DGND    → pin 7
-#   VDD     → pin 14      CS/SHDN → pin 8  ← active LOW
-#   VREF    → pin 13      D_IN    → pin 9  ← MOSI
-#   AGND    → pin 12      D_OUT   → pin 10 ← MISO
-#                         CLK     → pin 11
+# Batch mode (v2):
+#   • Scans at ~120 Hz internally (SCAN_PERIOD_MS=8)
+#   • Buffers BATCH_SIZE frames, flushes as one "batch" packet every ~25 ms
+#   • Each frame carries its own ticks_ms() timestamp so the app can
+#     reconstruct exact timing — feedback still feels instantaneous
+#   • First hit in a new batch triggers an immediate flush (FIRST_HIT_FLUSH=True)
+#     so new contacts are never delayed by a partial buffer
+#   • BLE max_len raised to 400 bytes to fit multi-frame payloads in one notify
+#
+# MCP3208 pinout used (PDIP-16):
+#   CH0–CH7 → pins 1–8    DGND    → pin 9
+#   VDD     → pin 16      CS/SHDN → pin 10  ← active LOW
+#   VREF    → pin 15      D_IN    → pin 11  ← MOSI
+#   AGND    → pin 14      D_OUT   → pin 12  ← MISO
+#                         CLK     → pin 13
 #
 # Flash this file to the ESP32 as main.py
 
@@ -81,55 +91,58 @@ except Exception:
 DEVICE_NAME = _DEVICE_ID
 
 # ─────────────────────────────────────────
-# Hardware — Build A pin mapping
+# Hardware — Build B pin mapping
 # ─────────────────────────────────────────
-# SPI (VSPI defaults — freed from row use)
+# SPI (VSPI defaults)
 SPI_ID       = 2           # VSPI peripheral
-SPI_CLK_HZ   = 1_000_000  # 1 MHz — safe at 3.3V; datasheet max ~1.8 MHz
+SPI_CLK_HZ   = 1_800_000  # ↑ 1 MHz → 1.8 MHz — MCP3208 datasheet max at 3.3V
+                           #   cuts on-wire time 24 µs → ~13 µs per read (~1 ms/frame gain)
 SPI_CLK_PIN  = 18          # GPIO18 VSPI SCK
-SPI_MISO_PIN = 19          # GPIO19 VSPI MISO  ← MCP3204 D_OUT
-SPI_MOSI_PIN = 23          # GPIO23 VSPI MOSI  → MCP3204 D_IN
-CS_A_PIN     = 5           # GPIO5  → MCP3204_A CS/SHDN  (C1–C4)  ← boot pull-up ✓
-CS_B_PIN     = 4           # GPIO4  → MCP3204_B CS/SHDN  (C5–C8)
+SPI_MISO_PIN = 19          # GPIO19 VSPI MISO  ← MCP3208 D_OUT
+SPI_MOSI_PIN = 23          # GPIO23 VSPI MOSI  → MCP3208 D_IN
+CS_PIN       = 5           # GPIO5  → MCP3208 CS/SHDN  ← boot pull-up ✓ (CS idle HIGH)
+# GPIO4 is spare/unassigned in Build B
 
-# Row drive GPIOs (R1–R12) — remapped vs main.py to free VSPI pins
+# Row drive GPIOs (R1–R12) — same remapping as Build A
 ROW_PINS = [25, 26, 27, 32, 33, 13, 14, 12, 15, 21, 22, 2]
 #            R1  R2  R3  R4  R5  R6  R7  R8  R9 R10 R11 R12
 # ⚠ GPIO12/R8, GPIO15/R9, GPIO2/R12 are ESP32 boot-strap pins.
 #   The 10 kΩ row pulldowns keep them LOW at boot — safe.
 #   If GPIO2 causes boot issues, increase that pulldown to 47 kΩ.
 
-# Column assignments (ADC channel index → column number 1-8)
-COL_A = (1, 2, 3, 4)   # MCP3204_A CH0–CH3
-COL_B = (5, 6, 7, 8)   # MCP3204_B CH0–CH3
+# Column map: MCP3208 channel index → column number 1-8
+# CH0→C1, CH1→C2, … CH7→C8  (direct 1-to-1 after +1 offset)
+COLS = (1, 2, 3, 4, 5, 6, 7, 8)
 
 # ─────────────────────────────────────────────────────────────────────────
-# TIMING NOTE — Build A vs original ADS1015 build
+# TIMING NOTE — Build B v2 (batch mode)
 # ─────────────────────────────────────────────────────────────────────────
-# Original (I²C ADS1015 + 74HC4052):
-#   12 rows × 4 MUX pos × (310 µs ADC conv + ~90 µs I²C×2 + 8 µs MUX settle)
-#   = 48 reads × ~408 µs ≈ 19.6 ms busy + 4 ms FreeRTOS yields → ~37 ms/frame (27 Hz)
+# CPU is now 160 MHz (set in boot.py). At 160 MHz Python overhead drops
+# from ~3–4 ms to ~1.5–2 ms per frame, pushing scan rate to ~120 Hz.
 #
-# Build A (SPI MCP3204, no MUX):
-#   MCP3204 samples during the SPI clock — no separate conversion wait.
-#   Per SPI read: 24 bits @ 1 MHz = 24 µs on-wire + ~40 µs MicroPython overhead ≈ 64 µs
-#   12 rows × 8 reads × 64 µs ≈ 6.1 ms busy
+# Per SPI read at 1.8 MHz: ~13 µs on-wire + ~20 µs MicroPython overhead ≈ 33 µs
+#   12 rows × 8 reads × 33 µs ≈ 3.2 ms busy
 #   + 5 µs row settle × 12 = 0.06 ms
-#   + 4 × 1 ms FreeRTOS yields = 4 ms
-#   ≈ 10.2 ms → theoretical ceiling ~98 Hz
-#   With Python loop overhead (~3–4 ms): ~14 ms/frame → ~71 Hz realistically
+#   + 4 × 500 µs FreeRTOS yields = 2 ms   (reduced from 1 ms sleeps)
+#   + Python loop overhead ~1.5 ms
+#   ≈ 6.8 ms → ~120–125 Hz scan rate
 #
-# SCAN_PERIOD_MS = 14 targets this ceiling.
-# MAX_NOTIFY_HZ  = 50 — BLE connection interval (~15 ms min on most phones) is
-#   the practical bottleneck; 50 Hz is a safe ceiling for the notify gate.
+# Batch strategy:
+#   SCAN_PERIOD_MS = 8   → scan every 8 ms (~120 Hz)
+#   BATCH_SIZE     = 3   → flush every 3 frames (~24 ms, ~40 Hz BLE rate)
+#   FIRST_HIT_FLUSH      → if buffer has ≥1 frame and a new contact appears,
+#                          flush immediately — keeps first-touch latency ≤8 ms
 #
-# To squeeze more speed: raise SPI_CLK_HZ to 1_800_000 and/or raise CPU
-#   to 160 MHz in boot.py (machine.freq(160_000_000)).
+# App receives "batch" packets with timestamps per frame.
+# For single-frame packets (first-hit flush), type is still "batch" with
+# frames=[...] so the app parser stays uniform.
 # ─────────────────────────────────────────────────────────────────────────
 
 HIT_THRESHOLD_V  = 0.10   # transmit hits >= this voltage
-SCAN_PERIOD_MS   = 14     # ~71 Hz — see timing note above
-MAX_NOTIFY_HZ    = 50     # BLE notify gate; real cap is ~30–40 Hz on most phones
+SCAN_PERIOD_MS   = 8      # ~120 Hz internal scan rate (was 14)
+MAX_NOTIFY_HZ    = 40     # BLE notify gate — reliable ceiling on most phones
+BATCH_SIZE       = 3      # frames to buffer before flushing (~24 ms window)
+FIRST_HIT_FLUSH  = True   # flush immediately when a NEW cell contact appears
 
 ADV_INTERVAL_US  = 200_000
 ADV_WATCHDOG_MS  = 2_000
@@ -137,7 +150,7 @@ ADV_WATCHDOG_MS  = 2_000
 ROW_SETTLE_US    = 5      # µs after asserting a row GPIO before sampling
 
 # ─────────────────────────────────────────
-# MCP3204 ADC constants
+# MCP3208 ADC constants
 # ─────────────────────────────────────────
 VREF_V     = 3.3
 ADC_COUNTS = const(4096)         # 12-bit, 2^12
@@ -354,7 +367,7 @@ class BLEUARTStreamer:
             _irq_enqueue(raw)
 
 # ─────────────────────────────────────────
-# Hardware init — SPI + CS pins + rows
+# Hardware init — SPI + CS pin + rows
 # ─────────────────────────────────────────
 spi = SPI(
     SPI_ID,
@@ -366,37 +379,35 @@ spi = SPI(
     miso      = Pin(SPI_MISO_PIN),
 )
 
-# CS pins — idle HIGH (chip deselected)
-cs_a = Pin(CS_A_PIN, Pin.OUT, value=1)   # MCP3204_A  (C1–C4)
-cs_b = Pin(CS_B_PIN, Pin.OUT, value=1)   # MCP3204_B  (C5–C8)
+# Single CS pin — idle HIGH (chip deselected)
+cs = Pin(CS_PIN, Pin.OUT, value=1)   # MCP3208  (C1–C8)
 
 rows = [Pin(p, Pin.OUT) for p in ROW_PINS]
 for r in rows:
     r.value(0)
 
 # ─────────────────────────────────────────
-# MCP3204 SPI read helpers
+# MCP3208 SPI read helper
 # ─────────────────────────────────────────
-# Pre-allocated transfer buffers — avoids per-call heap allocation in the scan loop.
-# Both chips share the same buffers (transactions are serialised by design).
+# Pre-allocated transfer buffers — avoids per-call heap allocation in scan loop.
 _CMD = bytearray(3)
 _RSP = bytearray(3)
 
-def mcp3204_read(cs, channel):
+def mcp3208_read(channel):
     """
-    Read one MCP3204 channel in single-ended mode.
+    Read one MCP3208 channel in single-ended mode.
 
-    channel : 0–3
+    channel : 0–7
     returns : 12-bit count (0–4095)
 
     SPI frame (3 bytes, MSB first, Mode 0):
-      TX byte 0: 0b00000 1 1 D1   (leading zeros, start=1, SGL=1, D1=ch bit1)
-      TX byte 1: D0 << 7           (D0=ch bit0, rest zeros)
+      TX byte 0: 0b00000 1 1 D2   (leading zeros, start=1, SGL=1, D2=ch bit2)
+      TX byte 1: D1 D0 << 6       (D1=ch bit1, D0=ch bit0 in top 2 bits, rest zeros)
       TX byte 2: 0x00              (clock in the result)
     12-bit result: (RSP[1] & 0x0F) << 8 | RSP[2]
     """
-    _CMD[0] = 0x04 | (channel >> 1)
-    _CMD[1] = (channel & 0x01) << 7
+    _CMD[0] = 0x06 | (channel >> 2)
+    _CMD[1] = (channel & 0x03) << 6
     _CMD[2] = 0x00
     cs.value(0)
     spi.write_readinto(_CMD, _RSP)
@@ -408,12 +419,13 @@ def mcp3204_read(cs, channel):
 # ─────────────────────────────────────────
 def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
     """
-    Scan all 12×8 contacts via SPI.  No MUX switching — columns are wired
-    directly to ADC channels.  Returns list of [row, col, mv_int] hits.
+    Scan all 12×8 contacts via SPI.  No MUX switching — all 8 columns are
+    wired directly to MCP3208 CH0–CH7.  Returns list of [row, col, mv_int].
 
-    Yield strategy: sleep_ms(1) every 3 rows (same as main.py).
-      4 yields × 1 ms = ~4 ms FreeRTOS overhead
-      3 rows of busy-wait ≈ 3 × 0.57 ms ≈ 1.7 ms — far below 5 s TWDT
+    Yield strategy: sleep_us(500) every 3 rows.
+      Reduced from sleep_ms(1) — at 160 MHz the TWDT budget is comfortable
+      and shorter yields recover ~2 ms per frame vs the original 4 ms.
+      4 yields × 500 µs = 2 ms FreeRTOS overhead (was 4 ms).
     """
     hits      = []
     threshold = int(threshold_v / LSB_V)   # counts threshold (pre-divide once)
@@ -428,23 +440,17 @@ def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
         if ROW_SETTLE_US:
             time.sleep_us(ROW_SETTLE_US)
 
-        # ── MCP3204_A — columns C1–C4 (CH0–CH3) ──────────────────────────
-        for ch in range(4):
-            counts = mcp3204_read(cs_a, ch)
+        # ── MCP3208 — all columns C1–C8 (CH0–CH7) ────────────────────────
+        for ch in range(8):
+            counts = mcp3208_read(ch)
             if counts >= threshold:
-                hits.append([r_idx + 1, COL_A[ch], int(counts * LSB_V * 1000)])
+                hits.append([r_idx + 1, COLS[ch], int(counts * LSB_V * 1000)])
 
-        # ── MCP3204_B — columns C5–C8 (CH0–CH3) ──────────────────────────
-        for ch in range(4):
-            counts = mcp3204_read(cs_b, ch)
-            if counts >= threshold:
-                hits.append([r_idx + 1, COL_B[ch], int(counts * LSB_V * 1000)])
-
-        # Yield to FreeRTOS every 3 rows
+        # Yield to FreeRTOS every 3 rows — shortened to 500 µs
         if r_idx % 3 == 2:
-            time.sleep_ms(1)
+            time.sleep_us(500)
 
-    time.sleep_ms(1)   # final yield covers rows 10–12
+    time.sleep_us(500)   # final yield covers rows 10–12
 
     if prev is not None:
         prev.value(0)
@@ -452,7 +458,7 @@ def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
     return hits
 
 # ─────────────────────────────────────────
-# Cell state tracker (unchanged from main.py)
+# Cell state tracker
 # ─────────────────────────────────────────
 _cell_state = {}
 
@@ -510,9 +516,14 @@ def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
     return enriched
 
 # ─────────────────────────────────────────
-# JSON sender (unchanged from main.py)
+# JSON sender — max_len raised to 400 bytes
 # ─────────────────────────────────────────
-def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=180):
+def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=400):
+    """
+    Serialise obj to JSON and notify.  max_len raised from 180→400 to fit
+    a 3-frame batch in a single BLE packet (negotiated MTU is 512).
+    Falls back to chunk headers (C01/02:...) for larger payloads.
+    """
     s = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     if len(s) <= max_len:
         uart.notify(s)
@@ -526,17 +537,46 @@ def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=180):
         time.sleep_ms(5)
 
 # ─────────────────────────────────────────
+# Batch flush helper
+# ─────────────────────────────────────────
+def _flush_batch(uart, frame_buffer):
+    """
+    Send buffered frames as a single "batch" packet and clear the buffer.
+
+    Packet shape (app side reads frames[] array):
+      {
+        "type":   "batch",
+        "frames": [
+          {"t": <ticks_ms>, "hits": [[r,c,mv,t_first,t_peak,v_peak,is_new], ...]},
+          ...
+        ]
+      }
+
+    Single-frame flushes (first-hit-flush) use the same shape so the
+    app parser stays uniform — just frames[] with one entry.
+    """
+    notify_json_chunked(uart, {
+        "type":   "batch",
+        "frames": frame_buffer,
+    })
+    frame_buffer.clear()
+
+# ─────────────────────────────────────────
 # Main loop
 # ─────────────────────────────────────────
 def run():
     global _ota_apply
-    print("=== BLE Matrix ESP32 — Build A (MCP3204×2) ===")
+    print("=== BLE Matrix ESP32 — Build B (MCP3208×1, batch mode) ===")
     ble = BLEUARTStreamer(name=DEVICE_NAME)
 
     last_scan      = time.ticks_ms()
     last_notify    = time.ticks_ms()
     last_adv_wdog  = time.ticks_ms()
-    notify_min_interval = int(1000 / MAX_NOTIFY_HZ)
+    notify_min_ms  = int(1000 / MAX_NOTIFY_HZ)  # minimum ms between BLE notifies
+
+    # Frame buffer — accumulates scanned frames between BLE flushes.
+    # Each entry: {"t": ticks_ms, "hits": [...]}
+    _frame_buf = []
 
     while True:
         now = time.ticks_ms()
@@ -575,11 +615,7 @@ def run():
             except Exception as e:
                 notify_json_chunked(ble, {"type": "ota_err", "msg": str(e)})
 
-        # FIX: hello is sent unconditionally on connect, BEFORE checking
-        # _scanning_enabled. The app waits for hello before sending "start";
-        # if hello were gated by _scanning_enabled, "start" would never arrive
-        # and scanning would never begin (deadlock). Moving hello before the
-        # scanning gate breaks the deadlock — matches the fix in main.py.
+        # hello must be sent before the scanning gate — see comment in v1
         if ble._pending_hello:
             ble._pending_hello = False
             notify_json_chunked(ble, {
@@ -588,30 +624,47 @@ def run():
                 "id":   _DEVICE_ID,
                 "name": _DEVICE_NAME,
                 "fw":   _FW_VERSION,
-                "hw":   "MCP3204x2",    # Build A identifier
+                "hw":   "III",
                 "rows": 12,
                 "cols": 8,
+                # Advertise batch mode so app can choose parser
+                "mode": "batch",
+                "batch_size": BATCH_SIZE,
             })
             time.sleep_ms(20)
             continue
 
         if not _scanning_enabled:
             cell_state_reset()
+            _frame_buf.clear()
             time.sleep_ms(20)
             continue
 
+        # ── Scan ──────────────────────────────────────────────────────────
         if time.ticks_diff(now, last_scan) >= SCAN_PERIOD_MS:
             last_scan = now
             hits = scan_frame_tracked(HIT_THRESHOLD_V)
 
-            if hits and time.ticks_diff(now, last_notify) >= notify_min_interval:
-                last_notify = now
-                notify_json_chunked(ble, {
-                    "t":    now,
-                    "n":    len(hits),
-                    "hits": hits,
-                })
+            if hits:
+                _frame_buf.append({"t": now, "hits": hits})
 
-        time.sleep_ms(2)
+                # FIRST_HIT_FLUSH: if any hit in this frame is brand-new
+                # (is_new==1) and the BLE notify gate allows it, flush
+                # immediately — keeps first-touch latency to one scan period.
+                has_new = FIRST_HIT_FLUSH and any(h[6] == 1 for h in hits)
+                can_notify = time.ticks_diff(now, last_notify) >= notify_min_ms
+
+                if can_notify and (has_new or len(_frame_buf) >= BATCH_SIZE):
+                    last_notify = now
+                    _flush_batch(ble, _frame_buf)
+
+            else:
+                # No hits this frame — if there are buffered frames waiting,
+                # flush them now so the app knows contacts have been released.
+                if _frame_buf and time.ticks_diff(now, last_notify) >= notify_min_ms:
+                    last_notify = now
+                    _flush_batch(ble, _frame_buf)
+
+        time.sleep_ms(1)
 
 run()

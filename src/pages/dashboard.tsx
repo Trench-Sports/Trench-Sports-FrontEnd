@@ -86,7 +86,7 @@ function clamp(n: number, a: number, b: number) {
 
 
 type TabKey = "recent" | "insights" | "athletes";
-type MetricKey = "strength" | "reaction" | "accuracy" | "form";
+type MetricKey = "strength" | "reaction" | "accuracy" | "form" | "volume" | "target";
 
 type LeaderRow =
   | {
@@ -222,7 +222,7 @@ export default function Dashboard() {
   type AthleteProgress = {
     trend:   "up" | "stable" | "down";
     delta:   number;
-    metric:  "strength" | "accuracy" | "reaction";
+    metric:  "strength" | "accuracy" | "reaction" | "targetAccuracy" | "targetReaction";
     unit:    string;
     sessions: number;
   };
@@ -256,7 +256,7 @@ export default function Dashboard() {
         if (!data) return;
 
         // Group by athlete → mode → vals[]
-        type ModeVals = { strength: number[]; accuracy: number[]; reaction: number[] };
+        type ModeVals = { strength: number[]; accuracy: number[]; reaction: number[]; targetAccuracy: number[]; targetReaction: number[] };
         const byAthlete = new Map<string, ModeVals>();
 
         for (const row of data as any[]) {
@@ -264,7 +264,7 @@ export default function Dashboard() {
           const mode = (row.mode ?? "power").toLowerCase();
           if (!id) continue;
 
-          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [] });
+          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [], targetAccuracy: [], targetReaction: [] });
           const entry = byAthlete.get(id)!;
 
           if (mode === "power") {
@@ -282,6 +282,12 @@ export default function Dashboard() {
           } else if (mode === "reaction") {
             const rt = row.quality?.avg_reaction_ms ?? null;
             if (rt != null) entry.reaction.push(Math.round(rt));
+          } else if (mode === "target") {
+            const pct = row.quality?.target_accuracy_pct ?? null;
+            if (pct != null) entry.targetAccuracy.push(Math.round(Number(pct) * 10) / 10);
+            // avg_reaction_ms_correct is the meaningful benchmark; fall back to all-attempts avg
+            const rt = row.quality?.avg_reaction_ms_correct ?? row.quality?.avg_reaction_ms_all ?? null;
+            if (rt != null) entry.targetReaction.push(Math.round(rt));
           }
         }
 
@@ -290,10 +296,12 @@ export default function Dashboard() {
 
         for (const [athleteId, modes] of byAthlete) {
           // Pick the metric with the most sessions that has ≥4 data points
-          const candidates: { metric: "strength" | "accuracy" | "reaction"; vals: number[]; unit: string; lowerIsBetter: boolean }[] = [
-            { metric: "strength", vals: modes.strength, unit: "pts", lowerIsBetter: false },
-            { metric: "accuracy", vals: modes.accuracy, unit: "%",   lowerIsBetter: false },
-            { metric: "reaction", vals: modes.reaction, unit: "ms",  lowerIsBetter: true  },
+          const candidates: { metric: "strength" | "accuracy" | "reaction" | "targetAccuracy" | "targetReaction"; vals: number[]; unit: string; lowerIsBetter: boolean }[] = [
+            { metric: "strength",       vals: modes.strength,       unit: "pts", lowerIsBetter: false },
+            { metric: "accuracy",       vals: modes.accuracy,       unit: "%",   lowerIsBetter: false },
+            { metric: "reaction",       vals: modes.reaction,       unit: "ms",  lowerIsBetter: true  },
+            { metric: "targetAccuracy", vals: modes.targetAccuracy, unit: "%",   lowerIsBetter: false },
+            { metric: "targetReaction", vals: modes.targetReaction, unit: "ms",  lowerIsBetter: true  },
           ].filter(c => c.vals.length >= 4).sort((a, b) => b.vals.length - a.vals.length);
 
           if (candidates.length === 0) continue;
@@ -987,263 +995,247 @@ export default function Dashboard() {
 
   const [leaderMetric, setLeaderMetric] = useState<MetricKey>("strength");
   const [strengthRows, setStrengthRows] = useState<Extract<LeaderRow, { metric: "strength" }>[]>([]);
-  const [strengthLoading, setStrengthLoading] = useState(false);
+  const [reactionRows, setReactionRows] = useState<Extract<LeaderRow, { metric: "reaction" }>[]>([]);
+  const [accuracyRows, setAccuracyRows] = useState<Extract<LeaderRow, { metric: "accuracy" }>[]>([]);
 
+  // ---------- Volume leaderboard (insights only) ----------
+  type VolumeInsightRow = {
+    athleteId: string;
+    name: string;
+    avgWindowHits: number;
+    bestWindowHits: number;
+    avgSiFatigueSlope: number | null;
+    avgSi: number | null;
+    sessions: number;
+    numEvents: number;
+  };
+  const [volumeInsightRows, setVolumeInsightRows] = useState<VolumeInsightRow[]>([]);
+
+  // ---------- Target leaderboard (insights only) ----------
+  type TargetInsightRow = {
+    athleteId: string;
+    name: string;
+    avgAccuracyPct: number;
+    avgReactionMsCorrect: number | null;
+    attempts: number;
+    sessions: number;
+  };
+  const [targetInsightRows, setTargetInsightRows] = useState<TargetInsightRow[]>([]);
+
+  // Single loading flag covering all five leaderboard queries
+  const [strengthLoading, setStrengthLoading] = useState(false);
+  const reactionLoading  = strengthLoading;
+  const accuracyLoading  = strengthLoading;
+
+  // ---------- Leaderboard — all five modes in one Promise.all ----------
   useEffect(() => {
     if (!programId || !userRole || !supabase) return;
-    // Same guard as recent sessions — coaches must have coreTeamId resolved first
     if (userRole === "coach" && coreTeamId === null) return;
 
     setStrengthLoading(true);
     setStrengthRows([]);
+    setReactionRows([]);
+    setAccuracyRows([]);
+    setVolumeInsightRows([]);
+    setTargetInsightRows([]);
+
+    // Build all five queries with their filters applied
+    let qStrength = supabase!
+      .from("session_summaries")
+      .select("athlete_id, quality, peak_force_stats, num_events, athletes(first_name, last_name)")
+      .eq("program_id", programId)
+      .eq("mode", "power")
+      .not("peak_force_stats", "is", null);
+    if (userRole === "coach" && coreTeamId) qStrength = qStrength.eq("core_team_id", coreTeamId);
+    if (leaderCutoff) qStrength = qStrength.gte("date_of_record", leaderCutoff);
+
+    let qReaction = supabase!
+      .from("session_summaries")
+      .select("athlete_id, num_events, quality, athletes(first_name, last_name)")
+      .eq("program_id", programId)
+      .eq("mode", "reaction");
+    if (userRole === "coach" && coreTeamId) qReaction = qReaction.eq("core_team_id", coreTeamId);
+    if (leaderCutoff) qReaction = qReaction.gte("date_of_record", leaderCutoff);
+
+    let qAccuracy = supabase!
+      .from("session_summaries")
+      .select("athlete_id, quality, peak_force_stats, num_events, iei_ms, athletes(first_name, last_name)")
+      .eq("program_id", programId)
+      .eq("mode", "accuracy");
+    if (userRole === "coach" && coreTeamId) qAccuracy = qAccuracy.eq("core_team_id", coreTeamId);
+    if (leaderCutoff) qAccuracy = qAccuracy.gte("date_of_record", leaderCutoff);
+
+    let qVolume = supabase!
+      .from("session_summaries")
+      .select("athlete_id, quality, num_events, athletes(first_name, last_name)")
+      .eq("program_id", programId)
+      .eq("mode", "volume");
+    if (userRole === "coach" && coreTeamId) qVolume = qVolume.eq("core_team_id", coreTeamId);
+    if (leaderCutoff) qVolume = qVolume.gte("date_of_record", leaderCutoff);
+
+    let qTarget = supabase!
+      .from("session_summaries")
+      .select("athlete_id, quality, athletes(first_name, last_name)")
+      .eq("program_id", programId)
+      .eq("mode", "target");
+    if (userRole === "coach" && coreTeamId) qTarget = qTarget.eq("core_team_id", coreTeamId);
+    if (leaderCutoff) qTarget = qTarget.gte("date_of_record", leaderCutoff);
 
     (async () => {
       try {
-        // Fetch standard sessions with athlete names joined — scoped by role
-        let query = supabase!
-          .from("session_summaries")
-          .select("athlete_id, quality, peak_force_stats, num_events, athletes(first_name, last_name)")
-          .eq("program_id", programId)
-          .eq("mode", "power")
-          .not("peak_force_stats", "is", null);
+        const [strengthRes, reactionRes, accuracyRes, volumeRes, targetRes] = await Promise.all([
+          qStrength,
+          qReaction,
+          qAccuracy,
+          qVolume,
+          qTarget,
+        ]);
 
-        if (userRole === "coach" && coreTeamId) {
-          query = query.eq("core_team_id", coreTeamId);
+        // ── Strength ────────────────────────────────────────────────────────────
+        if (!strengthRes.error && strengthRes.data) {
+          type Agg = { name: string; peakIndex: number; avgSum: number; avgCount: number; sessions: number };
+          const aggMap = new Map<string, Agg>();
+          for (const row of strengthRes.data as any[]) {
+            const athleteId = row.athlete_id;
+            if (!athleteId) continue;
+            const si = row.quality?.strength_index;
+            let siMax: number | null = null;
+            let siMean: number | null = null;
+            if (si && typeof si.max === "number" && typeof si.mean === "number") {
+              siMax = si.max; siMean = si.mean;
+            } else {
+              const pfs = row.peak_force_stats;
+              const peakMv = pfs?.peak_mv ?? (pfs?.peak_v != null ? (pfs.peak_mv ?? pfs.peak_v * 1000) : null);
+              const avgMv  = pfs?.avg_mv  ?? (pfs?.avg_v  != null ? (pfs.avg_mv  ?? pfs.avg_v  * 1000) : null);
+              if (peakMv != null && avgMv != null) {
+                siMax  = Math.round((peakMv / 3320) * 1000);
+                siMean = Math.round((avgMv  / 3320) * 1000);
+              }
+            }
+            if (siMax == null || siMean == null) continue;
+            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const ex = aggMap.get(athleteId);
+            if (ex) { ex.peakIndex = Math.max(ex.peakIndex, siMax); ex.avgSum += siMean; ex.avgCount++; ex.sessions++; }
+            else aggMap.set(athleteId, { name, peakIndex: siMax, avgSum: siMean, avgCount: 1, sessions: 1 });
+          }
+          const sRows: Extract<LeaderRow, { metric: "strength" }>[] = [];
+          for (const [athleteId, agg] of aggMap.entries()) {
+            sRows.push({ metric: "strength", athleteId, name: agg.name, peakIndex: Math.round(agg.peakIndex), avgIndex: Math.round(agg.avgSum / agg.avgCount), sessions: agg.sessions });
+          }
+          sRows.sort((a, b) => b.peakIndex - a.peakIndex);
+          setStrengthRows(sRows.slice(0, 5));
         }
-        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
-        const { data, error } = await query;
-        if (error || !data) return;
+        // ── Reaction ────────────────────────────────────────────────────────────
+        if (!reactionRes.error && reactionRes.data) {
+          type RAgg = { name: string; bestMs: number; sumAvgMs: number; count: number; attempts: number };
+          const aggMap = new Map<string, RAgg>();
+          for (const row of reactionRes.data as any[]) {
+            const athleteId = row.athlete_id;
+            if (!athleteId) continue;
+            const q = row.quality;
+            const avgMs = q?.avg_reaction_ms ?? null;
+            const minMs = q?.best_reaction_ms ?? null;
+            if (avgMs == null) continue;
+            const resolvedMin = minMs ?? avgMs;
+            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const ex = aggMap.get(athleteId);
+            if (ex) { ex.bestMs = Math.min(ex.bestMs, resolvedMin); ex.sumAvgMs += avgMs; ex.count++; ex.attempts += row.num_events ?? 0; }
+            else aggMap.set(athleteId, { name, bestMs: resolvedMin, sumAvgMs: avgMs, count: 1, attempts: row.num_events ?? 0 });
+          }
+          const rRows: Extract<LeaderRow, { metric: "reaction" }>[] = [];
+          for (const [athleteId, agg] of aggMap.entries()) {
+            rRows.push({ metric: "reaction", athleteId, name: agg.name, avgReactionMs: Math.round(agg.sumAvgMs / agg.count), bestReactionMs: Math.round(agg.bestMs), attempts: agg.attempts });
+          }
+          rRows.sort((a, b) => a.avgReactionMs - b.avgReactionMs);
+          setReactionRows(rRows.slice(0, 5));
+        }
 
-        // Aggregate per athlete across all their sessions.
-        // Prefer quality.strength_index if populated; fall back to peak_force_stats (avg_mv / peak_mv).
-        type Agg = {
-          name: string;
-          peakIndex: number;
-          avgSum: number;
-          avgCount: number;
-          sessions: number;
-        };
-        const aggMap = new Map<string, Agg>();
+        // ── Accuracy ────────────────────────────────────────────────────────────
+        if (!accuracyRes.error && accuracyRes.data) {
+          type AAgg = { name: string; sumPct: number; sumOffset: number; offsetCount: number; sessions: number };
+          const aggMap = new Map<string, AAgg>();
+          for (const row of accuracyRes.data as any[]) {
+            const athleteId = row.athlete_id;
+            if (!athleteId) continue;
+            let pct = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
+            const offset = row.quality?.avg_offset_mm ?? row.quality?.avg_offset_cm ?? row.quality?.avg_offset_cells ?? null;
+            if (pct == null) {
+              const avgMv = row.peak_force_stats?.avg_mv ?? (row.peak_force_stats?.avg_v != null ? row.peak_force_stats.avg_v * 1000 : null);
+              if (avgMv == null) continue;
+              pct = Math.min(100, Math.round((avgMv / 3320) * 100 * 10) / 10);
+            }
+            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const ex = aggMap.get(athleteId);
+            if (ex) { ex.sumPct += Number(pct); ex.sessions++; if (offset != null) { ex.sumOffset += Number(offset); ex.offsetCount++; } }
+            else aggMap.set(athleteId, { name, sumPct: Number(pct), sumOffset: offset != null ? Number(offset) : 0, offsetCount: offset != null ? 1 : 0, sessions: 1 });
+          }
+          const aRows: Extract<LeaderRow, { metric: "accuracy" }>[] = [];
+          for (const [athleteId, agg] of aggMap.entries()) {
+            aRows.push({ metric: "accuracy", athleteId, name: agg.name, accuracyPct: Math.round((agg.sumPct / agg.sessions) * 10) / 10, avgOffsetCm: agg.offsetCount > 0 ? Math.round((agg.sumOffset / agg.offsetCount) * 10) / 10 : 0, sessions: agg.sessions });
+          }
+          aRows.sort((a, b) => b.accuracyPct - a.accuracyPct);
+          setAccuracyRows(aRows.slice(0, 5));
+        }
 
-        for (const row of data as any[]) {
-          const athleteId = row.athlete_id;
-          if (!athleteId) continue;
-
-          // Try quality.strength_index first, then fall back to peak_force_stats (stored in mV → scale to 0-1000)
-          const si = row.quality?.strength_index;
-          let siMax: number | null  = null;
-          let siMean: number | null = null;
-
-          if (si && typeof si.max === "number" && typeof si.mean === "number") {
-            siMax  = si.max;
-            siMean = si.mean;
-          } else {
-            const pfs = row.peak_force_stats;
-            // peak_mv / avg_mv are in mV (e.g. 3320 = max). Scale to 0–1000 index.
-            const peakMv = pfs?.peak_mv ?? pfs?.peak_v != null ? (pfs.peak_mv ?? pfs.peak_v * 1000) : null;
-            const avgMv  = pfs?.avg_mv  ?? pfs?.avg_v  != null ? (pfs.avg_mv  ?? pfs.avg_v  * 1000) : null;
-            if (peakMv != null && avgMv != null) {
-              siMax  = Math.round((peakMv / 3320) * 1000);
-              siMean = Math.round((avgMv  / 3320) * 1000);
+        // ── Volume ──────────────────────────────────────────────────────────────
+        if (!volumeRes.error && volumeRes.data) {
+          type VAgg = { name: string; sumAvgWin: number; bestWin: number; sumSlope: number; slopeCount: number; sumSi: number; siCount: number; sessions: number; numEvents: number };
+          const aggMap = new Map<string, VAgg>();
+          for (const row of volumeRes.data as any[]) {
+            const aid = row.athlete_id; if (!aid) continue;
+            const qd = row.quality;
+            const avgWin = qd?.avg_window_hits ?? null;
+            if (avgWin == null) continue;
+            const bestWin = qd?.best_window_hits ?? avgWin;
+            const slope   = qd?.si_fatigue_slope ?? null;
+            const siMean  = qd?.strength_index?.mean ?? null;
+            const name    = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown";
+            const evts    = row.num_events ?? 0;
+            const ex = aggMap.get(aid);
+            if (ex) {
+              ex.sumAvgWin += Number(avgWin); ex.bestWin = Math.max(ex.bestWin, Number(bestWin));
+              if (slope != null) { ex.sumSlope += Number(slope); ex.slopeCount++; }
+              if (siMean != null) { ex.sumSi += Number(siMean); ex.siCount++; }
+              ex.sessions++; ex.numEvents += evts;
+            } else {
+              aggMap.set(aid, { name, sumAvgWin: Number(avgWin), bestWin: Number(bestWin), sumSlope: slope != null ? Number(slope) : 0, slopeCount: slope != null ? 1 : 0, sumSi: siMean != null ? Number(siMean) : 0, siCount: siMean != null ? 1 : 0, sessions: 1, numEvents: evts });
             }
           }
-
-          if (siMax == null || siMean == null) continue;
-
-          const name = row.athletes
-            ? `${row.athletes.first_name} ${row.athletes.last_name}`
-            : "Unknown Athlete";
-
-          const existing = aggMap.get(athleteId);
-          if (existing) {
-            existing.peakIndex = Math.max(existing.peakIndex, siMax);
-            existing.avgSum   += siMean;
-            existing.avgCount += 1;
-            existing.sessions += 1;
-          } else {
-            aggMap.set(athleteId, { name, peakIndex: siMax, avgSum: siMean, avgCount: 1, sessions: 1 });
+          const vRows: VolumeInsightRow[] = [];
+          for (const [aid, agg] of aggMap.entries()) {
+            vRows.push({ athleteId: aid, name: agg.name, avgWindowHits: Math.round(agg.sumAvgWin / agg.sessions * 10) / 10, bestWindowHits: agg.bestWin, avgSiFatigueSlope: agg.slopeCount > 0 ? Math.round(agg.sumSlope / agg.slopeCount * 10) / 10 : null, avgSi: agg.siCount > 0 ? Math.round(agg.sumSi / agg.siCount) : null, sessions: agg.sessions, numEvents: agg.numEvents });
           }
+          vRows.sort((a, b) => b.avgWindowHits - a.avgWindowHits);
+          setVolumeInsightRows(vRows);
         }
 
-        const rows: Extract<LeaderRow, { metric: "strength" }>[] = [];
-        for (const [athleteId, agg] of aggMap.entries()) {
-          rows.push({
-            metric:    "strength",
-            athleteId,
-            name:      agg.name,
-            peakIndex: Math.round(agg.peakIndex),
-            avgIndex:  Math.round(agg.avgSum / agg.avgCount),
-            sessions:  agg.sessions,
-          });
+        // ── Target ──────────────────────────────────────────────────────────────
+        if (!targetRes.error && targetRes.data) {
+          type TAgg = { name: string; sumAccPct: number; sumRtCorrect: number; rtCount: number; attempts: number; sessions: number };
+          const aggMap = new Map<string, TAgg>();
+          for (const row of targetRes.data as any[]) {
+            const aid = row.athlete_id; if (!aid) continue;
+            const qd = row.quality;
+            const accPct = qd?.target_accuracy_pct ?? null;
+            if (accPct == null) continue;
+            const rt   = qd?.avg_reaction_ms_correct ?? qd?.avg_reaction_ms_all ?? null;
+            const atts = qd?.attempts ?? 0;
+            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown";
+            const ex = aggMap.get(aid);
+            if (ex) { ex.sumAccPct += Number(accPct); if (rt != null) { ex.sumRtCorrect += Number(rt); ex.rtCount++; } ex.attempts += Number(atts); ex.sessions++; }
+            else aggMap.set(aid, { name, sumAccPct: Number(accPct), sumRtCorrect: rt != null ? Number(rt) : 0, rtCount: rt != null ? 1 : 0, attempts: Number(atts), sessions: 1 });
+          }
+          const tRows: TargetInsightRow[] = [];
+          for (const [aid, agg] of aggMap.entries()) {
+            tRows.push({ athleteId: aid, name: agg.name, avgAccuracyPct: Math.round(agg.sumAccPct / agg.sessions * 10) / 10, avgReactionMsCorrect: agg.rtCount > 0 ? Math.round(agg.sumRtCorrect / agg.rtCount) : null, attempts: agg.attempts, sessions: agg.sessions });
+          }
+          tRows.sort((a, b) => b.avgAccuracyPct - a.avgAccuracyPct);
+          setTargetInsightRows(tRows);
         }
 
-        rows.sort((a, b) => b.peakIndex - a.peakIndex);
-        setStrengthRows(rows.slice(0, 5));
       } finally {
         setStrengthLoading(false);
-      }
-    })();
-  }, [programId, userRole, coreTeamId, leaderCutoff]);
-  const [reactionRows, setReactionRows] = useState<Extract<LeaderRow, { metric: "reaction" }>[]>([]);
-  const [reactionLoading, setReactionLoading] = useState(false);
-
-  useEffect(() => {
-    if (!programId || !userRole || !supabase) return;
-    if (userRole === "coach" && coreTeamId === null) return;
-
-    setReactionLoading(true);
-    setReactionRows([]);
-
-    (async () => {
-      try {
-        let query = supabase!
-          .from("session_summaries")
-          .select("athlete_id, num_events, quality, athletes(first_name, last_name)")
-          .eq("program_id", programId)
-          .eq("mode", "reaction");
-
-        if (userRole === "coach" && coreTeamId) {
-          query = query.eq("core_team_id", coreTeamId);
-        }
-        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
-
-        const { data, error } = await query;
-        if (error || !data) return;
-
-        type RAgg = { name: string; bestMs: number; sumAvgMs: number; count: number; attempts: number };
-        const aggMap = new Map<string, RAgg>();
-
-        for (const row of data as any[]) {
-          const athleteId = row.athlete_id;
-          if (!athleteId) continue;
-
-          // quality.best_reaction_ms / avg_reaction_ms are the true signal-to-impact
-          // times saved by uploadSession. Never use iei_ms here — that is inter-event
-          // cadence and will always read artificially short for reaction mode.
-          const q      = row.quality;
-          const avgMs  = q?.avg_reaction_ms  ?? null;
-          const minMs  = q?.best_reaction_ms ?? null;
-
-          if (avgMs == null) continue;
-          const resolvedMin = minMs ?? avgMs;
-
-          const name = row.athletes
-            ? `${row.athletes.first_name} ${row.athletes.last_name}`
-            : "Unknown Athlete";
-
-          const existing = aggMap.get(athleteId);
-          if (existing) {
-            existing.bestMs    = Math.min(existing.bestMs, resolvedMin);
-            existing.sumAvgMs += avgMs;
-            existing.count    += 1;
-            existing.attempts += row.num_events ?? 0;
-          } else {
-            aggMap.set(athleteId, { name, bestMs: resolvedMin, sumAvgMs: avgMs, count: 1, attempts: row.num_events ?? 0 });
-          }
-        }
-
-        const rows: Extract<LeaderRow, { metric: "reaction" }>[] = [];
-        for (const [athleteId, agg] of aggMap.entries()) {
-          rows.push({
-            metric:        "reaction",
-            athleteId,
-            name:          agg.name,
-            avgReactionMs: Math.round(agg.sumAvgMs / agg.count),
-            bestReactionMs: Math.round(agg.bestMs),
-            attempts:      agg.attempts,
-          });
-        }
-
-        rows.sort((a, b) => a.avgReactionMs - b.avgReactionMs); // lower = better
-        setReactionRows(rows.slice(0, 5));
-      } finally {
-        setReactionLoading(false);
-      }
-    })();
-  }, [programId, userRole, coreTeamId, leaderCutoff]);
-
-  // ---------- Accuracy leaderboard ----------
-  const [accuracyRows, setAccuracyRows] = useState<Extract<LeaderRow, { metric: "accuracy" }>[]>([]);
-  const [accuracyLoading, setAccuracyLoading] = useState(false);
-
-  useEffect(() => {
-    if (!programId || !userRole || !supabase) return;
-    if (userRole === "coach" && coreTeamId === null) return;
-
-    setAccuracyLoading(true);
-    setAccuracyRows([]);
-
-    (async () => {
-      try {
-        let query = supabase!
-          .from("session_summaries")
-          .select("athlete_id, quality, peak_force_stats, num_events, iei_ms, athletes(first_name, last_name)")
-          .eq("program_id", programId)
-          .eq("mode", "accuracy");
-
-        if (userRole === "coach" && coreTeamId) {
-          query = query.eq("core_team_id", coreTeamId);
-        }
-        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
-
-        const { data, error } = await query;
-        if (error || !data) return;
-
-        type AAgg = { name: string; sumPct: number; sumOffset: number; offsetCount: number; sessions: number };
-        const aggMap = new Map<string, AAgg>();
-
-        for (const row of data as any[]) {
-          const athleteId = row.athlete_id;
-          if (!athleteId) continue;
-
-          // Prefer quality fields if populated
-          let pct    = row.quality?.accuracy_pct ?? row.quality?.score ?? null;
-          const offset = row.quality?.avg_offset_mm ?? row.quality?.avg_offset_cm ?? row.quality?.avg_offset_cells ?? null;
-
-          // Fallback: derive a rough accuracy score from peak_force_stats avg_mv as % of max (3320 mV)
-          if (pct == null) {
-            const avgMv = row.peak_force_stats?.avg_mv ?? (row.peak_force_stats?.avg_v != null ? row.peak_force_stats.avg_v * 1000 : null);
-            if (avgMv == null) continue;
-            pct = Math.min(100, Math.round((avgMv / 3320) * 100 * 10) / 10);
-          }
-
-          const name = row.athletes
-            ? `${row.athletes.first_name} ${row.athletes.last_name}`
-            : "Unknown Athlete";
-
-          const existing = aggMap.get(athleteId);
-          if (existing) {
-            existing.sumPct    += Number(pct);
-            existing.sessions  += 1;
-            if (offset != null) { existing.sumOffset += Number(offset); existing.offsetCount += 1; }
-          } else {
-            aggMap.set(athleteId, {
-              name,
-              sumPct: Number(pct),
-              sumOffset: offset != null ? Number(offset) : 0,
-              offsetCount: offset != null ? 1 : 0,
-              sessions: 1,
-            });
-          }
-        }
-
-        const rows: Extract<LeaderRow, { metric: "accuracy" }>[] = [];
-        for (const [athleteId, agg] of aggMap.entries()) {
-          rows.push({
-            metric:      "accuracy",
-            athleteId,
-            name:        agg.name,
-            accuracyPct: Math.round((agg.sumPct / agg.sessions) * 10) / 10,
-            avgOffsetCm: agg.offsetCount > 0 ? Math.round((agg.sumOffset / agg.offsetCount) * 10) / 10 : 0,
-            sessions:    agg.sessions,
-          });
-        }
-
-        rows.sort((a, b) => b.accuracyPct - a.accuracyPct); // higher = better
-        setAccuracyRows(rows.slice(0, 5));
-      } finally {
-        setAccuracyLoading(false);
       }
     })();
   }, [programId, userRole, coreTeamId, leaderCutoff]);
@@ -1264,6 +1256,12 @@ export default function Dashboard() {
     // reaction
     avgReactionMs?: number;
     bestReactionMs?: number;
+    // volume
+    totalHits?: number;
+    avgSi?: number;
+    // target
+    targetAccuracyPct?: number;
+    avgReactionMsCorrect?: number;
   };
 
   const [teamLeaderMetric, setTeamLeaderMetric] = useState<MetricKey>("strength");
@@ -1301,7 +1299,10 @@ export default function Dashboard() {
           }
         }
 
-        const modeFilter = teamLeaderMetric === "strength" ? "power" : teamLeaderMetric;
+        const modeFilter = teamLeaderMetric === "strength" ? "power"
+                         : teamLeaderMetric === "volume"   ? "volume"
+                         : teamLeaderMetric === "target"   ? "target"
+                         : teamLeaderMetric;
 
         const rows: TeamLeaderRow[] = [];
 
@@ -1310,7 +1311,7 @@ export default function Dashboard() {
 
           let query = supabase!
             .from("session_summaries")
-            .select("quality, peak_force_stats, num_events")
+            .select("quality, peak_force_stats, num_events, impulse_stats")
             .eq("program_id", programId!)
             .eq("mode", modeFilter);
 
@@ -1354,6 +1355,29 @@ export default function Dashboard() {
             }
             if (count === 0) continue;
             rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, accuracyPct: Math.round((pctSum / count) * 10) / 10, avgOffsetMm: offsetCount > 0 ? Math.round(offsetSum / offsetCount) : undefined });
+          } else if (teamLeaderMetric === "volume") {
+            let totalHits = 0, avgWinSum = 0, avgWinCount = 0, siSum = 0, siCount = 0;
+            for (const row of data as any[]) {
+              const avgWin = row.quality?.avg_window_hits ?? null;
+              if (avgWin != null) { avgWinSum += Number(avgWin); avgWinCount++; }
+              const si = row.quality?.strength_index?.mean ?? null;
+              if (si != null) { siSum += Number(si); siCount++; }
+            }
+            if (avgWinCount === 0) continue;
+            totalHits = Math.round(avgWinSum / avgWinCount * 10) / 10;
+            rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, totalHits, avgSi: siCount > 0 ? Math.round(siSum / siCount) : undefined });
+          } else if (teamLeaderMetric === "target") {
+            let accSum = 0, rtSum = 0, rtCount = 0, attempts = 0, count = 0;
+            for (const row of data as any[]) {
+              const acc = row.quality?.target_accuracy_pct ?? null;
+              if (acc == null) continue;
+              accSum += Number(acc); count++;
+              attempts += row.quality?.attempts ?? 0;
+              const rt = row.quality?.avg_reaction_ms_correct ?? row.quality?.avg_reaction_ms_all ?? null;
+              if (rt != null) { rtSum += Number(rt); rtCount++; }
+            }
+            if (count === 0) continue;
+            rows.push({ teamId: team.id, name: team.name, teamType: isCore ? "core" : "sub", memberCount: team.member_count ?? 0, sessionCount: data.length, targetAccuracyPct: Math.round((accSum / count) * 10) / 10, avgReactionMsCorrect: rtCount > 0 ? Math.round(rtSum / rtCount) : undefined });
           } else {
             let avgSum = 0, bestMin = Infinity, count = 0;
             for (const row of data as any[]) {
@@ -1372,6 +1396,8 @@ export default function Dashboard() {
         if (teamLeaderMetric === "strength")  rows.sort((a, b) => (b.peakIndex ?? 0) - (a.peakIndex ?? 0));
         if (teamLeaderMetric === "accuracy")  rows.sort((a, b) => (b.accuracyPct ?? 0) - (a.accuracyPct ?? 0));
         if (teamLeaderMetric === "reaction")  rows.sort((a, b) => (a.avgReactionMs ?? 9999) - (b.avgReactionMs ?? 9999));
+        if (teamLeaderMetric === "volume")    rows.sort((a, b) => (b.totalHits ?? 0) - (a.totalHits ?? 0));
+        if (teamLeaderMetric === "target")    rows.sort((a, b) => (b.targetAccuracyPct ?? 0) - (a.targetAccuracyPct ?? 0));
 
         setTeamLeaderRows(rows);
       } finally {
@@ -1463,12 +1489,13 @@ export default function Dashboard() {
     if (leaderMetric === "strength") return strengthRows;
     if (leaderMetric === "reaction") return reactionRows;
     if (leaderMetric === "accuracy") return accuracyRows;
+    // volume and target use their own typed arrays rendered directly
     return [];
   }, [leaderMetric, strengthRows, reactionRows, accuracyRows]);
 
   // ---------- Coaching Insights (data-driven) ----------
   type CoachInsight = {
-    tag: "Power" | "Accuracy" | "Reaction" | "Consistency" | "Fatigue" | "Tempo";
+    tag: "Power" | "Accuracy" | "Reaction" | "Consistency" | "Fatigue" | "Tempo" | "Volume" | "Target";
     priority: "high" | "medium" | "low";
     headline: string;
     numbers: { label: string; value: string; delta?: string; deltaDir?: "up" | "down" | "neutral" }[];
@@ -1644,7 +1671,125 @@ export default function Dashboard() {
       }
     }
 
-    // ── 7. CONSISTENCY — from recent session volume + mode mix ────────────────
+    // ── 7. VOLUME — from group leaderboard ───────────────────────────────────
+    if (volumeInsightRows.length > 0) {
+      const best    = volumeInsightRows[0];
+      const worst   = volumeInsightRows[volumeInsightRows.length - 1];
+      const avgHits = Math.round(volumeInsightRows.reduce((s, r) => s + r.avgWindowHits, 0) / volumeInsightRows.length * 10) / 10;
+      const fatiguingAthletes = volumeInsightRows.filter(r => r.avgSiFatigueSlope != null && r.avgSiFatigueSlope < -2);
+      const hasFatigueAlert   = fatiguingAthletes.length > 0;
+      out.push({
+        tag: "Volume",
+        priority: hasFatigueAlert ? "high" : avgHits < 6 ? "high" : avgHits < 10 ? "medium" : "low",
+        headline: hasFatigueAlert
+          ? `${fatiguingAthletes[0].name.split(" ")[0]} showing SI fatigue drop across windows`
+          : `Group avg volume: ${avgHits} events/window · best: ${best.name.split(" ")[0]} at ${best.bestWindowHits}`,
+        numbers: [
+          { label: "Best avg/win",  value: `${best.avgWindowHits}`,  delta: best.name.split(" ")[0], deltaDir: "up" },
+          { label: "Group avg/win", value: `${avgHits}`, deltaDir: avgHits >= 10 ? "up" : avgHits < 6 ? "down" : "neutral" },
+          { label: "Lowest avg",    value: `${worst.avgWindowHits}`, delta: worst.name.split(" ")[0], deltaDir: worst.avgWindowHits < 6 ? "down" : "neutral" },
+          ...(hasFatigueAlert ? [{ label: "SI slope", value: `${fatiguingAthletes[0].avgSiFatigueSlope} / win`, deltaDir: "down" as const }] : []),
+        ],
+        cue: hasFatigueAlert
+          ? `${fatiguingAthletes.map(a => a.name.split(" ")[0]).join(", ")} ${fatiguingAthletes.length === 1 ? "is" : "are"} losing power across windows (slope: ${fatiguingAthletes[0].avgSiFatigueSlope} SI/window). Shorten windows to 4 s and add 30 s rest between — prioritise quality output per window over raw hit count.`
+          : avgHits < 6
+          ? `Low volume output (${avgHits} events/window avg). Athletes may be pacing themselves. Drill rapid 5-strike combos then rest — aim for 8+ events/window before adding resistance.`
+          : `Good volume output. Push the group to sustain output in later windows — set a target of ${Math.round(avgHits * 0.9)} hits minimum in every window, including the last.`,
+      });
+    }
+
+    // ── 8. VOLUME — from selected session ────────────────────────────────────
+    if (sessionSummary && (sessionSummary.mode ?? "power").toLowerCase() === "volume") {
+      const q         = sessionSummary.quality;
+      const bestWin   = q?.best_window_hits  ?? null;
+      const avgWin    = q?.avg_window_hits    ?? null;
+      const totalWins = q?.total_windows      ?? null;
+      const slope     = q?.si_fatigue_slope   ?? null;
+      const siTrend   = q?.si_trend as "fatigue" | "building" | "stable" | undefined;
+      if (avgWin != null) {
+        const isFatiguing = siTrend === "fatigue" || (slope != null && slope < -2);
+        out.push({
+          tag: "Volume",
+          priority: isFatiguing ? "high" : avgWin < 6 ? "high" : avgWin < 10 ? "medium" : "low",
+          headline: `Volume session: ${avgWin} avg events/window · best window: ${bestWin ?? "—"}`,
+          numbers: [
+            { label: "Avg / window", value: `${avgWin}`, deltaDir: avgWin >= 10 ? "up" : avgWin < 6 ? "down" : "neutral" },
+            { label: "Best window",  value: bestWin != null ? String(bestWin) : "—", deltaDir: "up" },
+            ...(totalWins != null ? [{ label: "Windows", value: String(totalWins) }] : []),
+            ...(slope != null ? [{ label: "SI slope", value: `${slope > 0 ? "+" : ""}${slope} / win`, deltaDir: (isFatiguing ? "down" : slope > 1 ? "up" : "neutral") as "up" | "down" | "neutral" }] : []),
+          ],
+          cue: isFatiguing
+            ? `Power dropped across windows (SI slope ${slope != null ? slope : "negative"}). Athlete is reaching failure before session ends. Cut to 3 windows max, rest 45 s between, and rebuild endurance base over 2–3 weeks.`
+            : avgWin < 6
+            ? `Low volume (${avgWin} events/window). The athlete is pacing too conservatively. Cue all-out effort for each window — fatigue is expected, it's the point.`
+            : siTrend === "building"
+            ? `Output built across windows — great conditioning sign. Introduce a 6th window or tighten rest to 20 s to keep pushing adaptation.`
+            : `Solid volume session. Next target: beat ${bestWin ?? avgWin} hits in at least two windows.`,
+        });
+      }
+    }
+
+    // ── 9. TARGET — from group leaderboard ───────────────────────────────────
+    if (targetInsightRows.length > 0) {
+      const best   = targetInsightRows[0];
+      const worst  = targetInsightRows[targetInsightRows.length - 1];
+      const avgAcc = Math.round(targetInsightRows.reduce((s, r) => s + r.avgAccuracyPct, 0) / targetInsightRows.length * 10) / 10;
+      const rtRows = targetInsightRows.filter(r => r.avgReactionMsCorrect != null);
+      const avgRt  = rtRows.length > 0 ? Math.round(rtRows.reduce((s, r) => s + (r.avgReactionMsCorrect ?? 0), 0) / rtRows.length) : null;
+      out.push({
+        tag: "Target",
+        priority: avgAcc < 55 ? "high" : avgAcc < 72 ? "medium" : "low",
+        headline: `Group target accuracy: ${avgAcc}% · best: ${best.name.split(" ")[0]} at ${best.avgAccuracyPct}%`,
+        numbers: [
+          { label: "Best",       value: `${best.avgAccuracyPct}%`,  delta: best.name.split(" ")[0], deltaDir: "up" },
+          { label: "Needs work", value: `${worst.avgAccuracyPct}%`, delta: worst.name.split(" ")[0], deltaDir: worst.avgAccuracyPct < 55 ? "down" : "neutral" },
+          { label: "Group avg",  value: `${avgAcc}%`, deltaDir: avgAcc >= 72 ? "up" : avgAcc < 55 ? "down" : "neutral" },
+          ...(avgRt != null ? [{ label: "Avg RT (correct)", value: `${avgRt} ms` }] : []),
+        ],
+        cue: avgAcc < 55
+          ? `Zone accuracy is critically low (${avgAcc}%). Athletes are reacting before processing the cue. Slow the signal interval to 3 s minimum and walk through each zone verbally before adding speed. ${worst.name.split(" ")[0]} (${worst.avgAccuracyPct}%) needs dedicated zone-recognition work before group drills.`
+          : avgAcc < 72
+          ? `Target accuracy is developing. Introduce combo cues (two consecutive zones) to force zone switching — this exposes gaps in spatial awareness faster than single-zone drills.`
+          : `Strong group zone accuracy (${avgAcc}%). Progress to double-zone combos and mixed-speed cues.${avgRt != null ? ` Keep pushing RT — group avg correct reaction is ${avgRt} ms.` : ""}`,
+      });
+    }
+
+    // ── 10. TARGET — from selected session ───────────────────────────────────
+    if (sessionSummary && (sessionSummary.mode ?? "power").toLowerCase() === "target") {
+      const q        = sessionSummary.quality;
+      const accPct   = q?.target_accuracy_pct         ?? null;
+      const attempts = q?.attempts                    ?? null;
+      const correct  = q?.correct_hits                ?? null;
+      const bestRt   = q?.best_reaction_ms_correct    ?? q?.best_reaction_ms ?? null;
+      const avgRtC   = q?.avg_reaction_ms_correct     ?? null;
+      const avgRtAll = q?.avg_reaction_ms_all          ?? null;
+      if (accPct != null) {
+        const rtSlow = avgRtC != null && avgRtC > 700;
+        const accLow = Number(accPct) < 60;
+        out.push({
+          tag: "Target",
+          priority: (accLow || rtSlow) ? "high" : Number(accPct) < 75 ? "medium" : "low",
+          headline: `Target session: ${Number(accPct).toFixed(1)}% zone accuracy${avgRtC != null ? ` · ${Math.round(avgRtC)} ms avg RT` : ""}`,
+          numbers: [
+            { label: "Accuracy",       value: `${Number(accPct).toFixed(1)}%`, deltaDir: Number(accPct) >= 75 ? "up" : Number(accPct) < 60 ? "down" : "neutral" },
+            { label: "Correct / Att",  value: correct != null && attempts != null ? `${correct} / ${attempts}` : "—" },
+            ...(avgRtC  != null ? [{ label: "Avg RT (correct)", value: `${Math.round(avgRtC)} ms`, deltaDir: (avgRtC < 400 ? "up" : avgRtC > 700 ? "down" : "neutral") as "up" | "down" | "neutral" }] : []),
+            ...(bestRt  != null ? [{ label: "Best RT",          value: `${Math.round(bestRt)} ms`, deltaDir: "up" as const }] : []),
+            ...(avgRtAll != null && avgRtC != null && avgRtAll - avgRtC > 80
+              ? [{ label: "RT penalty (wrong zone)", value: `+${Math.round(avgRtAll - avgRtC)} ms`, deltaDir: "down" as const }] : []),
+          ],
+          cue: accLow
+            ? `Zone accuracy is critically low (${Number(accPct).toFixed(1)}%). Athlete may be reacting before fully processing the cue. Pause after each signal, verbally confirm the zone, then strike. Slow the cadence until accuracy exceeds 65%.`
+            : rtSlow && avgRtC != null
+            ? `Accuracy is solid but correct-zone reaction is slow (${Math.round(avgRtC)} ms). The processing-to-movement gap is the bottleneck. Drill shadow-movement on the cue (no contact) to isolate the cognitive step.`
+            : Number(accPct) < 75
+            ? `Good effort — accuracy at ${Number(accPct).toFixed(1)}%. ${avgRtAll != null && avgRtC != null && avgRtAll - avgRtC > 80 ? `The ${Math.round(avgRtAll - avgRtC)} ms RT penalty on wrong-zone hits shows zone confusion under pressure. ` : ""}Add 2-zone combo cues in the next session.`
+            : `Excellent target session — accuracy and reaction both on point. Increase difficulty: shorten the cue-to-signal window or introduce a distractor cue before the real one.`,
+        });
+      }
+    }
+
+    // ── 11. CONSISTENCY — cadence + full mode spread ──────────────────────────
     if (recentSessions.length >= 3) {
       const last7days = recentSessions.filter(s =>
         (Date.now() - new Date(s.timestamp).getTime()) < 7 * 24 * 60 * 60 * 1000
@@ -1655,24 +1800,47 @@ export default function Dashboard() {
         modeBreakdown[m] = (modeBreakdown[m] ?? 0) + 1;
       }
       const total    = recentSessions.length;
-      const stdPct   = Math.round(((modeBreakdown["power"] ?? 0) / total) * 100);
+      const powPct   = Math.round(((modeBreakdown["power"]    ?? 0) / total) * 100);
       const accPct   = Math.round(((modeBreakdown["accuracy"] ?? 0) / total) * 100);
       const reactPct = Math.round(((modeBreakdown["reaction"] ?? 0) / total) * 100);
+      const volPct   = Math.round(((modeBreakdown["volume"]   ?? 0) / total) * 100);
+      const tgtPct   = Math.round(((modeBreakdown["target"]   ?? 0) / total) * 100);
+
+      // Detect longest gap between sessions (flag if > 10 days)
+      const sortedDates = recentSessions
+        .map(s => new Date(s.timestamp).getTime())
+        .sort((a, b) => b - a);
+      const maxGapDays = sortedDates.length >= 2
+        ? Math.max(...sortedDates.slice(0, -1).map((d, i) => (d - sortedDates[i + 1]) / 86400000))
+        : 0;
+
+      const missingModes: string[] = [];
+      if (volPct   === 0) missingModes.push("Volume");
+      if (tgtPct   === 0) missingModes.push("Target");
+      if (reactPct === 0) missingModes.push("Reaction");
+      if (accPct   === 0) missingModes.push("Accuracy");
+
       out.push({
         tag: "Consistency",
-        priority: last7days.length < 2 ? "medium" : "low",
+        priority: (last7days.length === 0 || maxGapDays > 10) ? "high" : last7days.length < 2 ? "medium" : "low",
         headline: `${total} sessions logged · ${last7days.length} in the last 7 days`,
         numbers: [
-          { label: "Power", value: `${stdPct}%`,   delta: `${modeBreakdown["power"] ?? 0} sessions` },
-          { label: "Accuracy", value: `${accPct}%`,   delta: `${modeBreakdown["accuracy"] ?? 0} sessions` },
-          { label: "Reaction", value: `${reactPct}%`, delta: `${modeBreakdown["reaction"] ?? 0} sessions` },
+          { label: "Power",    value: `${powPct}%`,   delta: `${modeBreakdown["power"]    ?? 0}`, deltaDir: "neutral" },
+          { label: "Accuracy", value: `${accPct}%`,   delta: `${modeBreakdown["accuracy"] ?? 0}`, deltaDir: "neutral" },
+          { label: "Reaction", value: `${reactPct}%`, delta: `${modeBreakdown["reaction"] ?? 0}`, deltaDir: "neutral" },
+          { label: "Volume",   value: `${volPct}%`,   delta: `${modeBreakdown["volume"]   ?? 0}`, deltaDir: "neutral" },
+          { label: "Target",   value: `${tgtPct}%`,   delta: `${modeBreakdown["target"]   ?? 0}`, deltaDir: "neutral" },
           { label: "Last 7d",  value: `${last7days.length} sessions`, deltaDir: last7days.length >= 3 ? "up" : last7days.length === 0 ? "down" : "neutral" },
         ],
-        cue: stdPct > 80
-          ? `Almost all sessions are Power mode (${stdPct}%). Introduce Accuracy and Reaction sessions — aim for a 60/20/20 split across mode types.`
-          : last7days.length < 2
-          ? `Only ${last7days.length} session${last7days.length === 1 ? "" : "s"} in the last 7 days. Consistent weekly volume is the #1 driver of improvement — schedule at least 3 sessions this week.`
-          : `Good session cadence. Mode split: ${stdPct}% Power / ${accPct}% Accuracy / ${reactPct}% Reaction. ${reactPct < 15 ? "Consider adding more Reaction sessions to develop explosive decision-making." : "Keep the balanced mix going."}`,
+        cue: last7days.length === 0
+          ? `No sessions in the last 7 days — training has stalled. Re-engage with a light Power session to rebuild habit before adding intensity.`
+          : maxGapDays > 10
+          ? `There was a ${Math.round(maxGapDays)}-day gap in recent training. Consistency beats intensity — schedule at least 3 sessions per week.`
+          : powPct > 80
+          ? `Almost all sessions are Power (${powPct}%). Introduce ${missingModes.slice(0, 2).join(" and ")} sessions — a balanced mix builds more complete athletes.`
+          : missingModes.length > 0
+          ? `Good session cadence. Consider adding ${missingModes.join(" and ")} mode${missingModes.length > 1 ? "s" : ""} to round out training stimulus.`
+          : `Well-balanced training mix across all modes. Maintain the cadence and start tracking trends across session types.`,
       });
     }
 
@@ -1687,7 +1855,7 @@ export default function Dashboard() {
     }
 
     return out.sort((a, b) => ({ high: 0, medium: 1, low: 2 }[a.priority] - { high: 0, medium: 1, low: 2 }[b.priority]));
-  }, [strengthRows, accuracyRows, reactionRows, recentSessions, sessionSummary]);
+  }, [strengthRows, accuracyRows, reactionRows, volumeInsightRows, targetInsightRows, recentSessions, sessionSummary]);
 
   // ---------- Theme awareness ----------
   const [isDark, setIsDark] = useState<boolean>(() =>
@@ -2478,7 +2646,53 @@ export default function Dashboard() {
                   ))}
                 </div>
               ) : recentSessions.length === 0 ? (
-                <div className="ts-athleteEmpty">No sessions found for this program.</div>
+                <div style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 12,
+                  padding: "36px 16px",
+                  textAlign: "center",
+                }}>
+                  <div style={{
+                    width: 52,
+                    height: 52,
+                    borderRadius: "50%",
+                    background: "rgba(180,0,255,0.10)",
+                    border: "1px solid rgba(180,0,255,0.22)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 22,
+                  }}>
+                    🥊
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 5 }}>No sessions yet</div>
+                    <div style={{ fontSize: 12, opacity: 0.50, lineHeight: 1.5, maxWidth: 220 }}>
+                      Head to the{" "}
+                      <button
+                        type="button"
+                        onClick={() => navigate("/session")}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: "rgba(180,0,255,0.90)",
+                          fontWeight: 700,
+                          fontSize: "inherit",
+                          cursor: "pointer",
+                          textDecoration: "underline",
+                          textUnderlineOffset: 2,
+                        }}
+                      >
+                        Session page
+                      </button>
+                      {" "}to record your first session with an athlete.
+                    </div>
+                  </div>
+                </div>
               ) : filteredSessions.length === 0 ? (
                 <div className="ts-athleteEmpty">No sessions match the selected filters.</div>
               ) : (
@@ -3016,7 +3230,8 @@ export default function Dashboard() {
                         const z = activeEvent.targetZone;
                         // Map zone to grid row/col ranges (1-indexed, matching ESP32)
                         const rowRange = z.row === "top" ? [9,12] : z.row === "middle" ? [5,8] : [1,4];
-                        const colRange = z.col === "left" ? [1,2] : z.col === "center" ? [3,6] : [7,8];
+                        // Column direction is mirrored: C8 renders leftmost, C1 rightmost
+                        const colRange = z.col === "left" ? [7,8] : z.col === "center" ? [3,6] : [1,2];
                         const correct  = activeEvent.zoneCorrect;
                         const zColor   = correct === true  ? "#00ff88"
                                        : correct === false ? "#ff6060"
@@ -3025,11 +3240,11 @@ export default function Dashboard() {
                         // Grid padding: 28px top, 6px bottom/sides
                         const padTop = 28; const padBot = 6; const padSide = 6;
                         const rowFrac = (ri: number) => (12 - ri + 0.5) / 12;  // visual top fraction for row ri
-                        const colFrac = (ci: number) => (ci - 0.5) / 8;        // visual left fraction for col ci
+                        const colFrac = (ci: number) => (8 - ci + 0.5) / 8;    // visual left fraction (mirrored: C8=left)
                         const top1 = rowFrac(rowRange[1]);   // top edge = highest row (largest r = higher on grid)
                         const top2 = rowFrac(rowRange[0] - 1);
-                        const left1 = colFrac(colRange[0]);
-                        const left2 = colFrac(colRange[1] + 1);
+                        const left1 = colFrac(colRange[1]);   // left edge = highest col number (renders leftmost)
+                        const left2 = colFrac(colRange[0] - 1);
                         return (
                           <div style={{
                             position: "absolute",
@@ -3075,7 +3290,7 @@ export default function Dashboard() {
                           {Array.from({ length: 12 }, (_, ri) =>
                             Array.from({ length: 8 }, (_, ci) => {
                               const r = 12 - ri;
-                              const c = ci + 1;
+                              const c = 8 - ci;   // mirrors session.tsx: C8 left, C1 right
                               const key = `${r}-${c}`;
                               let intensity = 0;
                               let kpa = 0;
@@ -3143,7 +3358,7 @@ export default function Dashboard() {
                         const gridPadBottom = 6;
                         const gridPadSide   = 6;
                         const ri = 12 - ripple.r; // 0-based from top
-                        const leftVal = `calc(${gridPadSide}px + (100% - ${gridPadSide * 2}px) * ${(ripple.c - 0.5) / 8})`;
+                        const leftVal = `calc(${gridPadSide}px + (100% - ${gridPadSide * 2}px) * ${(8 - ripple.c + 0.5) / 8})`;
                         const topVal  = `calc(${gridPadTop}px + (100% - ${gridPadTop + gridPadBottom}px) * ${(ri + 0.5) / 12})`;
                         return (
                           <div key={ripple.id} style={{
@@ -3397,18 +3612,20 @@ export default function Dashboard() {
                       );
                     })()}
 
-                    {/* ── Strike View 3D ──────────────────────────────── */}
-                    {sessionSummary && (
-                      <StrikeCompass
-                        activeEvent={activeEvent ?? null}
-                        activeAngle={activeEvent?.angleDeg ?? null}
-                        anglesDeg={sessionSummary.angles_deg}
-                        isReplaying={isReplaying}
-                        modeAccent={modeAccent}
-                        modeGlow={modeGlow}
-                        isDark={isDark}
-                      />
-                    )}
+                    {/* ── Strike View 3D — hidden on phone/tablet (≤1024px) ── */}
+                    <div className="ts-strikeCompassWrap">
+                      {sessionSummary && (
+                        <StrikeCompass
+                          activeEvent={activeEvent ?? null}
+                          activeAngle={activeEvent?.angleDeg ?? null}
+                          anglesDeg={sessionSummary.angles_deg}
+                          isReplaying={isReplaying}
+                          modeAccent={modeAccent}
+                          modeGlow={modeGlow}
+                          isDark={isDark}
+                        />
+                      )}
+                    </div>
                   </div>
 
                 </div>
@@ -3435,6 +3652,8 @@ export default function Dashboard() {
                     Consistency: { bg: "rgba(80,220,160,0.09)", border: "rgba(80,220,160,0.26)", color: "rgba(80,220,160,0.95)"  },
                     Fatigue:     { bg: "rgba(255,100,80,0.09)", border: "rgba(255,100,80,0.26)", color: "rgba(255,130,110,0.95)" },
                     Tempo:       { bg: "rgba(255,170,0,0.09)",  border: "rgba(255,170,0,0.26)",  color: "rgba(255,190,60,0.95)"  },
+                    Volume:      { bg: "rgba(255,106,0,0.09)",  border: "rgba(255,106,0,0.28)",  color: "rgba(255,140,60,0.95)"  },
+                    Target:      { bg: "rgba(0,255,136,0.08)",  border: "rgba(0,255,136,0.26)",  color: "rgba(0,210,100,0.95)"   },
                   };
                   const priorityDot: Record<string, string> = {
                     high:   "#ff5f5f",
@@ -4852,6 +5071,10 @@ export default function Dashboard() {
                   ? strengthLoading ? "Loading…" : `${strengthRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}`
                   : leaderMetric === "reaction"
                   ? reactionLoading ? "Loading…" : reactionRows.length > 0 ? `${reactionRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"
+                  : leaderMetric === "volume"
+                  ? volumeInsightRows.length > 0 ? `${volumeInsightRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"
+                  : leaderMetric === "target"
+                  ? targetInsightRows.length > 0 ? `${targetInsightRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"
                   : accuracyLoading ? "Loading…" : accuracyRows.length > 0 ? `${accuracyRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}` : "no data yet"}
               </div>
             </div>
@@ -4862,6 +5085,10 @@ export default function Dashboard() {
                   ? "Top athletes by Strength Index (0–1000), derived from peak & avg force across all power sessions."
                   : leaderMetric === "reaction"
                   ? "Top athletes by avg reaction time — lower is better. Best = fastest single response."
+                  : leaderMetric === "volume"
+                  ? "Top athletes by total hits across volume sessions, with avg Strength Index showing output quality."
+                  : leaderMetric === "target"
+                  ? "Top athletes by zone accuracy %. Avg RT is correct-zone reaction time only — lower is better."
                   : "Top athletes by Accuracy Score (0–100%) across all accuracy sessions."}
               </div>
               <div className="ts-leaderControls">
@@ -4870,6 +5097,8 @@ export default function Dashboard() {
                   <option value="strength">💥 Power</option>
                   <option value="reaction">⚡️ Reaction</option>
                   <option value="accuracy">🎯 Accuracy</option>
+                  <option value="volume">🥊 Volume</option>
+                  <option value="target">🏹 Target</option>
                 </select>
               </div>
             </div>
@@ -4885,6 +5114,14 @@ export default function Dashboard() {
                 </>) : leaderMetric === "reaction" ? (<>
                   <div className="ts-leaderCell" role="columnheader">Avg Reaction</div>
                   <div className="ts-leaderCell" role="columnheader">Best</div>
+                  <div className="ts-leaderCell" role="columnheader">Attempts</div>
+                </>) : leaderMetric === "volume" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Avg Events / Win</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg SI</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : leaderMetric === "target" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Accuracy</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg RT (correct)</div>
                   <div className="ts-leaderCell" role="columnheader">Attempts</div>
                 </>) : (<>
                   <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
@@ -4921,8 +5158,8 @@ export default function Dashboard() {
                       <div className="ts-leaderName">{row.name}</div>
                       <div className="ts-leaderSub">Power profile</div>
                     </div>
-                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.peakIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
-                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(210,140,255,0.95)" }}>{row.peakIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                    <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(210,140,255,0.95)" }}>{row.avgIndex}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
                     <div className="ts-leaderCell" role="cell">{row.sessions}</div>
                   </div>
                 ))
@@ -4956,6 +5193,58 @@ export default function Dashboard() {
                     </div>
                     <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms avg</span></div>
                     <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms best</span></div>
+                    <div className="ts-leaderCell" role="cell">{row.attempts}</div>
+                  </div>
+                ))
+              ) : leaderMetric === "volume" ? (
+                volumeInsightRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>🥊</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No volume data yet</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Volume sessions to track hit counts and output quality per athlete.</div>
+                </div>)
+                : volumeInsightRows.slice(0, 5).map((row, idx) => (
+                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                    <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                    <div className="ts-leaderCell name" role="cell">
+                      <div className="ts-leaderName">{row.name}</div>
+                      <div className="ts-leaderSub">Volume profile · {row.sessions} session{row.sessions !== 1 ? "s" : ""}</div>
+                    </div>
+                    <div className="ts-leaderCell" role="cell">
+                      <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,150,60,0.95)" }}>{row.avgWindowHits}</span>
+                      <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>events/win</span>
+                    </div>
+                    <div className="ts-leaderCell" role="cell">
+                      {row.avgSi != null
+                        ? <><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,150,60,0.95)" }}>{row.avgSi}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></>
+                        : <span style={{ opacity: 0.35 }}>—</span>}
+                    </div>
+                    <div className="ts-leaderCell" role="cell">{row.sessions}</div>
+                  </div>
+                ))
+              ) : leaderMetric === "target" ? (
+                targetInsightRows.length === 0 ? (
+                <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
+                  <span style={{ fontSize: 22 }}>🏹</span>
+                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No target data yet</div>
+                  <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Target sessions to rank athletes by zone accuracy and correct-zone reaction time.</div>
+                </div>)
+                : targetInsightRows.slice(0, 5).map((row, idx) => (
+                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                    <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
+                    <div className="ts-leaderCell name" role="cell">
+                      <div className="ts-leaderName">{row.name}</div>
+                      <div className="ts-leaderSub">Target profile · {row.attempts} attempt{row.attempts !== 1 ? "s" : ""}</div>
+                    </div>
+                    <div className="ts-leaderCell" role="cell">
+                      <span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(0,220,110,0.95)" }}>{row.avgAccuracyPct}</span>
+                      <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span>
+                    </div>
+                    <div className="ts-leaderCell" role="cell">
+                      {row.avgReactionMsCorrect != null
+                        ? <><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMsCorrect}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></>
+                        : <span style={{ opacity: 0.35 }}>—</span>}
+                    </div>
                     <div className="ts-leaderCell" role="cell">{row.attempts}</div>
                   </div>
                 ))
@@ -5091,6 +5380,10 @@ export default function Dashboard() {
                   ? "Teams ranked by avg peak strength index across all power sessions. Core = full roster, Sub = smaller groups."
                   : teamLeaderMetric === "reaction"
                   ? "Teams ranked by avg reaction time across all reaction sessions — lower is better."
+                  : teamLeaderMetric === "volume"
+                  ? "Teams ranked by total hits across volume sessions. Avg SI shows collective output quality."
+                  : teamLeaderMetric === "target"
+                  ? "Teams ranked by zone accuracy % across target sessions. Avg RT is correct-zone reaction only."
                   : "Teams ranked by avg accuracy score across all accuracy sessions."}
               </div>
               <div className="ts-leaderControls">
@@ -5099,6 +5392,8 @@ export default function Dashboard() {
                   <option value="strength">💥 Power</option>
                   <option value="reaction">⚡️ Reaction</option>
                   <option value="accuracy">🎯 Accuracy</option>
+                  <option value="volume">🥊 Volume</option>
+                  <option value="target">🏹 Target</option>
                 </select>
               </div>
             </div>
@@ -5114,6 +5409,14 @@ export default function Dashboard() {
                 </>) : teamLeaderMetric === "reaction" ? (<>
                   <div className="ts-leaderCell" role="columnheader">Avg Reaction</div>
                   <div className="ts-leaderCell" role="columnheader">Best</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : teamLeaderMetric === "volume" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Avg Events / Win</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg SI</div>
+                  <div className="ts-leaderCell" role="columnheader">Sessions</div>
+                </>) : teamLeaderMetric === "target" ? (<>
+                  <div className="ts-leaderCell" role="columnheader">Accuracy</div>
+                  <div className="ts-leaderCell" role="columnheader">Avg RT (correct)</div>
                   <div className="ts-leaderCell" role="columnheader">Sessions</div>
                 </>) : (<>
                   <div className="ts-leaderCell" role="columnheader">Accuracy %</div>
@@ -5168,12 +5471,20 @@ export default function Dashboard() {
                       <div className="ts-leaderSub">{row.memberCount} members · {row.sessionCount} sessions</div>
                     </div>
                     {teamLeaderMetric === "strength" ? (<>
-                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.peakIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
-                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.avgIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(210,140,255,0.95)" }}>{row.peakIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(210,140,255,0.95)" }}>{row.avgIndex ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></div>
                       <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
                     </>) : teamLeaderMetric === "reaction" ? (<>
                       <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMs ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></div>
                       <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums" }}>{row.bestReactionMs ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
+                    </>) : teamLeaderMetric === "volume" ? (<>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,150,60,0.95)" }}>{row.totalHits ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>events/win</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.avgSi != null ? <><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,150,60,0.95)" }}>{row.avgSi}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>/1000</span></> : <span style={{ opacity: 0.35 }}>—</span>}</div>
+                      <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
+                    </>) : teamLeaderMetric === "target" ? (<>
+                      <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(0,220,110,0.95)" }}>{row.targetAccuracyPct ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span></div>
+                      <div className="ts-leaderCell" role="cell">{row.avgReactionMsCorrect != null ? <><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{row.avgReactionMsCorrect}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>ms</span></> : <span style={{ opacity: 0.35 }}>—</span>}</div>
                       <div className="ts-leaderCell" role="cell">{row.sessionCount}</div>
                     </>) : (<>
                       <div className="ts-leaderCell" role="cell"><span style={{ fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{row.accuracyPct ?? "—"}</span><span style={{ fontSize: 10, opacity: 0.45, marginLeft: 3 }}>%</span></div>
@@ -5396,8 +5707,15 @@ export default function Dashboard() {
                         const trendIcon  = progress?.trend === "up" ? "↑" : progress?.trend === "down" ? "↓" : "→";
                         const trendLabel = progress?.trend === "up" ? "Improving" : progress?.trend === "down" ? "Declining" : "Stable";
 
-                        const metricIcon = progress?.metric === "accuracy" ? "🎯"
-                          : progress?.metric === "reaction" ? "⚡️" : "💥";
+                        const metricIcon = progress?.metric === "accuracy"       ? "🎯"
+                          : progress?.metric === "reaction"       ? "⚡️"
+                          : progress?.metric === "targetAccuracy" ? "🏹"
+                          : progress?.metric === "targetReaction" ? "🏹"
+                          : "💥";
+
+                        const metricLabel = progress?.metric === "targetAccuracy" ? "target acc"
+                          : progress?.metric === "targetReaction" ? "target RT"
+                          : progress?.metric;
 
                         return (
                           <div
@@ -5452,7 +5770,7 @@ export default function Dashboard() {
                                     fontSize: 10, opacity: 0.42, whiteSpace: "nowrap",
                                     textAlign: "right", paddingRight: 2,
                                   }}>
-                                    {metricIcon} {progress.metric} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
+                                    {metricIcon} {metricLabel} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
                                   </div>
                                 </div>
                               ) : athleteProgressLoading ? (
@@ -6501,6 +6819,13 @@ export default function Dashboard() {
           .ts-heatmapStatsCol{
             flex: none;
             width: 100%;
+          }
+        }
+
+        /* Hide 3D angle compass on phones and tablets */
+        @media (max-width: 1024px){
+          .ts-strikeCompassWrap{
+            display: none;
           }
         }
 

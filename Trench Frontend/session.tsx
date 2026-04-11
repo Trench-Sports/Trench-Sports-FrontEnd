@@ -42,9 +42,16 @@ function getCharUuids() {
 const NUM_ROWS       = 12;
 const NUM_COLS       = 8;
 const FADE_TTL_MS    = 400;
-// Mirrors ESP32 SCAN_PERIOD_MS — used as a duration floor for single-frame events
-// where t_start == t_end (contact resolved and released within one scan cycle).
-const SCAN_PERIOD_MS = 37;
+// SCAN_PERIOD_MS is now per-device — derived from the hello packet and stored in
+// deviceInfoRef so handleNotify always reads the correct value without closure staleness.
+// Model II  @ 80 MHz  → 37 ms (~27 Hz)
+// Model III @ 160 MHz → 8 ms  (~120 Hz)
+// Used as a duration floor for single-frame events where t_start == t_end.
+// The constant below is a safe fallback before a hello has been received.
+const SCAN_PERIOD_MS_DEFAULT = 37;
+const VOLUME_WINDOW_MS  = 5000;   // 5-second recording window for volume mode
+const SESSION_MAX_MS    = 30_000; // hard cap — session auto-stops after 30 s
+const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
@@ -82,7 +89,7 @@ const MODE_META: Record<SessionMode, { icon: string; label: string; color: strin
 // ─── Target mode — zone mapping ───────────────────────────────────────────────
 // Grid is 12 rows × 8 cols (1-indexed from ESP32).
 // Rows:    top = 9–12, middle = 5–8, bottom = 1–4
-// Columns: left = 1–2, center = 3–6, right = 7–8
+// Columns: left = 7–8, center = 3–6, right = 1–2  (C8 renders leftmost, C1 rightmost)
 const ALL_ZONES: ZoneTarget[] = [
   { row: "top",    col: "left"   }, { row: "top",    col: "center" }, { row: "top",    col: "right"  },
   { row: "middle", col: "left"   }, { row: "middle", col: "center" }, { row: "middle", col: "right"  },
@@ -95,7 +102,7 @@ function randomZone(): ZoneTarget {
 
 function hitZone(row: number, col: number): ZoneTarget {
   const zRow: ZoneRow = row >= 9 ? "top" : row >= 5 ? "middle" : "bottom";
-  const zCol: ZoneCol = col <= 2 ? "left" : col <= 6 ? "center" : "right";
+  const zCol: ZoneCol = col <= 2 ? "right" : col <= 6 ? "center" : "left";
   return { row: zRow, col: zCol };
 }
 
@@ -368,18 +375,16 @@ function VolumeOverlay({
       animation: "tsFlashIn 0.15s ease-out",
     }}>
       <div style={{
-        fontSize: 38, fontWeight: 900, color: "#ff6a00",
+        fontSize: 48, fontWeight: 900, color: "#ff6a00",
         textShadow: "0 0 24px #ff6a00, 0 0 48px rgba(255,106,0,0.6)",
         letterSpacing: 2, animation: "tsSignalPop 0.2s ease-out",
+        marginBottom: 20,
       }}>HIT!</div>
-      <div style={{ fontSize: 11, color: "rgba(255,160,90,0.85)", letterSpacing: 3, textTransform: "uppercase", marginTop: 6 }}>
-        5 second burst
-      </div>
-      <div style={{ marginTop: 14, fontSize: 34, fontWeight: 900, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
+      <div style={{ marginTop: 0, fontSize: 42, fontWeight: 900, color: "#fff", fontVariantNumeric: "tabular-nums" }}>
         {hits}
       </div>
-      <div style={{ fontSize: 11, color: "rgba(255,255,255,0.7)", marginTop: 4 }}>
-        {Math.max(0, (remainingMs / 1000)).toFixed(1)}s left
+      <div style={{ fontSize: 13, color: "rgba(255,255,255,0.7)", marginTop: 8 }}>
+        {((VOLUME_WINDOW_MS - remainingMs) / 1000).toFixed(1)}s / 5.0s
       </div>
     </div>
   );
@@ -425,8 +430,19 @@ function VolumeOverlay({
 type BleStatus = "idle" | "scanning" | "connected" | "disconnected" | "unsupported";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
-// Identity packet sent by ESP32 immediately after BLE connect
-type DeviceInfo = { id: string; fw: string; rows: number; cols: number } | null;
+// Identity packet sent by ESP32 immediately after BLE connect.
+// hw / mode are populated from the hello packet and used to branch
+// between Model II (single-frame) and Model III (batch) data paths.
+type DeviceInfo = {
+  id:           string;
+  fw:           string;
+  hw:           string;        // "II" | "III"
+  rows:         number;
+  cols:         number;
+  mode:         string;        // "batch" (Model III) | "single" (Model II)
+  scanPeriodMs: number;        // 8 ms (Model III @ 120 Hz) | 37 ms (Model II @ 27 Hz)
+  samplingHz:   number;        // 120 (Model III) | 25 (Model II)
+} | null;
 
 type Athlete = {
   id: string;
@@ -636,8 +652,9 @@ async function uploadSession(opts: {
   startedAtMs:  number;
   endedAtMs:    number;
   mode?:        string;
-  deviceModel?: string;
-  samplingHz?:  number;
+  deviceModel?:   string;
+  samplingHz?:    number;
+  scanPeriodMs?:  number;   // duration floor for single-frame events — 8 (Model III) | 37 (Model II)
   // reaction mode live stats
   rxBestMs?:    number | null;
   rxAvgMs?:     number | null;
@@ -649,7 +666,8 @@ async function uploadSession(opts: {
   tgtAttempts?:     number;
   tgtCorrectHits?:  number;
   tgtCorrectSumMs?: number;
-  tgtBestMs?:       number | null;
+  tgtBestMs?:            number | null;   // best RT across all attempts
+  tgtBestCorrectMs?:     number | null;   // best RT for correct-zone hits only
   // physical device
   deviceId?:    string;
 }) {
@@ -658,10 +676,10 @@ async function uploadSession(opts: {
   const {
     sessionId, programId, athleteId, coreTeamId,
     createdBy, frames, startedAtMs, endedAtMs, mode = "power",
-    deviceModel = "TSII", samplingHz = 25,
+    deviceModel = "TSII", samplingHz = 25, scanPeriodMs = SCAN_PERIOD_MS_DEFAULT,
     rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
     accHitsCount = 0, accScoreSum = 0,
-    tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null,
+    tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null, tgtBestCorrectMs = null,
     deviceId,
   } = opts;
 
@@ -734,9 +752,10 @@ async function uploadSession(opts: {
 
     // duration = full contact window from first cell onset to last active scan.
     // Single-frame events (all cells new, t_start == t_end) get a floor of
-    // SCAN_PERIOD_MS — the contact lasted at most one scan cycle.
+    // scanPeriodMs — the contact lasted at most one scan cycle (8 ms on Model III,
+    // 37 ms on Model II).
     const rawDuration = tEnd - tStart;
-    const duration    = rawDuration > 0 ? rawDuration : SCAN_PERIOD_MS;
+    const duration    = rawDuration > 0 ? rawDuration : scanPeriodMs;
 
     // Rise time: from the event onset to when the loudest cell peaked.
     // We use v_peak_mv (index 5) to find the dominant cell, then read
@@ -905,31 +924,49 @@ async function uploadSession(opts: {
     : null;
 
   // Target stats — reaction time split by correct vs all attempts
+  // Derive attempt counts from frames — single source of truth, immune to
+  // stale-state issues at save time. Only frames with a target_zone stamped
+  // count as attempts; zone_correct === true marks a correct hit.
   const tgtRxAll     = frames.filter(f => f.reaction_time_ms !== null && f.target_zone !== null)
                              .map(f => f.reaction_time_ms as number);
   const tgtRxCorrect = frames.filter(f => f.reaction_time_ms !== null && f.zone_correct === true)
                              .map(f => f.reaction_time_ms as number);
+  // Frame-derived counts are always consistent with the stored events
+  const tgtAttemptsFromFrames  = frames.filter(f => f.target_zone !== null).length;
+  const tgtCorrectFromFrames   = frames.filter(f => f.zone_correct === true).length;
+
   const targetQuality = mode === "target"
     ? {
-        attempts:              tgtAttempts,
-        correct_hits:          tgtCorrectHits,
-        target_accuracy_pct:   tgtAttempts > 0
-                                 ? +(tgtCorrectHits / tgtAttempts * 100).toFixed(1)
+        // Use frame-derived counts — not the live-ref counters — as the authoritative
+        // values written to the DB. They match the event rows exactly.
+        attempts:              tgtAttemptsFromFrames,
+        correct_hits:          tgtCorrectFromFrames,
+        target_accuracy_pct:   tgtAttemptsFromFrames > 0
+                                 ? +(tgtCorrectFromFrames / tgtAttemptsFromFrames * 100).toFixed(1)
                                  : null,
-        best_reaction_ms:      tgtBestMs,
-        // Correct-only avg is more meaningful — penalises missing the zone, not hesitating
-        avg_reaction_ms_correct: tgtCorrectHits > 0
-                                   ? +(tgtCorrectSumMs / tgtCorrectHits).toFixed(0)
+        // best RT across all attempts (tgtBestAllMsRef.current passed in at call site)
+        best_reaction_ms:         tgtBestMs,
+        // best RT for correct-zone hits only — the more meaningful competitive benchmark
+        best_reaction_ms_correct: tgtBestCorrectMs,
+        // Correct-only avg is more informative: measures decision+execution speed on good hits
+        avg_reaction_ms_correct: tgtCorrectFromFrames > 0
+                                   ? +(tgtCorrectSumMs / tgtCorrectFromFrames).toFixed(0)
                                    : null,
+        // All-attempts avg RT
+        avg_reaction_ms_all: tgtAttemptsFromFrames > 0
+                               ? +(tgtRxAll.reduce((a, b) => a + b, 0) / tgtRxAll.length).toFixed(0)
+                               : null,
+        // Full distribution stats for both splits
         reaction_time_ms_all:     tgtRxAll.length     ? statSummary(tgtRxAll)     : null,
         reaction_time_ms_correct: tgtRxCorrect.length ? statSummary(tgtRxCorrect) : null,
       }
     : null;
 
-  // Volume stats — per-window breakdown with SI slope for fatigue detection
+  // Volume stats — per-window breakdown with SI fatigue tracking
   const volumeQuality = (() => {
     if (mode !== "volume") return null;
-    // Group frames by window index (only frames that were inside an open window)
+
+    // Group frames by window index (only frames inside an open window)
     const windowMap = new Map<number, BleFrame[]>();
     for (const f of frames) {
       if (f.vol_window_idx === null) continue;
@@ -942,41 +979,89 @@ async function uploadSession(opts: {
     const windows = Array.from(windowMap.entries())
       .sort(([a], [b]) => a - b)
       .map(([idx, wFrames]) => {
-        // Sort by sequence so slope is meaningful
+        // Sort by sequence so intra-window slope is meaningful
         const sorted = [...wFrames].sort((a, b) => (a.vol_hit_seq ?? 0) - (b.vol_hit_seq ?? 0));
+        // IEI-free SI — pure force component, no cadence bias within a burst window
         const siPerHit = sorted.map(f => {
           const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
-          return strengthIndex(null, peakMv);   // IEI-free SI — pure force component
+          return strengthIndex(null, peakMv);
         });
-        // IEI between consecutive hits in this window (epoch_ms diff)
+        // IEI between consecutive hits in this window (wall-clock ms)
         const ieiWithin = sorted.slice(1).map((f, i) => f.epoch_ms - sorted[i].epoch_ms);
-        // Linear SI slope: (last SI − first SI) / hit count → negative = fatigue
-        const siSlope = siPerHit.length >= 2
-          ? +((siPerHit[siPerHit.length - 1] - siPerHit[0]) / (siPerHit.length - 1)).toFixed(1)
+
+        const avgSi  = siPerHit.length
+          ? +(siPerHit.reduce((a, b) => a + b, 0) / siPerHit.length).toFixed(1)
           : null;
+        const peakSi = siPerHit.length ? Math.max(...siPerHit) : null;
+        const minSi  = siPerHit.length ? Math.min(...siPerHit) : null;
+
+        // Intra-window SI slope via least-squares linear regression over hit sequence.
+        // More robust than (last - first): handles noisy mid-window readings.
+        let siSlopeIntra: number | null = null;
+        if (siPerHit.length >= 2) {
+          const n    = siPerHit.length;
+          const xBar = (n - 1) / 2;
+          const yBar = siPerHit.reduce((a, b) => a + b, 0) / n;
+          const ssXX = siPerHit.map((_, i) => (i - xBar) ** 2).reduce((a, b) => a + b, 0);
+          const ssXY = siPerHit.map((v, i) => (i - xBar) * (v - yBar)).reduce((a, b) => a + b, 0);
+          siSlopeIntra = ssXX > 0 ? +(ssXY / ssXX).toFixed(1) : 0;
+        }
+
         return {
-          window_idx:   idx,
-          hits:         sorted.length,
-          avg_si:       siPerHit.length ? +(siPerHit.reduce((a, b) => a + b, 0) / siPerHit.length).toFixed(1) : null,
-          si_values:    siPerHit,
-          si_slope:     siSlope,
-          avg_iei_ms:   ieiWithin.length ? +(ieiWithin.reduce((a, b) => a + b, 0) / ieiWithin.length).toFixed(0) : null,
+          window_idx:    idx,
+          hits:          sorted.length,
+          avg_si:        avgSi,
+          peak_si:       peakSi,
+          min_si:        minSi,
+          si_values:     siPerHit,       // per-hit SI in vol_hit_seq order
+          si_slope:      siSlopeIntra,   // SI change per hit within this window
+          avg_iei_ms:    ieiWithin.length
+            ? +(ieiWithin.reduce((a, b) => a + b, 0) / ieiWithin.length).toFixed(0)
+            : null,
           iei_ms_values: ieiWithin,
         };
       });
 
-    // Global SI fatigue slope across all windows — avg_si of first window vs last
+    // ── Global SI fatigue slope (across windows) ──────────────────────────────
+    // Least-squares linear regression over window avg_si values ordered by window_idx.
+    // Uses all windows, not just first-vs-last, so a single outlier window won't
+    // skew the reading. Unit: SI points per window (negative = fatigue).
     const windowAvgSis = windows.map(w => w.avg_si).filter((v): v is number => v !== null);
-    const globalSiSlope = windowAvgSis.length >= 2
-      ? +((windowAvgSis[windowAvgSis.length - 1] - windowAvgSis[0]) / (windowAvgSis.length - 1)).toFixed(1)
-      : null;
+    let globalSiSlope: number | null = null;
+    if (windowAvgSis.length >= 2) {
+      const n    = windowAvgSis.length;
+      const xBar = (n - 1) / 2;
+      const yBar = windowAvgSis.reduce((a, b) => a + b, 0) / n;
+      const ssXX = windowAvgSis.map((_, i) => (i - xBar) ** 2).reduce((a, b) => a + b, 0);
+      const ssXY = windowAvgSis.map((v, i) => (i - xBar) * (v - yBar)).reduce((a, b) => a + b, 0);
+      globalSiSlope = ssXX > 0 ? +(ssXY / ssXX).toFixed(1) : 0;
+    }
+
+    // Classify trend — threshold of ±10 SI/window separates real fatigue/building
+    // from noise. Below that, session-to-session variance dominates.
+    const SI_TREND_THRESHOLD = 10;
+    const siTrend: "fatigue" | "building" | "stable" =
+      globalSiSlope === null              ? "stable"
+      : globalSiSlope <= -SI_TREND_THRESHOLD ? "fatigue"
+      : globalSiSlope >=  SI_TREND_THRESHOLD ? "building"
+      : "stable";
+
+    // Session-level SI values in chronological hit order for dashboard charting
+    const allHitSiValues = frames
+      .filter(f => f.vol_window_idx !== null)
+      .map(f => {
+        const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
+        return strengthIndex(null, peakMv);
+      });
 
     return {
       windows,
       best_window_hits:  Math.max(...windows.map(w => w.hits)),
       avg_window_hits:   +(windows.reduce((s, w) => s + w.hits, 0) / windows.length).toFixed(1),
-      si_fatigue_slope:  globalSiSlope,   // negative = SI decreasing across windows (fatigue)
       total_windows:     windows.length,
+      si_fatigue_slope:  globalSiSlope,   // SI pts/window via linear regression; negative = fatigue
+      si_trend:          siTrend,         // "fatigue" | "building" | "stable"
+      si_all_values:     allHitSiValues,  // per-hit SI chronological for charting
     };
   })();
 
@@ -1289,7 +1374,7 @@ function BlePickerSheet({
 // ─── Main Page Component ──────────────────────────────────────────────────────
 export default function Session() {
   const navigate = useNavigate();
-  const { playSignal, playZoneCue } = useSignalAudio();
+  const { unlock: unlockAudio, playSignal, playVolumeEnd, playZoneCue, closeAudio } = useSignalAudio();
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -1354,6 +1439,9 @@ export default function Session() {
 
   const connRef      = useRef<AdapterConnection | null>(null);  // active adapter connection
   const assemblerRef = useRef(new ChunkAssembler());
+  // Mirrors deviceInfo state — readable inside handleNotify without closure staleness.
+  // Updated synchronously in the hello handler before any data frames arrive.
+  const deviceInfoRef = useRef<DeviceInfo>(null);
 
   useEffect(() => {
     if (!isNativeApp()) {
@@ -1391,13 +1479,15 @@ export default function Session() {
   }, [deviceInfo]);
 
   // ── Session state ────────────────────────────────────────────────────────────
-  const [sessionMode,   setSessionMode]   = useState<SessionMode>("power");
-  const [sessionActive, setSessionActive] = useState(false);
-  const [saveState,     setSaveState]     = useState<SaveState>("idle");
-  const [saveError,     setSaveError]     = useState<string | null>(null);
-  const [elapsedMs,     setElapsedMs]     = useState(0);
-  const startTimeRef  = useRef<number | null>(null);
-  const sessionIdRef  = useRef("");
+  const [sessionMode,    setSessionMode]    = useState<SessionMode>("power");
+  const [sessionActive,  setSessionActive]  = useState(false);
+  const [sessionWarning, setSessionWarning] = useState(false); // true during final 5 s
+  const [saveState,      setSaveState]      = useState<SaveState>("idle");
+  const [saveError,      setSaveError]      = useState<string | null>(null);
+  const [elapsedMs,      setElapsedMs]      = useState(0);
+  const startTimeRef        = useRef<number | null>(null);
+  const sessionIdRef        = useRef("");
+  const sessionWarningFired = useRef(false); // prevents double-firing the 5 s cue
 
   // ── Reaction mode state ───────────────────────────────────────────────────────
   const [rxPhase,   setRxPhase]   = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
@@ -1410,7 +1500,6 @@ export default function Session() {
   const rxSumMs     = useRef(0);
 
     // ── Volume mode state ───────────────────────────────────────────────────────
-  const VOLUME_WINDOW_MS = 5000;
   const [volPhase, setVolPhase] = useState<"idle"|"waiting"|"signal"|"result"|"early">("idle");
   const [volHits, setVolHits] = useState(0);
   const [volBest, setVolBest] = useState<number | null>(null);
@@ -1442,15 +1531,20 @@ export default function Session() {
   const [tgtReactMs,  setTgtReactMs]  = useState<number | null>(null);       // reaction time ms
   const [tgtAttempts, setTgtAttempts] = useState(0);                         // total attempts
   const [tgtHits,     setTgtHits]     = useState(0);                         // correct zone hits
-  const [tgtBestMs,   setTgtBestMs]   = useState<number | null>(null);
+  const [tgtBestMs,   setTgtBestMs]   = useState<number | null>(null);       // best RT display (all attempts)
   const [tgtAvgMs,    setTgtAvgMs]    = useState<number | null>(null);
   const tgtPhaseRef    = useRef<string>("idle");
   const tgtZoneRef     = useRef<ZoneTarget | null>(null);
   const tgtSignalAt    = useRef<number | null>(null);
   const tgtTimer       = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tgtSumMs       = useRef(0);
-  const tgtCorrectSumMs = useRef(0);    // reaction time sum for correct-zone hits only
-  const tgtAttemptsRef = useRef(0);
+  const tgtCorrectSumMs  = useRef(0);    // reaction time sum for correct-zone hits only
+  const tgtAttemptsRef   = useRef(0);
+  const tgtHitsRef       = useRef(0);    // mirrors tgtHits state — always current at save time
+  // Best RT refs — tracked separately from state so saveSession always reads
+  // the latest value (setState is async and can be one attempt stale at save time)
+  const tgtBestAllMsRef     = useRef<number | null>(null);   // best RT across all attempts
+  const tgtBestCorrectMsRef = useRef<number | null>(null);   // best RT for correct-zone hits only
 
   // ── Grid / data ──────────────────────────────────────────────────────────────
   const [grid,    setGrid]    = useState<GridState>(new Map());
@@ -1491,7 +1585,7 @@ export default function Session() {
   useEffect(() => { volPhaseRef.current = volPhase; }, [volPhase]);
   useEffect(() => { volAttemptsRef.current = volAttempts; }, [volAttempts]);
   useEffect(() => { tgtPhaseRef.current = tgtPhase; }, [tgtPhase]);
-  useEffect(() => { tgtAttemptsRef.current = tgtAttempts; }, [tgtAttempts]);
+  // tgtAttemptsRef and tgtHitsRef are updated directly in the hit handler — no useEffect sync needed
 
   // ── Target mode sequence ──────────────────────────────────────────────────────
   const scheduleNextTarget = useCallback(() => {
@@ -1530,6 +1624,9 @@ export default function Session() {
   }, []);
 
     const finishVolumeWindow = useCallback((finalHits: number) => {
+    // Alert the athlete that the 5-second window is over
+    playVolumeEnd();
+
     setVolPhase("result");
     volPhaseRef.current = "result";
     setVolHits(finalHits);
@@ -1544,46 +1641,69 @@ export default function Session() {
       volTickTimer.current = null;
     }
 
-    setTimeout(() => {
-      if (!captureRef.current) return;
-      scheduleNextVolume();
+    // In volume mode, auto-end the session after showing result
+    const endTimer = setTimeout(() => {
+      if (captureRef.current) {
+        setSessionActive(false);
+        captureRef.current = false;
+      }
     }, 2200);
-  }, []);
+    
+    return () => clearTimeout(endTimer);
+  }, [playVolumeEnd]);
 
     const scheduleNextVolume = useCallback(() => {
     if (!captureRef.current) return;
+    
+    // Clear any existing timers
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
+
     const delay = 1500 + Math.random() * 2500;
     setVolPhase("waiting");
     volPhaseRef.current = "waiting";
     setVolHits(0);
+    volHitsRef.current = 0;
     setVolRemainingMs(0);
-    volSignalAt.current = null;
-    volWindowEndsAt.current = null;
 
     volTimer.current = setTimeout(() => {
       if (!captureRef.current) return;
 
-      const nowPerf = performance.now();
+      const signalStartTime = performance.now();
+      const windowEndTime = signalStartTime + VOLUME_WINDOW_MS;
+
       setVolPhase("signal");
       volPhaseRef.current = "signal";
       setVolHits(0);
-      setVolRemainingMs(VOLUME_WINDOW_MS);
-      volSignalAt.current = nowPerf;
-      volWindowEndsAt.current = nowPerf + VOLUME_WINDOW_MS;
-      volWindowIdxRef.current += 1;       // new window — advance the index
-      volWindowHitSeqRef.current = 0;     // reset per-window hit counter
+      volHitsRef.current = 0;
+      setVolRemainingMs(0);
+      volSignalAt.current = signalStartTime;
+      volWindowEndsAt.current = windowEndTime;
+      volWindowIdxRef.current += 1;
+      volWindowHitSeqRef.current = 0;
 
+      // Play the signal tone
+      playSignal("volume");
+
+      // Start countdown timer - updates every 50ms
       if (volTickTimer.current) clearInterval(volTickTimer.current);
       volTickTimer.current = setInterval(() => {
-        if (!volWindowEndsAt.current) return;
-        const remaining = Math.max(0, Math.round(volWindowEndsAt.current - performance.now()));
+        const now = performance.now();
+        const elapsed = Math.max(0, now - signalStartTime);
+        const remaining = Math.max(0, VOLUME_WINDOW_MS - elapsed);
+        
         setVolRemainingMs(remaining);
+        
+        // When window closes, end it
+        if (elapsed >= VOLUME_WINDOW_MS) {
+          if (volTickTimer.current) {
+            clearInterval(volTickTimer.current);
+            volTickTimer.current = null;
+          }
+          finishVolumeWindow(volHitsRef.current);
+        }
       }, 50);
 
-      if (volTimer.current) clearTimeout(volTimer.current);
-      volTimer.current = setTimeout(() => {
-        finishVolumeWindow(volHitsRef.current);
-      }, VOLUME_WINDOW_MS);
     }, delay);
   }, [finishVolumeWindow]);
 
@@ -1593,13 +1713,38 @@ export default function Session() {
     return () => clearInterval(id);
   }, []);
 
-  // Timer
+  // Timer — also drives the 30 s hard cap and the 5 s warning cue
   useEffect(() => {
     if (!sessionActive) return;
     const id = setInterval(() => {
-      setElapsedMs(Date.now() - (startTimeRef.current ?? Date.now()));
+      const elapsed = Date.now() - (startTimeRef.current ?? Date.now());
+      setElapsedMs(elapsed);
+
+      // 5-second warning (fires once at 25 s)
+      if (elapsed >= SESSION_WARN_MS && !sessionWarningFired.current) {
+        sessionWarningFired.current = true;
+        setSessionWarning(true);
+        playVolumeEnd(); // descending 3-tone on web, "Stop!" on native
+      }
+
+      // Hard cap — auto-stop at 30 s
+      if (elapsed >= SESSION_MAX_MS) {
+        clearInterval(id);
+        stopSession();
+      }
     }, 250);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionActive]);
+
+  // Session cleanup when deactivated
+  useEffect(() => {
+    if (sessionActive) return;
+    // Clean up all mode timers on session end
+    if (rxTimer.current) clearTimeout(rxTimer.current);
+    if (tgtTimer.current) clearTimeout(tgtTimer.current);
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
   }, [sessionActive]);
 
   // ── BLE notify handler ────────────────────────────────────────────────────────
@@ -1616,14 +1761,32 @@ export default function Session() {
 
     // ── Non-data control frames — handled before the hits path ────────────────
     if (obj.type === "hello") {
-      const info: DeviceInfo = { id: obj.id, fw: obj.fw, rows: obj.rows, cols: obj.cols };
+      // Derive per-device timing constants from the hello packet.
+      // Model III sends hw:"III" and mode:"batch"; Model II omits both fields.
+      const isModelIII    = obj.hw === "III";
+      const info: DeviceInfo = {
+        id:           obj.id,
+        fw:           obj.fw,
+        hw:           obj.hw   ?? "II",
+        rows:         obj.rows,
+        cols:         obj.cols,
+        mode:         obj.mode ?? "single",
+        scanPeriodMs: isModelIII ? 8  : 37,
+        samplingHz:   isModelIII ? 120 : 25,
+      };
       setDeviceInfo(info);
-      // Upsert to Supabase devices table so last_seen_at and fw_version stay current
+      deviceInfoRef.current = info;
+      console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
+      // Upsert to Supabase devices table — hw + mode are now real columns (not just features)
       if (supabase) {
         supabase.from("devices").upsert({
           id:           obj.id,
           fw_version:   obj.fw,
           last_seen_at: new Date().toISOString(),
+          hw:           info.hw,
+          mode:         info.mode,
+          // Keep features in sync for any existing dashboards that read features->>'hw'
+          features:     { hw: info.hw, mode: info.mode },
         }, { onConflict: "id" }).then(({ error }) => {
           if (error) console.warn("[devices] upsert failed:", error.message);
         });
@@ -1643,12 +1806,19 @@ export default function Session() {
       return;
     }
 
-    // ESP32 now sends 7-element hit arrays: [r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
-    const hits: RichHit[] = obj.hits ?? [];
-    if (!hits.length) return;
+    // ── Normalise both packet shapes into a list of { hits, t } frame objects ──
+    // Model II  sends: { hits: [...], t: number }          → one frame per packet
+    // Model III sends: { type:"batch", frames:[{hits,t}] } → N frames per packet
+    // All per-frame logic below is identical for both hardware generations.
+    const isBatch = obj.type === "batch" && Array.isArray(obj.frames);
+    const rawFrames: Array<{ hits: RichHit[]; t: number }> = isBatch
+      ? (obj.frames as Array<any>).map(f => ({ hits: (f.hits ?? []) as RichHit[], t: (f.t ?? 0) as number }))
+      : [{ hits: (obj.hits ?? []) as RichHit[], t: (obj.t ?? 0) as number }];
+
+    for (const { hits, t: frameT } of rawFrames) {
+      if (!hits.length) continue;
 
     const epochMs = Date.now();
-    const frameT: number = obj.t ?? 0;
 
     // ── Reaction mode: first incoming hit resolves the current phase ──────────
     if (captureRef.current && sessionModeRef.current === "reaction") {
@@ -1660,7 +1830,7 @@ export default function Session() {
         rxPhaseRef.current = "early";
         playSignal("early");
         setTimeout(() => scheduleNextReaction(), 1800);
-        return;
+        continue;
       }
       if (phase === "signal" && rxSignalAt.current !== null) {
         const rt = Math.round(performance.now() - rxSignalAt.current);
@@ -1686,7 +1856,7 @@ export default function Session() {
         setVolPhase("early");
         volPhaseRef.current = "early";
         setTimeout(() => scheduleNextVolume(), 1800);
-        return;
+        continue;
       }
 
       if (phase === "signal" && volWindowEndsAt.current !== null) {
@@ -1712,7 +1882,7 @@ export default function Session() {
         tgtPhaseRef.current = "early";
         playSignal("early");
         setTimeout(() => scheduleNextTarget(), 1800);
-        return;
+        continue;
       }
       if (phase === "signal" && tgtSignalAt.current !== null && tgtZoneRef.current !== null) {
         const rt       = Math.round(performance.now() - tgtSignalAt.current);
@@ -1730,14 +1900,22 @@ export default function Session() {
         setTgtCorrect(isCorrect);
         setTgtPhase("result");
         tgtPhaseRef.current = "result";
-        setTgtAttempts(a => a + 1);
+        // Increment attempt counters — ref immediately, state for display
+        tgtAttemptsRef.current += 1;
+        setTgtAttempts(tgtAttemptsRef.current);
         tgtSumMs.current += rt;
+        // Track best RT across all attempts (for display) and correct-only (for quality)
+        tgtBestAllMsRef.current = tgtBestAllMsRef.current === null
+          ? rt : Math.min(tgtBestAllMsRef.current, rt);
+        setTgtBestMs(tgtBestAllMsRef.current);
         if (isCorrect) {
-          setTgtHits(h => h + 1);
+          tgtHitsRef.current += 1;
+          setTgtHits(tgtHitsRef.current);
           tgtCorrectSumMs.current += rt;
+          tgtBestCorrectMsRef.current = tgtBestCorrectMsRef.current === null
+            ? rt : Math.min(tgtBestCorrectMsRef.current, rt);
         }
-        setTgtBestMs(prev => prev === null ? rt : Math.min(prev, rt));
-        setTgtAvgMs(Math.round((tgtSumMs.current + rt) / (tgtAttemptsRef.current + 1)));
+        setTgtAvgMs(Math.round(tgtSumMs.current / tgtAttemptsRef.current));
         setTimeout(() => scheduleNextTarget(), 2400);
         // Fall through to display hit on grid
       }
@@ -1767,7 +1945,7 @@ export default function Session() {
         t_device_ms:      frameT,
         epoch_ms:         epochMs,
         hits,
-        raw:              obj,
+        raw:              isBatch ? { t: frameT, hits } : obj,
         reaction_time_ms: pendingRxMsRef.current,
         // Target mode — stamped in the target block above when phase === "signal"
         target_zone:      pendingTgtZoneRef.current,
@@ -1813,7 +1991,8 @@ export default function Session() {
     setFeed(prev => [...newItems, ...prev].slice(0, 60));
 
     setPeakMv(prev => Math.max(prev, ...hits.map(h => h[5])));  // h[5] = v_peak_mv
-  }, []);
+
+    } // end for (batch dispatcher loop)
 
   // ── BLE connect / disconnect ──────────────────────────────────────────────────
   const [bleError,      setBleError]      = useState<string | null>(null);
@@ -2081,6 +2260,11 @@ export default function Session() {
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
+    // Unlock audio context synchronously inside the user-gesture handler.
+    // This satisfies iOS/Android's requirement that AudioContext be resumed
+    // during a tap — all subsequent playSignal calls will reuse this context.
+    unlockAudio();
+
     sessionIdRef.current = genSessionId();
     framesRef.current    = [];
     frameIndex.current   = 0;
@@ -2113,6 +2297,8 @@ export default function Session() {
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
+    setSessionWarning(false);
+    sessionWarningFired.current = false;
     startTimeRef.current = Date.now();
     captureRef.current   = true;
     setSessionActive(true);
@@ -2156,11 +2342,14 @@ export default function Session() {
       setTgtHits(0);
       setTgtBestMs(null);
       setTgtAvgMs(null);
-      tgtSumMs.current      = 0;
-      tgtCorrectSumMs.current = 0;
-      tgtAttemptsRef.current = 0;
-      tgtZoneRef.current   = null;
-      tgtSignalAt.current  = null;
+      tgtSumMs.current          = 0;
+      tgtCorrectSumMs.current    = 0;
+      tgtAttemptsRef.current     = 0;
+      tgtHitsRef.current         = 0;
+      tgtBestAllMsRef.current    = null;
+      tgtBestCorrectMsRef.current = null;
+      tgtZoneRef.current         = null;
+      tgtSignalAt.current        = null;
       scheduleNextTarget();
     }
   };
@@ -2169,12 +2358,19 @@ export default function Session() {
     captureRef.current = false;
     if (rxTimer.current) clearTimeout(rxTimer.current);
     if (tgtTimer.current) clearTimeout(tgtTimer.current);
+    if (volTimer.current) clearTimeout(volTimer.current);
+    if (volTickTimer.current) clearInterval(volTickTimer.current);
     setRxPhase("idle");
     rxPhaseRef.current = "idle";
     setTgtPhase("idle");
     tgtPhaseRef.current = "idle";
+    setVolPhase("idle");
+    volPhaseRef.current = "idle";
     window.speechSynthesis?.cancel();
+    setSessionWarning(false);
+    sessionWarningFired.current = false;
     setSessionActive(false);
+    closeAudio();
     await sendCommand("stop");
   };
 
@@ -2197,8 +2393,11 @@ export default function Session() {
         startedAtMs: startTimeRef.current ?? Date.now(),
         endedAtMs:   Date.now(),
         mode:        sessionMode,
-        deviceModel: "TSII",
-        samplingHz:  25,
+        // Derive hardware metadata from the hello packet — never hardcoded.
+        // Falls back to Model II defaults when deviceInfo is unavailable.
+        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   deviceInfo?.samplingHz   ?? 25,
+        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
         // reaction live stats
         rxBestMs:    rxBestMs,
         rxAvgMs:     rxAvgMs,
@@ -2207,10 +2406,12 @@ export default function Session() {
         accHitsCount: accHitsRef.current,
         accScoreSum:  accSumRef.current,
         // target live stats
+        // All target counters read from refs — never stale at save time
         tgtAttempts:     tgtAttemptsRef.current,
-        tgtCorrectHits:  tgtHits,
+        tgtCorrectHits:  tgtHitsRef.current,
         tgtCorrectSumMs: tgtCorrectSumMs.current,
-        tgtBestMs:       tgtBestMs,
+        tgtBestMs:           tgtBestAllMsRef.current,
+        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
         // physical device identity from hello packet
         deviceId:    deviceInfo?.id,
       });
@@ -2220,6 +2421,19 @@ export default function Session() {
       setSaveError(err.message ?? "Unknown error");
       setSaveState("error");
     }
+  };
+
+  // ── Discard session — wipes accumulated frames without saving ─────────────────
+  const discardSession = () => {
+    framesRef.current  = [];
+    frameIndex.current = 0;
+    feedCounter.current = 0;
+    setFeed([]);
+    setGrid(new Map());
+    setPeakMv(0);
+    setElapsedMs(0);
+    setSaveState("idle");
+    setSaveError(null);
   };
 
   // ── Derived stats ─────────────────────────────────────────────────────────────
@@ -2418,6 +2632,16 @@ export default function Session() {
                     {deviceInfo.id}
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
                       v{deviceInfo.fw}
+                    </span>
+                    {/* Hardware generation badge — distinguishes Model II from Model III */}
+                    <span style={{
+                      fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+                      color: deviceInfo.hw === "III" ? "#00ff88" : "#b400ff",
+                      background: deviceInfo.hw === "III" ? "rgba(0,255,136,0.12)" : "rgba(180,0,255,0.12)",
+                      border: `1px solid ${deviceInfo.hw === "III" ? "rgba(0,255,136,0.30)" : "rgba(180,0,255,0.30)"}`,
+                      borderRadius: 4, padding: "1px 5px",
+                    }}>
+                      {deviceInfo.hw === "III" ? "III · 120Hz" : "II · 27Hz"}
                     </span>
                   </div>
                 )}
@@ -2654,6 +2878,18 @@ export default function Session() {
                 position: "absolute", top: 10, right: 10, zIndex: 9,
                 display: "flex", gap: 8,
               }}>
+                {/* 5-second warning banner — shown inside the bag when time is nearly up */}
+                {sessionWarning && (
+                  <div style={{
+                    padding: "5px 12px", borderRadius: 8, fontWeight: 800, fontSize: 11,
+                    background: "rgba(255,80,80,0.22)", border: "1px solid rgba(255,80,80,0.50)",
+                    color: "#ff8080", backdropFilter: "blur(8px)",
+                    animation: "tsBlink 0.7s ease-in-out infinite",
+                    letterSpacing: "0.04em",
+                  }}>
+                    {Math.max(0, Math.ceil((SESSION_MAX_MS - elapsedMs) / 1000))}s left
+                  </div>
+                )}
                 <button
                   onClick={stopSession}
                   style={{
@@ -2755,6 +2991,11 @@ export default function Session() {
             {/* Reaction overlay */}
             {sessionMode === "reaction" && sessionActive && (
               <ReactionOverlay phase={rxPhase} reactionMs={rxTime} />
+            )}
+
+            {/* Volume overlay */}
+            {sessionMode === "volume" && sessionActive && (
+              <VolumeOverlay phase={volPhase} hits={volHits} remainingMs={volRemainingMs} />
             )}
 
             {/* Target overlay */}
@@ -2937,23 +3178,41 @@ export default function Session() {
               ))}
             </div>
 
-            {/* Save */}
+            {/* Save / Discard — shown after session ends with recorded data */}
             {canSave && (
-              <button
-                onClick={saveSession}
-                disabled={saveState === "saving" || saveState === "saved"}
-                style={{
-                  width: "100%", marginTop: 12, padding: "10px 0",
-                  borderRadius: 10, fontWeight: 700, fontSize: 13,
-                  background: saveBtnStyle[saveState].bg,
-                  border:     `1px solid ${saveBtnStyle[saveState].border}`,
-                  color:      saveBtnStyle[saveState].color,
-                  cursor: saveState === "saving" || saveState === "saved" ? "default" : "pointer",
-                  transition: "all 200ms",
-                }}
-              >
-                {saveBtnStyle[saveState].label}
-              </button>
+              <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                <button
+                  onClick={saveSession}
+                  disabled={saveState === "saving"}
+                  style={{
+                    flex: 1, padding: "10px 0",
+                    borderRadius: 10, fontWeight: 700, fontSize: 13,
+                    background: saveBtnStyle[saveState].bg,
+                    border:     `1px solid ${saveBtnStyle[saveState].border}`,
+                    color:      saveBtnStyle[saveState].color,
+                    cursor: saveState === "saving" ? "default" : "pointer",
+                    transition: "all 200ms",
+                  }}
+                >
+                  {saveBtnStyle[saveState].label}
+                </button>
+                <button
+                  onClick={discardSession}
+                  disabled={saveState === "saving"}
+                  title="Discard this session — data will not be saved"
+                  style={{
+                    padding: "10px 14px", borderRadius: 10, fontWeight: 700, fontSize: 13,
+                    background: "rgba(255,255,255,0.04)",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    color: "var(--muted)",
+                    cursor: saveState === "saving" ? "default" : "pointer",
+                    transition: "all 200ms",
+                    opacity: saveState === "saving" ? 0.45 : 1,
+                  }}
+                >
+                  Discard
+                </button>
+              </div>
             )}
 
             {saveState === "saved" && !canSave && (

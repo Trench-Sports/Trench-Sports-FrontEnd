@@ -15,12 +15,6 @@ import bluetooth
 # Device identity — read from NVS
 # Written once by boot.py; persists across reboots and OTA.
 # Falls back to safe defaults if NVS is unavailable.
-#
-# FIX: boot.py writes identity with set_blob() (standard MicroPython NVS API),
-# but this file was calling get_str() which does NOT exist in standard MicroPython.
-# Changed to get_blob() + decode("utf-8") to match boot.py's write calls.
-# Without this fix every unit always advertises as "TS-UNKNOWN" and users
-# cannot tell devices apart in the BLE picker.
 # ─────────────────────────────────────────
 _DEVICE_ID  = "TS-UNKNOWN"
 _FW_VERSION = "0.0.0"
@@ -61,8 +55,8 @@ COL_B = (5, 6, 7, 8)   # 4052 sel 0-3 → col numbers for ADC B
 # Streaming config
 # ─────────────────────────────────────────
 HIT_THRESHOLD_V  = 0.1    # only transmit hits >= this
-SCAN_PERIOD_MS   = 37      # ~27 Hz — matches actual hardware ceiling (see timing note)
-MAX_NOTIFY_HZ    = 25      # honest BLE cap given ADC hardware; 30 was unachievable
+SCAN_PERIOD_MS   = 37     # ~27 Hz — matches actual hardware ceiling
+MAX_NOTIFY_HZ    = 25     # honest BLE cap given ADC hardware
 
 ADV_INTERVAL_US  = 200_000
 ADV_WATCHDOG_MS  = 2_000   # re-issue advertising if still unconnected
@@ -70,19 +64,17 @@ ADV_WATCHDOG_MS  = 2_000   # re-issue advertising if still unconnected
 # ADC timing (increase if readings are noisy)
 ROW_SETTLE_US = 5
 MUX_SETTLE_US = 8
-CONV_WAIT_US  = 310        # ADS1015 @ 3300 SPS needs ~303 µs; 310 saves ~1.4ms/frame vs 340
+CONV_WAIT_US  = 310        # ADS1015 @ 3300 SPS needs ~303 µs
 
 # ─────────────────────────────────────────────────────────────────────────
 # TIMING & WATCHDOG NOTE
 # ─────────────────────────────────────────────────────────────────────────
 # time.sleep_us() is a busy-wait — it does NOT yield to FreeRTOS.
 # Per-frame busy-wait budget: 48 × (310µs conv + ~90µs I2C×2) ≈ 23ms.
-# That alone would stall the TWDT.
 #
 # Optimised yield strategy (yields every 3 rows, not every row):
-#   - 4 yields × 1ms = ~4ms overhead  (was 12ms — saves 8ms/frame)
+#   - 4 yields × 1ms = ~4ms overhead
 #   - TWDT safe: 3 rows × ~1.9ms each = ~5.7ms max continuous busy-wait
-#     (TWDT timeout is 5 seconds — nowhere near triggered)
 #   - Effective frame time: ~37ms → ~27 Hz scan rate
 #   - MAX_NOTIFY_HZ capped at 25 to leave BLE stack headroom
 # ─────────────────────────────────────────────────────────────────────────
@@ -131,15 +123,11 @@ _UART_SERVICE = (
 # ─────────────────────────────────────────
 # Session gate — controlled by BLE commands
 # ─────────────────────────────────────────
-# The ESP32 will NOT scan or stream until the app sends {"cmd":"start"}.
-# {"cmd":"stop"} pauses scanning without dropping the BLE connection.
-# Written from the BLE IRQ, read in the main scan loop.
 _scanning_enabled = False
 
 # ─────────────────────────────────────────
 # OTA state — written by IRQ, applied in run()
 # ─────────────────────────────────────────
-# Never write/reset directly from the IRQ; only signal via flags.
 _ota_active   = False
 _ota_apply    = False
 _ota_filename = "main_new.py"
@@ -147,31 +135,18 @@ _ota_size     = 0
 _ota_buf      = []
 _ota_new_fw   = "0.0.0"
 
-
 def _adv_payload(name: str) -> bytearray:
     """
     Advertising payload with two AD structures:
 
     1. Complete Local Name (type 0x09)
-       Visible in the OS device-name picker and useful for manual identification.
-
     2. Complete List of 128-bit UUIDs (type 0x07) — the NUS service UUID.
-       FIX: The old payload contained ONLY the name. Web Bluetooth's
-       requestDevice() and most native BLE scanners filter on advertised
-       service UUIDs. Without this AD structure the device is INVISIBLE
-       to any scanner using a service-UUID filter, which is exactly what
-       the app's adapter does. Including the UUID here costs 18 bytes
-       (well within the 31-byte ADV_IND payload limit) and makes the
-       device discoverable on first scan by every platform.
 
     UUID is encoded little-endian as required by the BT spec.
     """
-    # ── AD1: Complete Local Name ──────────────────────────────────────────
     n       = name.encode("utf-8")
     name_ad = bytes((len(n) + 1, 0x09)) + n
 
-    # ── AD2: Complete list of 128-bit UUICs — NUS service UUID ───────────
-    # "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" in little-endian byte order
     uuid_bytes = bytes([
         0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
         0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E,
@@ -180,13 +155,12 @@ def _adv_payload(name: str) -> bytearray:
 
     return bytearray(name_ad + uuid_ad)
 
-
 class BLEUARTStreamer:
     def __init__(self, name=DEVICE_NAME):
         self._name = name
         self._ble  = bluetooth.BLE()
         self._ble.active(True)
-        self._ble.config(mtu=512)   # raise ATT MTU; allows up to ~509-byte writes
+        self._ble.config(mtu=512)
         self._ble.irq(self._irq)
 
         ((self._tx_handle, self._rx_handle),) = \
@@ -195,15 +169,10 @@ class BLEUARTStreamer:
         self._connections    = set()
         self._payload        = _adv_payload(name)
         self._is_advertising = False
-        # FIX: hello is now sent unconditionally on connect, before any
-        # "start" command arrives. The old guard (_scanning_enabled check)
-        # created a deadlock: the app waits for hello before sending "start",
-        # but hello was never sent because "start" hadn't arrived yet.
         self._pending_hello  = False
 
         self._advertise()
 
-    # ── advertising ──────────────────────────────────────────────────────
     def _stop_adv(self):
         try:
             self._ble.gap_advertise(None)
@@ -220,7 +189,6 @@ class BLEUARTStreamer:
                 return
             except OSError as e:
                 print("[BLE] advertise error:", e)
-                # FIX: yield to RTOS during retry delay instead of busy-waiting
                 time.sleep_ms(250)
         self._is_advertising = False
         print("[BLE] advertising failed")
@@ -229,7 +197,6 @@ class BLEUARTStreamer:
         if not self.connected() and not self._is_advertising:
             self._advertise()
 
-    # ── state ─────────────────────────────────────────────────────────────
     def connected(self):
         return len(self._connections) > 0
 
@@ -247,18 +214,17 @@ class BLEUARTStreamer:
             conn_handle, _, _ = data
             self._connections.add(conn_handle)
             self._is_advertising = False
-            self._pending_hello  = True   # flag — send from main loop, not IRQ
+            self._pending_hello  = True
             print(f"[BLE] central connected  handle={conn_handle}")
 
         elif event == _IRQ_CENTRAL_DISCONNECT:
             conn_handle, _, _ = data
             self._connections.discard(conn_handle)
-            _scanning_enabled = False   # reset — app must re-send "start" after reconnect
+            _scanning_enabled = False
             print(f"[BLE] central disconnected  handle={conn_handle} → re-advertising")
             self._advertise()
 
         elif event == _IRQ_GATTS_WRITE:
-            # Parse commands from the app: start, stop, ota_start, ota_chunk, ota_end
             try:
                 conn_handle, attr_handle = data
                 raw = self._ble.gatts_read(self._rx_handle)
@@ -279,15 +245,12 @@ class BLEUARTStreamer:
                 elif cmd == "ota_chunk":
                     if _ota_active:
                         import ubinascii
-                        # Chunks are base64-encoded on the app side so every BLE
-                        # packet is pure ASCII — eliminates multi-byte UTF-8 and
-                        # JSON-escape blowup from box-drawing comment dividers.
                         _ota_buf.append(ubinascii.a2b_base64(obj.get("data", "")))
                 elif cmd == "ota_end":
                     if _ota_active:
                         _ota_active = False
                         _ota_new_fw = obj.get("fw", "0.0.0")
-                        _ota_apply  = True   # signal main loop to write + reset
+                        _ota_apply  = True
                         print(f"[OTA] end — will apply as {_ota_filename}")
                 else:
                     print(f"[BLE] unknown cmd: {cmd}")
@@ -303,7 +266,7 @@ mux_s0 = Pin(MUX_S0_PIN, Pin.OUT)
 mux_s1 = Pin(MUX_S1_PIN, Pin.OUT)
 
 if MUX_EN_PIN is not None:
-    Pin(MUX_EN_PIN, Pin.OUT).value(0)   # active-low enable
+    Pin(MUX_EN_PIN, Pin.OUT).value(0)
 
 rows = [Pin(p, Pin.OUT) for p in ROW_PINS]
 for r in rows:
@@ -343,13 +306,6 @@ def set_mux(sel):
 # Matrix scan — returns hits above threshold
 # ─────────────────────────────────────────
 def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
-    """
-    Scan all 12×8 contacts and return hits above threshold_v.
-
-    Yield strategy: sleep_ms(1) every 3 rows (not every row).
-    4 yields × 1ms = ~4ms overhead vs the old 12ms — saves 8ms/frame.
-    3 rows of busy-wait ≈ 5.7ms, far below the 5s TWDT timeout.
-    """
     hits = []
     prev = None
 
@@ -379,12 +335,9 @@ def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
             if vb >= threshold_v:
                 hits.append([r_idx + 1, COL_B[sel], int(vb * 1000)])
 
-        # Yield to FreeRTOS every 3 rows — keeps TWDT fed while
-        # minimising yield overhead (4ms total vs 12ms per-row strategy).
         if r_idx % 3 == 2:
             time.sleep_ms(1)
 
-    # Final yield covers rows 10-12 (the last partial group)
     time.sleep_ms(1)
 
     if prev is not None:
@@ -392,59 +345,27 @@ def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
 
     return hits
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────
 # Cell state tracker
-# ─────────────────────────────────────────────────────────────────────────
-# Keyed by (r, c) tuple.  Each entry holds:
-#   t_first  — ticks_ms() when this cell first crossed the threshold
-#   t_peak   — ticks_ms() when the highest voltage was observed
-#   t_last   — ticks_ms() of the most recent active scan (updated every frame)
-#   v_peak   — highest mv seen while the cell has been active (int)
-#   v_last   — mv reading from the previous frame (used to detect rising edge)
-#
-# Cells are EVICTED the first frame they do not appear in scan_frame_hits(),
-# meaning their voltage has dropped back below HIT_THRESHOLD_V.
-# The app receives t_first and t_peak so it can compute:
-#   rise_time_ms  = t_peak  − t_first
-#   decay_time_ms = t_last  − t_peak   (lower-bound; true end is one frame later)
-#   duration_ms   = t_last  − t_first
-# ─────────────────────────────────────────────────────────────────────────
-_cell_state = {}   # {(r, c): {"t_first", "t_last", "t_peak", "v_peak", "v_last"}}
+# ─────────────────────────────────────────
+_cell_state = {}
 
 def cell_state_reset():
-    """Call when a session stops so stale state doesn't leak into the next one."""
     global _cell_state
     _cell_state = {}
 
 def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
-    """
-    Wrapper around scan_frame_hits() that layers per-cell timing state.
-
-    Returns a list of enriched hit records — one per active cell:
-        [r, c, mv_int, t_first_ms, t_peak_ms, v_peak_mv, is_new]
-
-    Field notes
-    ───────────
-    mv_int      current voltage reading × 1000 (integer millivolts)
-    t_first_ms  ESP32 uptime (ticks_ms) when this cell first went active
-    t_peak_ms   ESP32 uptime when the highest voltage was recorded for this cell
-    v_peak_mv   highest mv seen since the cell became active (integer)
-    is_new      1 on the very first frame this cell appears, 0 thereafter;
-                the app uses this to distinguish a fresh strike from a
-                sustained/decaying contact
-    """
     global _cell_state
-    now_ms     = time.ticks_ms()
-    raw_hits   = scan_frame_hits(threshold_v)
+    now_ms      = time.ticks_ms()
+    raw_hits    = scan_frame_hits(threshold_v)
     active_keys = set()
+    enriched    = []
 
-    enriched = []
     for r, c, mv in raw_hits:
         key = (r, c)
         active_keys.add(key)
 
         if key not in _cell_state:
-            # ── New cell: record onset ────────────────────────────────────
             _cell_state[key] = {
                 "t_first": now_ms,
                 "t_last":  now_ms,
@@ -454,7 +375,6 @@ def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
             }
             is_new = 1
         else:
-            # ── Existing cell: update running stats ───────────────────────
             s = _cell_state[key]
             s["v_last"] = mv
             s["t_last"] = now_ms
@@ -466,15 +386,13 @@ def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
         s_out = _cell_state[key]
         enriched.append([
             r, c,
-            mv,                 # current reading (millivolts, int)
-            s_out["t_first"],   # onset timestamp
-            s_out["t_peak"],    # peak timestamp
-            s_out["v_peak"],    # peak millivolts
-            is_new,             # 1 = first frame for this cell
+            mv,
+            s_out["t_first"],
+            s_out["t_peak"],
+            s_out["v_peak"],
+            is_new,
         ])
 
-    # ── Evict cells that dropped below threshold ──────────────────────────
-    # We iterate a snapshot of keys so the dict can be mutated safely.
     for key in list(_cell_state):
         if key not in active_keys:
             del _cell_state[key]
@@ -502,7 +420,7 @@ def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=180):
 # ─────────────────────────────────────────
 def run():
     global _ota_apply
-    print("=== BLE Matrix ESP32 ===")
+    print("=== BLE Matrix ESP32 — Model II ===")
     ble = BLEUARTStreamer(name=DEVICE_NAME)
 
     last_scan      = time.ticks_ms()
@@ -513,7 +431,6 @@ def run():
     while True:
         now = time.ticks_ms()
 
-        # Advertising watchdog — re-kick every ADV_WATCHDOG_MS if idle
         if not ble.connected():
             if time.ticks_diff(now, last_adv_wdog) >= ADV_WATCHDOG_MS:
                 last_adv_wdog = now
@@ -522,34 +439,27 @@ def run():
             time.sleep_ms(20)
             continue
 
-        # FIX: hello packet is now sent as soon as the central connects,
-        # BEFORE checking _scanning_enabled. The old code placed the hello
-        # block after the `if not _scanning_enabled: continue` guard, which
-        # meant hello was never dispatched on first connect. This created a
-        # deadlock: the app needs the hello packet to learn device identity
-        # and confirm the connection is live, but the app only sends "start"
-        # after receiving hello — so scanning never started.
-        # Moving hello before the scanning gate breaks the deadlock.
+        # Send hello immediately on connect so the app can identify the device.
+        # mode:"single" is explicit here so the app never has to infer it by absence.
         if ble._pending_hello:
             ble._pending_hello = False
             notify_json_chunked(ble, {
                 "type": "hello",
                 "id":   _DEVICE_ID,
                 "fw":   _FW_VERSION,
+                "hw":   "II",
+                "mode": "single",
                 "rows": 12,
                 "cols": 8,
             })
             time.sleep_ms(20)
             continue
 
-        # Connected — scan and stream only when app has sent {"cmd":"start"}
         if not _scanning_enabled:
-            cell_state_reset()   # clear stale state whenever scanning is paused
-            time.sleep_ms(20)    # idle yield — BLE stays alive, TWDT fed
+            cell_state_reset()
+            time.sleep_ms(20)
             continue
 
-        # Apply a completed OTA transfer: write file, update NVS, reset.
-        # Uses write-then-rename so an interrupted transfer can never brick the device.
         if _ota_apply:
             _ota_apply = False
             try:
@@ -562,26 +472,31 @@ def run():
                 nv = NVS("device")
                 nv.set_blob("fw", _ota_new_fw.encode("utf-8"))
                 nv.commit()
-                notify_json_chunked(ble, {"type": "ota_ok", "fw": _ota_new_fw})
+                notify_json_chunked(ble, {
+                    "type": "ota_ok",
+                    "fw":   _ota_new_fw,
+                    "hw":   "II",
+                })
                 time.sleep_ms(500)
                 import machine
                 machine.reset()
             except Exception as e:
-                notify_json_chunked(ble, {"type": "ota_err", "msg": str(e)})
+                notify_json_chunked(ble, {
+                    "type": "ota_err",
+                    "msg":  str(e),
+                    "hw":   "II",
+                })
 
         if time.ticks_diff(now, last_scan) >= SCAN_PERIOD_MS:
             last_scan = now
-
-            # ── Enriched scan: carries timing state across frames ─────────
-            # Each hit: [r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new]
             hits = scan_frame_tracked(HIT_THRESHOLD_V)
 
             if hits and time.ticks_diff(now, last_notify) >= notify_min_interval:
                 last_notify = now
                 notify_json_chunked(ble, {
-                    "t":    now,        # current frame timestamp (ESP32 uptime ms)
+                    "t":    now,
                     "n":    len(hits),
-                    "hits": hits,       # 7-element arrays — see scan_frame_tracked docstring
+                    "hits": hits,
                 })
 
         time.sleep_ms(2)
