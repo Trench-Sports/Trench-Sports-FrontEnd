@@ -152,16 +152,17 @@ export default function Dashboard() {
       const role: string = data.role ?? "";
       const pid: string | null = (data as any).program_id ?? null;
 
-      // For coaches, find their core team so we can scope session queries
+      // For coaches, find their core team so we can scope session queries.
+      // Uses a SECURITY DEFINER RPC to bypass RLS on team_members (coach isn't
+      // yet scoped to a program at the time this runs, so direct queries are blocked).
       let coachCoreTeamId: string | null = null;
       if (role === "coach") {
-        const { data: memberRow } = await supabase!
-          .from("team_members")
-          .select("team_id, teams!inner(team_type)")
-          .eq("coach_user_id", user.id)
-          .eq("teams.team_type", "core")
-          .maybeSingle();
-        coachCoreTeamId = (memberRow as any)?.team_id ?? null;
+        const { data: coreTeamRow, error: coreTeamErr } = await supabase!
+          .rpc("get_coach_core_team", { p_user_id: user.id });
+        if (coreTeamErr) {
+          console.error("[dashboard] get_coach_core_team failed:", coreTeamErr.message);
+        }
+        coachCoreTeamId = coreTeamRow ?? null;
       }
 
       setProgramId(pid);
@@ -186,8 +187,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
-    // Coaches must have their core team resolved before we can scope the query
-    if (userRole === "coach" && coreTeamId === null) return;
 
     async function fetchAthletes() {
       setAthletesLoading(true);
@@ -231,8 +230,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
-    // Coaches must have their core team resolved before we can scope the query
-    if (userRole === "coach" && coreTeamId === null) return;
 
     setAthleteProgressLoading(true);
 
@@ -334,8 +331,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !profile?.role || !userRole || !supabase) return;
-    // Coaches must have their core team resolved before we can scope the query
-    if (userRole === "coach" && coreTeamId === null) return;
 
     async function fetchTeams() {
       setTeamsLoading(true);
@@ -423,8 +418,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (!programId || !userRole || !supabase) return;
-    // Coaches must have their core team resolved before we can scope the query
-    if (userRole === "coach" && coreTeamId === null) return;
 
     async function fetchRecentSessions() {
       setRecentSessionsLoading(true);
@@ -1030,7 +1023,6 @@ export default function Dashboard() {
   // ---------- Leaderboard — all five modes in one Promise.all ----------
   useEffect(() => {
     if (!programId || !userRole || !supabase) return;
-    if (userRole === "coach" && coreTeamId === null) return;
 
     setStrengthLoading(true);
     setStrengthRows([]);

@@ -247,17 +247,18 @@ export default function Onboarding() {
       setProgramHit(program as Program);
 
       const { data: teamRows, error: tErr } = await supabase
-        .from("teams")
-        .select("id, name, team_type")
-        .eq("program_id", program.id);
+        .rpc("get_core_teams_for_program", { p_id: program.id });
 
       if (tErr) throw tErr;
 
-      const allTeams = (teamRows ?? []) as Team[];
+      const list = (teamRows ?? []) as Team[];
 
-      // Best-effort “core teams” filter: keep team_type that contains 'core', else show all.
-      const core = allTeams.filter((t) => String(t.team_type || "").toLowerCase().includes("core"));
-      const list = core.length ? core : allTeams;
+      if (!list.length) {
+        setTeams([]);
+        setCoreTeamId("");
+        setError("No core teams found for this program. Contact your admin.");
+        return;
+      }
 
       setTeams(list);
       setCoreTeamId(list.length === 1 ? list[0].id : "");
@@ -306,31 +307,14 @@ export default function Onboarding() {
 
       // 3) Add coach to selected core team
       if (programHit?.id && coreTeamId) {
-        const { error: tmErr } = await supabase
-          .from("team_members")
-          .upsert(
-            {
-              program_id: programHit.id,
-              team_id: coreTeamId,
-              coach_user_id: user.id,
-              member_role: "coach",
-              added_by: user.id,
-            },
-            // In case you add a unique constraint later, this keeps it idempotent
-            { onConflict: "coach_user_id,team_id" as any }
-          );
-
-        // If the conflict target doesn't exist, Postgres will error; fallback to insert.
-        if (tmErr) {
-          const { error: insErr } = await supabase.from("team_members").insert({
-            program_id: programHit.id,
-            team_id: coreTeamId,
-            coach_user_id: user.id,
-            member_role: "coach",
-            added_by: user.id,
-          });
-          if (insErr) throw insErr;
-        }
+        const { error: tmErr } = await supabase.from("team_members").insert({
+          program_id: programHit.id,
+          team_id: coreTeamId,
+          coach_user_id: user.id,
+          member_role: "coach",
+          added_by: user.id,
+        });
+        if (tmErr) throw tmErr;
       }
 
       navigate("/dashboard", { replace: true });
