@@ -1,5 +1,31 @@
 # mainB.py — ESP32-WROOM-32D  (MicroPython)
-# Model III hardware: 1× MCP3208-CI/P SPI ADC  (no I2C, no MUX)
+# Build B hardware: 1× MCP3208-CI/P SPI ADC  (no I²C, no MUX)
+#
+# Differences from main.py (ADS1015 + 74HC4052 build):
+#   • I²C + ADS1015 A/B replaced by SPI + single MCP3208 (cs GPIO5)
+#   • 74HC4052 MUX removed entirely — all 8 columns wire directly to CH0–CH7
+#   • Row GPIOs remapped to free GPIO18/19/23 for VSPI (same as mainA.py)
+#   • Conversion wait eliminated — MCP3208 samples during the SPI clock cycle
+#   • SCAN_PERIOD_MS 37→14→8, MAX_NOTIFY_HZ 25→50 (see timing note below)
+#   • LSB_V based on VREF=3.3V/4096 counts instead of ADS1015 PGA
+#   • hello packet carries "hw":"III" for app identification
+#   • GPIO4 is unassigned / spare vs Build A (was CS_ADC_B)
+#
+# Batch mode (v2):
+#   • Scans at ~120 Hz internally (SCAN_PERIOD_MS=8)
+#   • Buffers BATCH_SIZE frames, flushes as one "batch" packet every ~25 ms
+#   • Each frame carries its own ticks_ms() timestamp so the app can
+#     reconstruct exact timing — feedback still feels instantaneous
+#   • First hit in a new batch triggers an immediate flush (FIRST_HIT_FLUSH=True)
+#     so new contacts are never delayed by a partial buffer
+#   • BLE max_len raised to 400 bytes to fit multi-frame payloads in one notify
+#
+# MCP3208 pinout used (PDIP-16):
+#   CH0–CH7 → pins 1–8    DGND    → pin 9
+#   VDD     → pin 16      CS/SHDN → pin 10  ← active LOW
+#   VREF    → pin 15      D_IN    → pin 11  ← MOSI
+#   AGND    → pin 14      D_OUT   → pin 12  ← MISO
+#                         CLK     → pin 13
 #
 # Flash this file to the ESP32 as main.py
 
@@ -10,9 +36,9 @@ from micropython import const
 from machine import Pin, SPI
 import bluetooth
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # NVS string helpers
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _NVS_BUF_LEN = 64
 
 def _nvs_set(ns, key, value: str):
@@ -23,9 +49,9 @@ def _nvs_get(ns, key) -> str:
     n   = ns.get_blob(key, buf)
     return buf[:n].decode("utf-8")
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # UUID helper
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 def _mac_uuid() -> str:
     import network
     mac = network.WLAN().config("mac")
@@ -36,9 +62,9 @@ def _mac_uuid() -> str:
     h = "".join("%02x" % x for x in b)
     return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Device identity — read from NVS
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _DEVICE_UUID = ""
 _DEVICE_ID   = "TS-UNKNOWN"
 _DEVICE_NAME = "TS-UNKNOWN"
@@ -64,44 +90,75 @@ except Exception:
 
 DEVICE_NAME = _DEVICE_ID
 
-# ---------------------------------------------------------
-# Hardware — Model III pin mapping
-# ---------------------------------------------------------
-SPI_ID       = 2
-SPI_CLK_HZ   = 1_800_000
-SPI_CLK_PIN  = 18
-SPI_MISO_PIN = 19
-SPI_MOSI_PIN = 23
-CS_PIN       = 5
+# ─────────────────────────────────────────
+# Hardware — Build B pin mapping
+# ─────────────────────────────────────────
+# SPI (VSPI defaults)
+SPI_ID       = 2           # VSPI peripheral
+SPI_CLK_HZ   = 1_800_000  # ↑ 1 MHz → 1.8 MHz — MCP3208 datasheet max at 3.3V
+                           #   cuts on-wire time 24 µs → ~13 µs per read (~1 ms/frame gain)
+SPI_CLK_PIN  = 18          # GPIO18 VSPI SCK
+SPI_MISO_PIN = 19          # GPIO19 VSPI MISO  ← MCP3208 D_OUT
+SPI_MOSI_PIN = 23          # GPIO23 VSPI MOSI  → MCP3208 D_IN
+CS_PIN       = 5           # GPIO5  → MCP3208 CS/SHDN  ← boot pull-up ✓ (CS idle HIGH)
+# GPIO4 is spare/unassigned in Build B
 
+# Row drive GPIOs (R1–R12) — same remapping as Build A
 ROW_PINS = [25, 26, 27, 32, 33, 13, 14, 12, 15, 21, 22, 2]
+#            R1  R2  R3  R4  R5  R6  R7  R8  R9 R10 R11 R12
+# ⚠ GPIO12/R8, GPIO15/R9, GPIO2/R12 are ESP32 boot-strap pins.
+#   The 10 kΩ row pulldowns keep them LOW at boot — safe.
+#   If GPIO2 causes boot issues, increase that pulldown to 47 kΩ.
 
+# Column map: MCP3208 channel index → column number 1-8
+# CH0→C1, CH1→C2, … CH7→C8  (direct 1-to-1 after +1 offset)
 COLS = (1, 2, 3, 4, 5, 6, 7, 8)
 
-# ---------------------------------------------------------
-# Timing / streaming config
-# ---------------------------------------------------------
-HIT_THRESHOLD_V  = 0.10
-SCAN_PERIOD_MS   = 8       # ~120 Hz internal scan rate
-MAX_NOTIFY_HZ    = 40      # BLE notify ceiling
-BATCH_SIZE       = 3
-FIRST_HIT_FLUSH  = True
+# ─────────────────────────────────────────────────────────────────────────
+# TIMING NOTE — Build B v2 (batch mode)
+# ─────────────────────────────────────────────────────────────────────────
+# CPU is now 160 MHz (set in boot.py). At 160 MHz Python overhead drops
+# from ~3–4 ms to ~1.5–2 ms per frame, pushing scan rate to ~120 Hz.
+#
+# Per SPI read at 1.8 MHz: ~13 µs on-wire + ~20 µs MicroPython overhead ≈ 33 µs
+#   12 rows × 8 reads × 33 µs ≈ 3.2 ms busy
+#   + 5 µs row settle × 12 = 0.06 ms
+#   + 4 × 500 µs FreeRTOS yields = 2 ms   (reduced from 1 ms sleeps)
+#   + Python loop overhead ~1.5 ms
+#   ≈ 6.8 ms → ~120–125 Hz scan rate
+#
+# Batch strategy:
+#   SCAN_PERIOD_MS = 8   → scan every 8 ms (~120 Hz)
+#   BATCH_SIZE     = 3   → flush every 3 frames (~24 ms, ~40 Hz BLE rate)
+#   FIRST_HIT_FLUSH      → if buffer has ≥1 frame and a new contact appears,
+#                          flush immediately — keeps first-touch latency ≤8 ms
+#
+# App receives "batch" packets with timestamps per frame.
+# For single-frame packets (first-hit flush), type is still "batch" with
+# frames=[...] so the app parser stays uniform.
+# ─────────────────────────────────────────────────────────────────────────
+
+HIT_THRESHOLD_V  = 0.10   # transmit hits >= this voltage
+SCAN_PERIOD_MS   = 8      # ~120 Hz internal scan rate (was 14)
+MAX_NOTIFY_HZ    = 40     # BLE notify gate — reliable ceiling on most phones
+BATCH_SIZE       = 3      # frames to buffer before flushing (~24 ms window)
+FIRST_HIT_FLUSH  = True   # flush immediately when a NEW cell contact appears
 
 ADV_INTERVAL_US  = 200_000
 ADV_WATCHDOG_MS  = 2_000
 
-ROW_SETTLE_US    = 5
+ROW_SETTLE_US    = 5      # µs after asserting a row GPIO before sampling
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # MCP3208 ADC constants
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 VREF_V     = 3.3
-ADC_COUNTS = const(4096)
-LSB_V      = VREF_V / ADC_COUNTS
+ADC_COUNTS = const(4096)         # 12-bit, 2^12
+LSB_V      = VREF_V / ADC_COUNTS # ~0.000806 V per count  (0.806 mV)
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # BLE — Nordic UART Service (NUS)
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _UART_UUID    = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
 _UART_TX_UUID = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
 _UART_RX_UUID = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
@@ -122,14 +179,14 @@ _UART_SERVICE = (
     ),
 )
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Session gate
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _scanning_enabled = False
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # OTA state
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _ota_active   = False
 _ota_apply    = False
 _ota_filename = "main_new.py"
@@ -137,9 +194,9 @@ _ota_size     = 0
 _ota_buf      = []
 _ota_new_fw   = "0.0.0"
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # IRQ-safe command queue
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _cmd_queue    = []
 CMD_QUEUE_MAX = 8
 
@@ -163,11 +220,11 @@ def _drain_cmd_queue(uart):
 
         if cmd == "start":
             _scanning_enabled = True
-            print("[BLE] cmd=start -> scanning enabled")
+            print("[BLE] cmd=start → scanning enabled")
 
         elif cmd == "stop":
             _scanning_enabled = False
-            print("[BLE] cmd=stop  -> scanning paused")
+            print("[BLE] cmd=stop  → scanning paused")
 
         elif cmd == "ota_start":
             _ota_filename = obj.get("filename", "main_new.py")
@@ -190,7 +247,7 @@ def _drain_cmd_queue(uart):
 
         elif cmd == "provision":
             new_name = obj.get("name", "")
-            new_id   = obj.get("id", "")
+            new_id   = obj.get("id",   "")
             if new_name or new_id:
                 try:
                     from esp32 import NVS
@@ -208,10 +265,25 @@ def _drain_cmd_queue(uart):
         else:
             print(f"[BLE] unknown cmd: {cmd}")
 
+
 def _adv_payload(name: str) -> bytearray:
+    """
+    Advertising payload with two AD structures:
+
+    1. Complete Local Name (type 0x09)
+       Visible in the OS device-name picker.
+
+    2. Complete List of 128-bit UUIDs (type 0x07) — the NUS service UUID.
+       Without this AD structure the device is INVISIBLE to any scanner
+       using a service-UUID filter (Web Bluetooth, the app's BLE adapter, etc.).
+       UUID is encoded little-endian as required by the BT spec.
+    """
+    # ── AD1: Complete Local Name ──────────────────────────────────────────
     n       = name.encode("utf-8")
     name_ad = bytes((len(n) + 1, 0x09)) + n
 
+    # ── AD2: Complete list of 128-bit UUIDs — NUS service UUID ───────────
+    # "6E400001-B5A3-F393-E0A9-E50E24DCCA9E" in little-endian byte order
     uuid_bytes = bytes([
         0x9E, 0xCA, 0xDC, 0x24, 0x0E, 0xE5, 0xA9, 0xE0,
         0x93, 0xF3, 0xA3, 0xB5, 0x01, 0x00, 0x40, 0x6E,
@@ -286,9 +358,7 @@ class BLEUARTStreamer:
             self._connections.discard(conn_handle)
             global _scanning_enabled
             _scanning_enabled = False
-            _frame_buf.clear()   # discard any buffered frames so they don't
-                                 # flush as the first batch of a reconnected session
-            print("[BLE] central disconnected -> re-advertising")
+            print("[BLE] central disconnected → re-advertising")
             self._advertise()
 
         elif event == _IRQ_GATTS_WRITE:
@@ -296,32 +366,46 @@ class BLEUARTStreamer:
             raw = self._ble.gatts_read(self._rx_handle)
             _irq_enqueue(raw)
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Hardware init — SPI + CS pin + rows
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 spi = SPI(
     SPI_ID,
     baudrate  = SPI_CLK_HZ,
-    polarity  = 0,
-    phase     = 0,
+    polarity  = 0,          # CPOL=0: CLK idle LOW
+    phase     = 0,          # CPHA=0: sample on rising edge (SPI Mode 0)
     sck       = Pin(SPI_CLK_PIN),
     mosi      = Pin(SPI_MOSI_PIN),
     miso      = Pin(SPI_MISO_PIN),
 )
 
-cs = Pin(CS_PIN, Pin.OUT, value=1)
+# Single CS pin — idle HIGH (chip deselected)
+cs = Pin(CS_PIN, Pin.OUT, value=1)   # MCP3208  (C1–C8)
 
 rows = [Pin(p, Pin.OUT) for p in ROW_PINS]
 for r in rows:
     r.value(0)
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # MCP3208 SPI read helper
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
+# Pre-allocated transfer buffers — avoids per-call heap allocation in scan loop.
 _CMD = bytearray(3)
 _RSP = bytearray(3)
 
 def mcp3208_read(channel):
+    """
+    Read one MCP3208 channel in single-ended mode.
+
+    channel : 0–7
+    returns : 12-bit count (0–4095)
+
+    SPI frame (3 bytes, MSB first, Mode 0):
+      TX byte 0: 0b00000 1 1 D2   (leading zeros, start=1, SGL=1, D2=ch bit2)
+      TX byte 1: D1 D0 << 6       (D1=ch bit1, D0=ch bit0 in top 2 bits, rest zeros)
+      TX byte 2: 0x00              (clock in the result)
+    12-bit result: (RSP[1] & 0x0F) << 8 | RSP[2]
+    """
     _CMD[0] = 0x06 | (channel >> 2)
     _CMD[1] = (channel & 0x03) << 6
     _CMD[2] = 0x00
@@ -330,12 +414,21 @@ def mcp3208_read(channel):
     cs.value(1)
     return ((_RSP[1] & 0x0F) << 8) | _RSP[2]
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Matrix scan — returns hits above threshold
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
+    """
+    Scan all 12×8 contacts via SPI.  No MUX switching — all 8 columns are
+    wired directly to MCP3208 CH0–CH7.  Returns list of [row, col, mv_int].
+
+    Yield strategy: sleep_us(500) every 3 rows.
+      Reduced from sleep_ms(1) — at 160 MHz the TWDT budget is comfortable
+      and shorter yields recover ~2 ms per frame vs the original 4 ms.
+      4 yields × 500 µs = 2 ms FreeRTOS overhead (was 4 ms).
+    """
     hits      = []
-    threshold = int(threshold_v / LSB_V)
+    threshold = int(threshold_v / LSB_V)   # counts threshold (pre-divide once)
     prev      = None
 
     for r_idx, rpin in enumerate(rows):
@@ -347,24 +440,26 @@ def scan_frame_hits(threshold_v=HIT_THRESHOLD_V):
         if ROW_SETTLE_US:
             time.sleep_us(ROW_SETTLE_US)
 
+        # ── MCP3208 — all columns C1–C8 (CH0–CH7) ────────────────────────
         for ch in range(8):
             counts = mcp3208_read(ch)
             if counts >= threshold:
                 hits.append([r_idx + 1, COLS[ch], int(counts * LSB_V * 1000)])
 
+        # Yield to FreeRTOS every 3 rows — shortened to 500 µs
         if r_idx % 3 == 2:
             time.sleep_us(500)
 
-    time.sleep_us(500)
+    time.sleep_us(500)   # final yield covers rows 10–12
 
     if prev is not None:
         prev.value(0)
 
     return hits
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Cell state tracker
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 _cell_state = {}
 
 def cell_state_reset():
@@ -372,6 +467,10 @@ def cell_state_reset():
     _cell_state = {}
 
 def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
+    """
+    Wraps scan_frame_hits() with per-cell timing state.
+    Returns: [[r, c, mv, t_first_ms, t_peak_ms, v_peak_mv, is_new], ...]
+    """
     global _cell_state
     now_ms      = time.ticks_ms()
     raw_hits    = scan_frame_hits(threshold_v)
@@ -416,10 +515,15 @@ def scan_frame_tracked(threshold_v=HIT_THRESHOLD_V):
 
     return enriched
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # JSON sender — max_len raised to 400 bytes
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=400):
+    """
+    Serialise obj to JSON and notify.  max_len raised from 180→400 to fit
+    a 3-frame batch in a single BLE packet (negotiated MTU is 512).
+    Falls back to chunk headers (C01/02:...) for larger payloads.
+    """
     s = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     if len(s) <= max_len:
         uart.notify(s)
@@ -432,33 +536,47 @@ def notify_json_chunked(uart: BLEUARTStreamer, obj, max_len=400):
         uart.notify(header + part)
         time.sleep_ms(5)
 
-# ---------------------------------------------------------
-# Frame buffer — module scope so the BLE disconnect IRQ can clear it
-# ---------------------------------------------------------
-_frame_buf = []
-
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Batch flush helper
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 def _flush_batch(uart, frame_buffer):
+    """
+    Send buffered frames as a single "batch" packet and clear the buffer.
+
+    Packet shape (app side reads frames[] array):
+      {
+        "type":   "batch",
+        "frames": [
+          {"t": <ticks_ms>, "hits": [[r,c,mv,t_first,t_peak,v_peak,is_new], ...]},
+          ...
+        ]
+      }
+
+    Single-frame flushes (first-hit-flush) use the same shape so the
+    app parser stays uniform — just frames[] with one entry.
+    """
     notify_json_chunked(uart, {
         "type":   "batch",
         "frames": frame_buffer,
     })
     frame_buffer.clear()
 
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 # Main loop
-# ---------------------------------------------------------
+# ─────────────────────────────────────────
 def run():
-    global _ota_apply, _frame_buf
-    print("=== BLE Matrix ESP32 — Model III (batch mode) ===")
+    global _ota_apply
+    print("=== BLE Matrix ESP32 — Build B (MCP3208×1, batch mode) ===")
     ble = BLEUARTStreamer(name=DEVICE_NAME)
 
     last_scan      = time.ticks_ms()
     last_notify    = time.ticks_ms()
     last_adv_wdog  = time.ticks_ms()
-    notify_min_ms  = int(1000 / MAX_NOTIFY_HZ)
+    notify_min_ms  = int(1000 / MAX_NOTIFY_HZ)  # minimum ms between BLE notifies
+
+    # Frame buffer — accumulates scanned frames between BLE flushes.
+    # Each entry: {"t": ticks_ms, "hits": [...]}
+    _frame_buf = []
 
     while True:
         now = time.ticks_ms()
@@ -489,19 +607,15 @@ def run():
                     "type": "ota_ok",
                     "fw":   _ota_new_fw,
                     "uuid": _DEVICE_UUID,
-                    "hw":   "III",
                 })
                 for _ in range(12):
                     time.sleep_ms(50)
                 import machine
                 machine.reset()
             except Exception as e:
-                notify_json_chunked(ble, {
-                    "type": "ota_err",
-                    "msg":  str(e),
-                    "hw":   "III",
-                })
+                notify_json_chunked(ble, {"type": "ota_err", "msg": str(e)})
 
+        # hello must be sent before the scanning gate — see comment in v1
         if ble._pending_hello:
             ble._pending_hello = False
             notify_json_chunked(ble, {
@@ -513,6 +627,7 @@ def run():
                 "hw":   "III",
                 "rows": 12,
                 "cols": 8,
+                # Advertise batch mode so app can choose parser
                 "mode": "batch",
                 "batch_size": BATCH_SIZE,
             })
@@ -525,6 +640,7 @@ def run():
             time.sleep_ms(20)
             continue
 
+        # ── Scan ──────────────────────────────────────────────────────────
         if time.ticks_diff(now, last_scan) >= SCAN_PERIOD_MS:
             last_scan = now
             hits = scan_frame_tracked(HIT_THRESHOLD_V)
@@ -532,6 +648,9 @@ def run():
             if hits:
                 _frame_buf.append({"t": now, "hits": hits})
 
+                # FIRST_HIT_FLUSH: if any hit in this frame is brand-new
+                # (is_new==1) and the BLE notify gate allows it, flush
+                # immediately — keeps first-touch latency to one scan period.
                 has_new = FIRST_HIT_FLUSH and any(h[6] == 1 for h in hits)
                 can_notify = time.ticks_diff(now, last_notify) >= notify_min_ms
 
@@ -540,6 +659,8 @@ def run():
                     _flush_batch(ble, _frame_buf)
 
             else:
+                # No hits this frame — if there are buffered frames waiting,
+                # flush them now so the app knows contacts have been released.
                 if _frame_buf and time.ticks_diff(now, last_notify) >= notify_min_ms:
                     last_notify = now
                     _flush_batch(ble, _frame_buf)

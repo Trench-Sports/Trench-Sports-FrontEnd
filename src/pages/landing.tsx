@@ -4,6 +4,167 @@ import { Link } from "react-router-dom";
 import HitSimulator from "../components/hitSimulator";
 import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
 
+// ── Request Demo Modal ────────────────────────────────────────────────────────
+function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const [form, setForm] = useState({
+    firstName: "", lastName: "", email: "", phone: "", organisation: "",
+    role: "", orgType: "", sport: "", product: "", country: "", marketing: false,
+  });
+  const [status, setStatus] = useState<"idle" | "sending" | "success" | "error">("idle");
+
+  const set = (field: string, value: string | boolean) =>
+    setForm((prev) => ({ ...prev, [field]: value }));
+
+  const handleSubmit = async () => {
+    const required = ["firstName", "lastName", "email", "organisation", "role", "orgType", "sport", "product", "country"];
+    const missing = required.filter((k) => !(form as Record<string, string | boolean>)[k]);
+    if (missing.length) { alert("Please complete all required fields."); return; }
+
+    setStatus("sending");
+    try {
+      await fetch("https://formsubmit.co/ajax/jaylen@trenchsports.ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          _subject: `Demo Request — ${form.firstName} ${form.lastName} (${form.organisation})`,
+          "First Name": form.firstName,
+          "Last Name": form.lastName,
+          Email: form.email,
+          Phone: form.phone,
+          Organisation: form.organisation,
+          Role: form.role,
+          "Organisation Type": form.orgType,
+          Sport: form.sport,
+          "Product Interest": form.product,
+          Country: form.country,
+          "Marketing Consent": form.marketing ? "Yes" : "No",
+        }),
+      });
+      setStatus("success");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  const handleClose = () => { setStatus("idle"); onClose(); };
+
+  if (!open) return null;
+
+  const roles = ["Academic / Research","Athlete / Individual","Coach","Content Licensing","Director / Head of Department","Executive","Head Coach","Medical","Sport Science","Strength & Conditioning","Video / Performance Analysis"];
+  const orgTypes = ["Professional Team","Academy/Junior/Youth","Advertising/Content/Media","Amateur Team","High School","Individual","League/Association/Conference","Medical/Research","Military","National Team","Other","Semi-Professional Team","Sports Institute","University/College"];
+  const sports = ["American Football","Australian Rules Football","Baseball","Basketball","Cricket","Field Hockey","Football/Soccer","Futsal","GAA","Gymnastics","Handball","Ice Hockey","Lacrosse","Military","Motorsport","Netball","Not Applicable","Paddle Sports","Polo","Research","Rugby League","Rugby Union","Skiing","Softball","Strength & Conditioning/Performance","Tennis","Volleyball","Water Polo","Wrestling","Hurling","Other"];
+  const products = ["Vector Pro","Vector Core","Catapult One","Catapult Pro Video","Thunder","RaceWatch For Teams","RaceWatch Circuit Manager","Recruiting","Content Licensing","Perch","IMPECT"];
+  const countries = ["Afghanistan","Albania","Algeria","American Samoa","Andorra","Angola","Antigua and Barbuda","Argentina","Armenia","Australia","Austria","Azerbaijan","Bahamas","Bahrain","Bangladesh","Barbados","Belarus","Belgium","Belize","Benin","Bermuda","Bhutan","Bolivia","Bosnia and Herzegovina","Botswana","Brazil","British Virgin Islands","Brunei","Bulgaria","Burkina Faso","Burundi","Cambodia","Cameroon","Canada","Cape Verde","Cayman Islands","Central African Republic","Chad","Chile","China","Colombia","Comoros","Congo","Cook Islands","Costa Rica","Cote d'Ivoire","Croatia","Cuba","Cyprus","Czech Republic","Democratic Republic of the Congo","Denmark","Djibouti","Dominica","Dominican Republic","East Timor","Ecuador","Egypt","El Salvador","Equatorial Guinea","Eritrea","Estonia","Ethiopia","Faroe Islands","Fiji","Finland","France","Gabon","Gambia","Georgia","Germany","Ghana","Gibraltar","Greece","Grenada","Guam","Guatemala","Guinea","Guinea-Bissau","Guyana","Haiti","Honduras","Hong Kong","Hungary","Iceland","India","Indonesia","Iran","Iraq","Ireland","Israel","Italy","Jamaica","Japan","Jordan","Kazakhstan","Kenya","Kiribati","Kosovo","Kuwait","Kyrgyzstan","Laos","Latvia","Lebanon","Lesotho","Liberia","Libya","Liechtenstein","Lithuania","Luxembourg","Macedonia (FYROM)","Madagascar","Malawi","Malaysia","Maldives","Mali","Malta","Mauritania","Mauritius","Mexico","Micronesia","Moldova","Mongolia","Montenegro","Morocco","Mozambique","Myanmar","Myanmar (Burma)","Namibia","Nauru","Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea","Norway","Oman","Pakistan","Palau","Panama","Papua New Guinea","Paraguay","Peru","Philippines","Poland","Portugal","Puerto Rico","Qatar","Romania","Russia","Rwanda","Saint Kitts and Nevis","Saint Lucia","Saint Vincent and the Grenadines","Samoa","San Marino","Sao Tome and Principe","Saudi Arabia","Senegal","Serbia","Seychelles","Sierra Leone","Singapore","Slovakia","Slovenia","Solomon Islands","Somalia","South Africa","South Korea","South Sudan","Spain","Sri Lanka","Sudan","Suriname","Swaziland","Sweden","Switzerland","Syria","Taiwan","Tajikistan","Tanzania","Thailand","Togo","Tonga","Trinidad and Tobago","Tunisia","Turkey","Turkmenistan","Tuvalu","Uganda","Ukraine","United Arab Emirates","United Kingdom","United States","Uruguay","Uzbekistan","Vanuatu","Venezuela","Vietnam","Yemen","Zambia","Zimbabwe"];
+
+  return (
+    <div className="ts-demoOverlay" onClick={handleClose}>
+      <div className="ts-demoModal" onClick={(e) => e.stopPropagation()}>
+        <button className="ts-demoClose" onClick={handleClose} aria-label="Close">✕</button>
+
+        {status === "success" ? (
+          <div className="ts-demoSuccess">
+            <div className="ts-demoSuccessIcon">✓</div>
+            <h2 className="ts-h2" style={{ marginBottom: 8 }}>Request Received</h2>
+            <p className="ts-muted">Our team will be in touch shortly to schedule your demo.</p>
+            <button className="ts-btnPrimary" style={{ marginTop: 24 }} onClick={handleClose}>Close</button>
+          </div>
+        ) : (
+          <>
+            <div className="ts-demoHeader">
+              <div className="ts-kicker">Get in Touch</div>
+              <h2 className="ts-h2" style={{ marginBottom: 4 }}>Request a Demo</h2>
+              <p className="ts-muted" style={{ fontSize: 14 }}>Fill in the details below and we'll be in touch to set up your personalised demo.</p>
+            </div>
+
+            <div className="ts-demoBody">
+              <div className="ts-demoGrid2">
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">First Name <span className="ts-req">*</span></label>
+                  <input className="ts-demoInput" placeholder="First name" value={form.firstName} onChange={(e) => set("firstName", e.target.value)} />
+                </div>
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Last Name <span className="ts-req">*</span></label>
+                  <input className="ts-demoInput" placeholder="Last name" value={form.lastName} onChange={(e) => set("lastName", e.target.value)} />
+                </div>
+              </div>
+              <div className="ts-demoGrid2">
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Email <span className="ts-req">*</span></label>
+                  <input className="ts-demoInput" type="email" placeholder="you@org.com" value={form.email} onChange={(e) => set("email", e.target.value)} />
+                </div>
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Phone</label>
+                  <input className="ts-demoInput" type="tel" placeholder="+1 000 000 0000" value={form.phone} onChange={(e) => set("phone", e.target.value)} />
+                </div>
+              </div>
+              <div className="ts-demoField">
+                <label className="ts-demoLabel">Organisation <span className="ts-req">*</span></label>
+                <input className="ts-demoInput" placeholder="Your team or organisation" value={form.organisation} onChange={(e) => set("organisation", e.target.value)} />
+              </div>
+              <div className="ts-demoGrid2">
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Role <span className="ts-req">*</span></label>
+                  <select className="ts-demoSelect" value={form.role} onChange={(e) => set("role", e.target.value)}>
+                    <option value="">Select role…</option>
+                    {roles.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Type of Organisation <span className="ts-req">*</span></label>
+                  <select className="ts-demoSelect" value={form.orgType} onChange={(e) => set("orgType", e.target.value)}>
+                    <option value="">Select type…</option>
+                    {orgTypes.map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="ts-demoGrid2">
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Sport <span className="ts-req">*</span></label>
+                  <select className="ts-demoSelect" value={form.sport} onChange={(e) => set("sport", e.target.value)}>
+                    <option value="">Select sport…</option>
+                    {sports.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="ts-demoField">
+                  <label className="ts-demoLabel">Product Selection <span className="ts-req">*</span></label>
+                  <select className="ts-demoSelect" value={form.product} onChange={(e) => set("product", e.target.value)}>
+                    <option value="">Select product…</option>
+                    {products.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="ts-demoField">
+                <label className="ts-demoLabel">Country <span className="ts-req">*</span></label>
+                <select className="ts-demoSelect" value={form.country} onChange={(e) => set("country", e.target.value)}>
+                  <option value="">Select country…</option>
+                  {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </div>
+              <label className="ts-demoCheckRow">
+                <input type="checkbox" checked={form.marketing} onChange={(e) => set("marketing", e.target.checked)} />
+                <span className="ts-demoCheckLabel">
+                  Yes, I would like to receive marketing communications regarding Trench Sports solutions, services and events. I know I can unsubscribe at any time.
+                </span>
+              </label>
+              {status === "error" && (
+                <p style={{ color: "#ff4444", fontSize: 13, marginTop: 8 }}>Something went wrong. Please try again.</p>
+              )}
+              <button
+                className="ts-btnPrimary"
+                style={{ width: "100%", marginTop: 8, padding: "14px", fontSize: 15, justifyContent: "center" }}
+                onClick={handleSubmit}
+                disabled={status === "sending"}
+              >
+                {status === "sending" ? "Sending…" : "Submit Request →"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type Stat = { label: string; value: string; sub?: string };
 
 // ── Animated counter hook ─────────────────────────────────────────────────────
@@ -71,6 +232,7 @@ export default function Landing() {
   const { ref: navRef, inView: _navInView } = useInView(0);
   const [scrolled, setScrolled] = useState(false);
   const [activeSection, setActiveSection] = useState("hero");
+  const [demoOpen, setDemoOpen] = useState(false);
 
   // Scroll-tracking: pick whichever section is closest to top of viewport
   useEffect(() => {
@@ -181,6 +343,7 @@ export default function Landing() {
 
   return (
     <div className="ts-landing">
+      <RequestDemoModal open={demoOpen} onClose={() => setDemoOpen(false)} />
       <LandingNav activeSection={activeSection} />
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
@@ -209,6 +372,9 @@ export default function Landing() {
               <Link className="ts-btnPrimary" to="/signup">
                 Get Started
               </Link>
+              <button className="ts-btnSecondary" onClick={() => setDemoOpen(true)}>
+                Request Demo
+              </button>
             </div>
 
             <div className="ts-miniRow">
@@ -442,6 +608,9 @@ export default function Landing() {
             <Link className="ts-btnPrimary" to="/signup" style={{ padding: "14px 28px", fontSize: 16 }}>
               Get Started Free
             </Link>
+            <button className="ts-btnSecondary" style={{ padding: "14px 28px", fontSize: 16 }} onClick={() => setDemoOpen(true)}>
+              Request Demo
+            </button>
             <Link className="ts-btnSecondary" to="/dashboard" style={{ padding: "14px 28px", fontSize: 16 }}>
               View Demo Dashboard
             </Link>

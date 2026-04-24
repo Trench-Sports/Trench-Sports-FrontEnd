@@ -3750,3 +3750,206 @@ html.is-native .ts-webOnly {
     background: rgba(180, 0, 255, 0.80);
     box-shadow: 0 0 6px rgba(180, 0, 255, 0.45);
 }
+
+/* ── Request Demo Modal ──────────────────────────────────────────────────────
+   Add these styles to your existing CSS file (e.g. landing.css / global.css)
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Overlay backdrop */
+.ts-demoOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: ts-overlayIn 0.2s ease;
+}
+
+@keyframes ts-overlayIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Modal panel */
+.ts-demoModal {
+  position: relative;
+  background: #0d0d0f;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(180, 0, 255, 0.12);
+  animation: ts-modalIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.1) transparent;
+}
+
+@keyframes ts-modalIn {
+  from { opacity: 0; transform: translateY(24px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Close button */
+.ts-demoClose {
+  position: sticky;
+  top: 16px;
+  float: right;
+  margin: 16px 16px 0 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+  border-radius: 50%;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  z-index: 10;
+}
+
+.ts-demoClose:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+/* Header */
+.ts-demoHeader {
+  padding: 24px 28px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Body / form */
+.ts-demoBody {
+  padding: 20px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Two-column grid */
+.ts-demoGrid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 520px) {
+  .ts-demoGrid2 { grid-template-columns: 1fr; }
+}
+
+/* Field wrapper */
+.ts-demoField {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* Label */
+.ts-demoLabel {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.55);
+  text-transform: uppercase;
+}
+
+.ts-req {
+  color: rgba(180, 0, 255, 0.9);
+}
+
+/* Input & Select */
+.ts-demoInput,
+.ts-demoSelect {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #fff;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.ts-demoInput::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+.ts-demoInput:focus,
+.ts-demoSelect:focus {
+  border-color: rgba(180, 0, 255, 0.5);
+  background: rgba(180, 0, 255, 0.05);
+}
+
+/* Select arrow */
+.ts-demoSelect {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='rgba(255,255,255,0.35)' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+.ts-demoSelect option {
+  background: #1a1a1f;
+  color: #fff;
+}
+
+/* Checkbox row */
+.ts-demoCheckRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.ts-demoCheckRow input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: rgba(180, 0, 255, 0.9);
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.ts-demoCheckLabel {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  line-height: 1.5;
+}
+
+/* Success state */
+.ts-demoSuccess {
+  padding: 56px 28px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ts-demoSuccessIcon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(180, 0, 255, 0.15);
+  border: 1px solid rgba(180, 0, 255, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: rgba(180, 0, 255, 0.9);
+  margin-bottom: 8px;
+}
