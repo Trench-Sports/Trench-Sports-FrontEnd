@@ -14,10 +14,11 @@ import { usePlatform } from "../hooks/usePlatform";
 import logoDark from "../images/TS.png";
 import logoLight from "../images/Trench Sports Logo Power Purple.png";
 
-// ── Bottom nav tabs — edit labels/icons/routes to match your app ─────────────
+// ── Bottom nav tabs — point at the /m/* routes so native taps stay on the
+//    mobile pages even if the shell ever falls through to AppLayout.
 const NAV_TABS = [
-  { label: "Dashboard", to: "/dashboard", icon: "⚡" },
-  { label: "Sessions",  to: "/session",  icon: "📋" },
+  { label: "Dashboard", to: "/m/dashboard", icon: "⚡" },
+  { label: "Sessions",  to: "/m/session",   icon: "📋" },
 ];
 
 export default function AppLayout() {

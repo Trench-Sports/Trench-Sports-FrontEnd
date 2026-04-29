@@ -1,10 +1,10 @@
-// src/pages/session.tsx
+// src/pages/mobile/session.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../supabaseClient";
-import { initTheme } from "../lib/themeManager";
-import { useSignalAudio } from "../hooks/signalAudio";
-import type { ZoneTarget, ZoneRow, ZoneCol } from "../hooks/signalAudio";
+import { supabase } from "../../supabaseClient";
+import { initTheme } from "../../lib/themeManager";
+import { useSignalAudio } from "../../hooks/signalAudio";
+import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
 import {
   connectToAdapter,
   disconnect as adapterDisconnect,
@@ -14,7 +14,7 @@ import {
   isNativeApp,
   getBluetoothDiagnostics,
   type AdapterConnection,
-} from "../bluetooth/adapter";
+} from "../../bluetooth/adapter";
 import {
   scanForDevices,
   stopScan,
@@ -23,7 +23,9 @@ import {
   getBleNamePrefixes,
   isUserCancel,
   type ScannedDevice,
-} from "../bluetooth/adapter_native";
+} from "../../bluetooth/adapter_native";
+
+import { ModeRolodex } from "../../components/modeRolodex";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -56,36 +58,10 @@ const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
-const MODES = ["power", "accuracy", "reaction", "volume", "target"] as const;
-type SessionMode = typeof MODES[number];
-
-const MODE_META: Record<SessionMode, { icon: string; label: string; color: string; glow: string; desc: string }> = {
-  power: {
-    icon: "💥", label: "Power",
-    color: "#b400ff", glow: "rgba(180,0,255,0.55)",
-    desc: "Strike any zone. Every impact is captured — force and placement logged in real time.",
-  },
-  accuracy: {
-    icon: "🎯", label: "Accuracy",
-    color: "#00dcff", glow: "rgba(0,220,255,0.55)",
-    desc: "Precision mode. Each strike is scored by how close you land to the bullseye.",
-  },
-  reaction: {
-    icon: "⚡️", label: "Reaction",
-    color: "#ffcc00", glow: "rgba(255,200,0,0.55)",
-    desc: "Wait for the HIT! signal, then strike as fast as you can. Reaction time measured to impact.",
-  },
-  volume: {
-    icon: "🥊", label: "Volume",
-    color: "#ff6a00", glow: "rgba(255,106,0,0.55)",
-    desc: "Wait for the HIT! signal, then throw as many strikes as possible in 5 seconds. Score = total hits.",
-  },
-  target: {
-    icon: "🏹", label: "Target",
-    color: "#00ff88", glow: "rgba(0,255,136,0.55)",
-    desc: "Listen for the zone cue, then strike that section of the bag. Reaction time and accuracy both scored.",
-  },
-};
+// Defined in a separate file to avoid a circular dependency with modeRolodex.tsx.
+export { MODES, MODE_META } from "../../lib/sessionModes";
+export type { SessionMode } from "../../lib/sessionModes";
+import { MODES, MODE_META, type SessionMode } from "../../lib/sessionModes";
 
 // ─── Target mode — zone mapping ───────────────────────────────────────────────
 // Grid is 12 rows × 8 cols (1-indexed from ESP32).
@@ -2745,6 +2721,9 @@ export default function Session() {
 
   // ── Feed / stats display metric toggle ───────────────────────────────────────
   const [feedMetric, setFeedMetric] = useState<"v" | "si">("v");
+  // MiniStatStrip: which counter is featured in the left pill — hits or
+  // total BLE events. Click the pill to flip it.
+  const [topMetric, setTopMetric] = useState<"hits" | "events">("hits");
 
   // ── Derived stats ─────────────────────────────────────────────────────────────
   const [frameCount, setFrameCount] = useState(0);
@@ -2873,7 +2852,7 @@ export default function Session() {
         transition: "margin-bottom 380ms cubic-bezier(.25,.46,.45,.94)",
       }}>
         <button
-          onClick={() => navigate("/dashboard")}
+          onClick={() => navigate("/m/dashboard")}
           style={{
             display: "flex", alignItems: "center", justifyContent: "center",
             width: 38, height: 38, borderRadius: 10,
@@ -3014,6 +2993,11 @@ export default function Session() {
                 {flowStep === 2 && (
                   <span style={{ fontSize: 10, fontWeight: 700, color: "#b400ff", letterSpacing: "0.06em", animation: "tsBlink 1.4s ease-in-out infinite" }}>
                     Step 2 — Connect ↓
+                  </span>
+                )}
+                {flowStep === 3 && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#b400ff", letterSpacing: "0.06em", animation: "tsBlink 1.4s ease-in-out infinite" }}>
+                    Step 3 — Pick mode below ↓
                   </span>
                 )}
               </div>
@@ -3157,90 +3141,12 @@ export default function Session() {
                 </>
               )}
 
-              {/* Wave 1 #3 — Mode selector skeleton during BLE scan.
-                  Real selector renders only when bleStatus === "connected"
-                  (block below). During "scanning" we paint shimmer rows in the
-                  same shape so the panel doesn't pop in. */}
-              {bleStatus === "scanning" && (
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 8 }}>
-                    Mode
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {MODES.map(m => (
-                      <div
-                        key={m}
-                        style={{
-                          display: "flex", alignItems: "center", gap: 10,
-                          padding: "9px 12px", borderRadius: 10, width: "100%",
-                          border: "1px solid rgba(255,255,255,0.05)",
-                          background: "rgba(255,255,255,0.02)",
-                        }}
-                      >
-                        <Skeleton w={16} h={16} r="50%" />
-                        <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
-                          <Skeleton w="42%" h={11} />
-                          <Skeleton w="78%" h={9} />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* Mode selection lives in the ModeRolodex (fixed bottom panel
+                  that auto-slides up after the adapter connects). The Bag
+                  Connection card stays focused on the adapter itself —
+                  status, firmware/OTA, connect/disconnect — so this is where
+                  the inline mode chips used to be. */}
 
-              {/* Mode selector — visible once connected, locked during active session */}
-              {bleStatus === "connected" && (
-                <div className={flowStep === 3 ? "ts-flow-mode" : undefined} style={{ marginBottom: 14, borderRadius: 12, padding: flowStep === 3 ? "10px" : 0 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    Mode
-                    {flowStep === 3 && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "#b400ff", letterSpacing: "0.06em", animation: "tsBlink 1.4s ease-in-out infinite" }}>
-                        Step 3 — Pick mode ↓
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {MODES.map(m => {
-                      const meta = MODE_META[m];
-                      const active = sessionMode === m;
-                      const locked = sessionActive;
-                      return (
-                        <button
-                          key={m}
-                          onClick={() => !locked && setSessionMode(m)}
-                          disabled={locked}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 10,
-                            padding: "9px 12px", borderRadius: 10, width: "100%",
-                            cursor: locked ? "default" : "pointer",
-                            border: active ? `1px solid ${meta.color}66` : "1px solid rgba(255,255,255,0.07)",
-                            background: active ? `${meta.color}14` : "rgba(255,255,255,0.02)",
-                            transition: "border-color 220ms cubic-bezier(.25,.46,.45,.94), background 220ms cubic-bezier(.25,.46,.45,.94), color 220ms cubic-bezier(.25,.46,.45,.94)",
-                            opacity: locked && !active ? 0.4 : 1,
-                            // Wave 1 #2 — iOS-spring bounce when this chip becomes the active one.
-                            // Setting animation-name to "none" on inactive buttons makes the new
-                            // active button replay the keyframes whenever sessionMode changes.
-                            animation: active ? "tsModeBounce 320ms cubic-bezier(.25,.46,.45,.94)" : "none",
-                          }}
-                        >
-                          <span style={{ fontSize: 16, lineHeight: 1 }}>{meta.icon}</span>
-                          <div style={{ textAlign: "left", flex: 1 }}>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: active ? meta.color : "var(--text)" }}>
-                              {meta.label}
-                            </div>
-                            <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 1, lineHeight: 1.4 }}>
-                              {meta.desc}
-                            </div>
-                          </div>
-                          {active && (
-                            <div style={{ width: 6, height: 6, borderRadius: "50%", background: meta.color, flexShrink: 0, boxShadow: `0 0 6px 2px ${meta.glow}` }} />
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
               {bleStatus !== "connected" ? (
                 <button
                   onClick={connectBle}
@@ -3327,69 +3233,165 @@ export default function Session() {
               transition: "border-color 300ms, box-shadow 300ms, width 380ms cubic-bezier(.25,.46,.45,.94)",
             }}
           >
-            {/* Wave 2 #5 — MiniStatStrip. Top-left glass pills with live hits,
-                peak voltage, and elapsed time. pointerEvents:none so it never
-                blocks the bag. Sized to fit between the left edge and the
-                ArcTimer cluster (ArcTimer is 64px wide + ~10px gap + ~58px Stop
-                button + 10px right inset ≈ 142px reserved on the right). */}
-            {sessionActive && (
-              <div style={{
-                position: "absolute", top: 10, left: 10, zIndex: 8,
-                right: 152,                  // leave room for ArcTimer + Stop
-                display: "flex", gap: 6,
-                pointerEvents: "none",
-              }}>
-                {[
-                  { label: "hits", value: String(feed.length) },
-                  { label: "peak", value: peakMv ? `${(peakMv / 1000).toFixed(2)}V` : "—" },
-                  { label: "time", value: formatTime(elapsedMs) },
-                ].map(s => (
-                  <div key={s.label} style={{
-                    flex: 1, minWidth: 0,
-                    padding: "5px 8px", borderRadius: 8,
-                    background: "rgba(0,0,0,0.55)",
-                    border: "1px solid rgba(255,255,255,0.08)",
-                    backdropFilter: "blur(8px)",
-                    WebkitBackdropFilter: "blur(8px)",
-                    textAlign: "center",
-                  }}>
+            {/* Wave 2 #5 — MiniStatStrip. Two interactive glass pills inline
+                with the ArcTimer + Stop cluster.
+                  • Left pill — taps cycle Hits ↔ Events.
+                  • Right pill — taps cycle the V ↔ SI feed metric (mirrors the
+                    standalone toggle in the right sidebar).
+                The legacy count-up "time" pill was retired — the ArcTimer
+                already shows session time visually.
+                The container is pointerEvents:none so empty space passes
+                through to the bag; only the pills themselves opt in. Mode-
+                tinted accent ring + tap-down scale make the toggles feel
+                tactile, and a key={value} swap on the value div re-runs the
+                tsValuePop animation whenever the number ticks. */}
+            {sessionActive && (() => {
+              const modeColor = MODE_META[sessionMode].color;
+              const isHits   = topMetric === "hits";
+              const topValue = isHits ? String(feed.length) : String(frameCount);
+              const peakValue =
+                peakMv
+                  ? (feedMetric === "si"
+                      ? String(strengthIndex(null, peakMv))
+                      : (peakMv / 1000).toFixed(2))
+                  : "—";
+              const peakSub  = peakMv ? (feedMetric === "si" ? "SI" : "V") : "";
+              const peakColor = feedMetric === "si" ? "#b400ff" : modeColor;
+
+              const pillBase: React.CSSProperties = {
+                flex: 1, minWidth: 0,
+                height: 40,
+                padding: "0 8px", borderRadius: 8,
+                background: "rgba(0,0,0,0.55)",
+                backdropFilter: "blur(8px)",
+                WebkitBackdropFilter: "blur(8px)",
+                // Flex column so the label + value sit dead-centered both
+                // horizontally and vertically inside the fixed-height pill.
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 1,
+                textAlign: "center",
+                cursor: "pointer",
+                userSelect: "none",
+                WebkitTapHighlightColor: "transparent",
+                pointerEvents: "auto",
+                transition: "transform 120ms ease, border-color 200ms ease, background 200ms ease",
+              };
+
+              return (
+                <div style={{
+                  position: "absolute", top: 10, left: 10, zIndex: 8,
+                  right: 128,                  // ArcTimer (40) + gap (10) + Stop (~58) + right inset (10) ≈ 118
+                  display: "flex", gap: 6, alignItems: "center",
+                  pointerEvents: "none",
+                }}>
+                  {/* Hits ↔ Events */}
+                  <button
+                    type="button"
+                    aria-label={`Showing ${topMetric}. Tap to switch.`}
+                    onClick={() => setTopMetric(m => (m === "hits" ? "events" : "hits"))}
+                    className="ts-mini-pill"
+                    style={{
+                      ...pillBase,
+                      border: `1px solid ${modeColor}55`,
+                      boxShadow: `inset 0 0 0 1px ${modeColor}10`,
+                    }}
+                  >
                     <div style={{
                       fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
                       textTransform: "uppercase",
-                      color: "rgba(255,255,255,0.45)",
+                      color: "rgba(255,255,255,0.55)",
+                      textAlign: "center",
                     }}>
-                      {s.label}
+                      {isHits ? "hits" : "events"}
                     </div>
-                    <div style={{
-                      fontSize: 13, fontWeight: 800, lineHeight: 1.15,
-                      color: "#fff",
-                      fontVariantNumeric: "tabular-nums",
-                      letterSpacing: "-0.01em",
-                      whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
-                    }}>
-                      {s.value}
+                    <div
+                      key={`${topMetric}:${topValue}`}
+                      style={{
+                        fontSize: 13, fontWeight: 800, lineHeight: 1.15,
+                        color: "#fff",
+                        fontVariantNumeric: "tabular-nums",
+                        letterSpacing: "-0.01em",
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                        animation: "tsValuePop 220ms ease",
+                      }}
+                    >
+                      {topValue}
                     </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  </button>
 
-            {/* Stop button + ArcTimer — overlaid top-right inside bag */}
+                  {/* Peak  ·  V ↔ SI */}
+                  <button
+                    type="button"
+                    aria-label={`Peak in ${feedMetric === "si" ? "Strike Index" : "Volts"}. Tap to switch.`}
+                    onClick={() => setFeedMetric(m => (m === "v" ? "si" : "v"))}
+                    className="ts-mini-pill"
+                    style={{
+                      ...pillBase,
+                      border: `1px solid ${peakColor}55`,
+                      boxShadow: `inset 0 0 0 1px ${peakColor}10`,
+                    }}
+                  >
+                    <div style={{
+                      fontSize: 9, fontWeight: 700, letterSpacing: "0.06em",
+                      textTransform: "uppercase",
+                      color: "rgba(255,255,255,0.55)",
+                      textAlign: "center",
+                    }}>
+                      peak
+                    </div>
+                    <div
+                      key={`${feedMetric}:${peakValue}`}
+                      style={{
+                        fontSize: 13, fontWeight: 800, lineHeight: 1.15,
+                        color: peakColor,
+                        fontVariantNumeric: "tabular-nums",
+                        letterSpacing: "-0.01em",
+                        whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                        animation: "tsValuePop 220ms ease",
+                        display: "inline-flex", alignItems: "baseline", gap: 3,
+                      }}
+                    >
+                      <span>{peakValue}</span>
+                      {peakSub && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700,
+                          color: `${peakColor}cc`,
+                          letterSpacing: "0.04em",
+                        }}>
+                          {peakSub}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </div>
+              );
+            })()}
+
+            {/* Stop button + ArcTimer — overlaid top-right inside bag.
+                Heights are pinned to 40px to match the MiniStatStrip pills so
+                the whole top-row toolbar reads as a single horizontal cluster. */}
             {sessionActive && (
               <div style={{
                 position: "absolute", top: 10, right: 10, zIndex: 9,
                 display: "flex", alignItems: "center", gap: 10,
+                height: 40,
               }}>
                 {/* Wave 1 #1 — ArcTimer replaces the legacy "{X}s left" text banner.
                     Runs the full 30s; color shifts amber at 25s, red at 28s. */}
-                <ArcTimer elapsedMs={elapsedMs} />
+                <ArcTimer elapsedMs={elapsedMs} size={40} />
                 <button
                   onClick={stopSession}
                   style={{
-                    padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 11,
+                    height: 40, padding: "0 14px", borderRadius: 8,
+                    fontWeight: 700, fontSize: 12,
                     background: "rgba(255,80,80,0.18)", border: "1px solid rgba(255,80,80,0.35)",
                     color: "#ff8080", cursor: "pointer",
                     backdropFilter: "blur(8px)",
+                    display: "inline-flex", alignItems: "center", justifyContent: "center",
+                    lineHeight: 1,
                   }}
                 >
                   Stop
@@ -3773,7 +3775,8 @@ export default function Session() {
             )}
           </div>
 
-          {/* Impact feed */}
+          {/* Impact feed — hidden until a session starts; remains visible afterward if there's data to review */}
+          {(sessionActive || feed.length > 0) && (
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>Impact Feed</span>
@@ -3821,6 +3824,7 @@ export default function Session() {
               ))}
             </div>
           </div>
+          )}
         </div>
       </div>
 
@@ -3834,6 +3838,17 @@ export default function Session() {
           onCancel={() => closePicker(null)}
         />
       )}
+
+      {/* ── Mode Rolodex — slides up once the adapter is connected,
+              hides automatically while a session is running, and slides
+              back up once the post-session save completes ── */}
+      <ModeRolodex
+        connected={bleStatus === "connected"}
+        sessionActive={sessionActive}
+        mode={sessionMode}
+        onModeSelect={setSessionMode}
+        saveComplete={saveState === "saved"}
+      />
 
       <style>{`
         @keyframes tsSheetUp {
@@ -3967,6 +3982,18 @@ export default function Session() {
           50%       { opacity: 0.6; transform: scale(0.96); }
         }
 
+        /* MiniStatStrip — quick pop on the value when it changes (driven
+           by the React key swap so the animation re-fires every tick). */
+        @keyframes tsValuePop {
+          0%   { transform: scale(0.92); opacity: 0.55; }
+          50%  { transform: scale(1.06); opacity: 1;    }
+          100% { transform: scale(1);    opacity: 1;    }
+        }
+        /* Tap feedback for the interactive pills. */
+        .ts-mini-pill { -webkit-appearance: none; appearance: none; font: inherit; }
+        .ts-mini-pill:hover { background: rgba(0,0,0,0.65); }
+        .ts-mini-pill:active { transform: scale(0.94); }
+
         /* Wave 1 #3 — Skeleton shimmer (paired with the Skeleton component). */
         @keyframes tsShimmer {
           0%, 100% { opacity: 0.40; }
@@ -3993,6 +4020,10 @@ export default function Session() {
           backdrop-filter: blur(12px);
           aspect-ratio: 0.72;
           user-select: none;
+          /* "manipulation" skips the legacy 300ms click delay and disables
+             double-tap-to-zoom on touch devices, so two quick taps reliably
+             fire the onDoubleClick handler that toggles focus mode. */
+          touch-action: manipulation;
         }
 
         /* ── Cells — mirrors ts-sim-cell ── */

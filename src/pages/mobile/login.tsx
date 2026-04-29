@@ -1,192 +1,203 @@
 // src/pages/mobile/login.tsx
-import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-
-// Adjust this import to match your supabaseClient.ts export
-// Common patterns:
-//   export const supabase = createClient(...)
-//   export default supabase
+import React, { useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
 
-export default function MobileLogin() {
+type LoginForm = {
+  email: string;
+  password: string;
+};
+
+export default function LoginPage() {
   const nav = useNavigate();
+  const loc = useLocation();
 
-  const [mode, setMode] = useState<"password" | "magic">("password");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const redirectTo = useMemo(() => {
+    const sp = new URLSearchParams(loc.search);
+    return sp.get("redirect") || "/m/dashboard";
+  }, [loc.search]);
 
+  const [form, setForm] = useState<LoginForm>({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [noAccount, setNoAccount] = useState(false);
+  const [showPw, setShowPw] = useState(false);
 
-  // If already signed in, skip login
-  useEffect(() => {
-    let mounted = true;
+  function update<K extends keyof LoginForm>(k: K, v: LoginForm[K]) {
+    setForm((p) => ({ ...p, [k]: v }));
+  }
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (!mounted) return;
-      if (data.session) nav("/m/dashboard", { replace: true });
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) nav("/m/dashboard", { replace: true });
-    });
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
-  }, [nav]);
-
-  async function signInPassword() {
-    setBusy(true);
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setErr(null);
-    setMsg(null);
+    setNoAccount(false);
+
+    const email = form.email.trim();
+    const password = form.password;
+
+    if (!email || !password) {
+      setErr("Please enter your email and password.");
+      return;
+    }
+
+    setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
         password,
       });
-      if (error) throw error;
-      // redirect handled by onAuthStateChange
+
+      if (error) {
+        const msg = error.message || "";
+        const isInvalidCreds =
+          msg.toLowerCase().includes("invalid login credentials") ||
+          msg.toLowerCase().includes("invalid credentials") ||
+          msg.toLowerCase().includes("user not found") ||
+          error.status === 400;
+
+        if (isInvalidCreds) {
+          setNoAccount(true);
+          setErr("No account found with that email.");
+          setTimeout(() => nav(`/signup?email=${encodeURIComponent(form.email.trim())}`), 2500);
+        } else {
+          setErr(msg || "Unable to sign in.");
+        }
+        return;
+      }
+
+      if (!data.session) {
+        setErr("Signed in, but no session was returned.");
+        return;
+      }
+
+      nav(redirectTo);
     } catch (e: any) {
-      setErr(e?.message ?? "Sign-in failed");
+      setErr(e?.message || "Something went wrong.");
     } finally {
       setBusy(false);
     }
   }
 
-  async function sendMagicLink() {
-    setBusy(true);
+  async function onForgotPassword() {
     setErr(null);
-    setMsg(null);
-    try {
-      // IMPORTANT: set this to your Vercel URL or a deep-link handler
-      // Example:
-      // const redirectTo = "https://YOUR_APP.vercel.app/m/dashboard";
-      const redirectTo = `${window.location.origin}/m/dashboard`;
-
-      const { error } = await supabase.auth.signInWithOtp({
-        email: email.trim(),
-        options: {
-          emailRedirectTo: redirectTo,
-        },
-      });
-      if (error) throw error;
-
-      setMsg("Check your email for a sign-in link.");
-    } catch (e: any) {
-      setErr(e?.message ?? "Couldn’t send magic link");
-    } finally {
-      setBusy(false);
+    const email = form.email.trim();
+    if (!email) {
+      setErr("Enter your email first, then click Forgot password.");
+      return;
     }
-  }
 
-  async function resetPassword() {
     setBusy(true);
-    setErr(null);
-    setMsg(null);
     try {
-      const redirectTo = `${window.location.origin}/m/login`;
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
-        redirectTo,
+      // You can customize redirectTo to your actual reset page route
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
       });
-      if (error) throw error;
-      setMsg("Password reset email sent.");
+      if (error) {
+        setErr(error.message || "Could not send reset email.");
+        return;
+      }
+      setErr("Password reset email sent. Check your inbox.");
     } catch (e: any) {
-      setErr(e?.message ?? "Couldn’t send reset email");
+      setErr(e?.message || "Could not send reset email.");
     } finally {
       setBusy(false);
     }
   }
-
-  const canSubmit = email.trim().length > 3 && (!busy);
 
   return (
-    <div style={{ maxWidth: 460, margin: "0 auto" }}>
-      <div className="mobileCard">
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
-          {/* Use your existing logo if you want */}
-          {/* <img src={logoSrc} alt="TS" style={{ width: 44, height: 44 }} /> */}
-          <div>
-            <div style={{ fontWeight: 950, fontSize: 20, lineHeight: 1.1 }}>Trench Sports</div>
-            <div style={{ opacity: 0.75, marginTop: 4 }}>Sign in to continue</div>
+    <div className="ts-publicGlow">
+      <div style={{ width: "min(520px, 100%)" }}>
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontWeight: 950, fontSize: 28, letterSpacing: "-0.02em" }}>Welcome back</div>
+          <div style={{ opacity: 0.75, marginTop: 6 }}>Log in to view your dashboard and sessions.</div>
+        </div>
+
+        {noAccount ? (
+          <div className="ts-error">
+            No account found with that email.{" "}
+            <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
+              Create one now →
+            </Link>
+            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Redirecting you to sign up…</div>
           </div>
-        </div>
+        ) : err ? (
+          <div className="ts-error">{err}</div>
+        ) : null}
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
-          <button
-            className={mode === "password" ? "btnSecondary" : ""}
-            style={{ flex: 1, borderRadius: 14 }}
-            onClick={() => setMode("password")}
-            disabled={busy}
-          >
-            Password
-          </button>
-          <button
-            className={mode === "magic" ? "btnSecondary" : ""}
-            style={{ flex: 1, borderRadius: 14 }}
-            onClick={() => setMode("magic")}
-            disabled={busy}
-          >
-            Magic Link
-          </button>
-        </div>
-
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <input
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Email"
-            autoCapitalize="none"
-            autoCorrect="off"
-            inputMode="email"
-            style={{ padding: 14, borderRadius: 14 }}
-          />
-
-          {mode === "password" && (
+        <form onSubmit={onSubmit} style={{ display: "grid", gap: 12, marginTop: 12 }}>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label style={{ fontWeight: 900, fontSize: 13, opacity: 0.9 }}>Email</label>
             <input
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Password"
-              type="password"
-              style={{ padding: 14, borderRadius: 14 }}
+              value={form.email}
+              onChange={(e) => update("email", e.target.value)}
+              type="email"
+              autoComplete="email"
+              placeholder="you@team.com"
+              style={{
+                padding: "12px 14px",
+                borderRadius: 16,
+                border: "1px solid rgba(255,255,255,0.14)",
+                background: "rgba(255,255,255,0.06)",
+                color: "inherit",
+                outline: "none",
+              }}
             />
-          )}
+          </div>
 
-          {mode === "password" ? (
-            <>
+          <div style={{ display: "grid", gap: 6 }}>
+            <label style={{ fontWeight: 900, fontSize: 13, opacity: 0.9 }}>Password</label>
+
+            <div className="ts-inputRow">
+              <input
+                value={form.password}
+                onChange={(e) => update("password", e.target.value)}
+                type={showPw ? "text" : "password"}
+                autoComplete="current-password"
+                placeholder="••••••••"
+                style={{
+                  flex: 1,
+                  padding: "12px 14px",
+                  borderRadius: 16,
+                  border: "1px solid rgba(255,255,255,0.14)",
+                  background: "rgba(255,255,255,0.06)",
+                  color: "inherit",
+                  outline: "none",
+                }}
+              />
               <button
-                className="btnSecondary"
-                style={{ padding: 14, borderRadius: 14 }}
-                onClick={signInPassword}
-                disabled={!canSubmit || password.length < 1}
+                type="button"
+                className="ts-miniBtn"
+                onClick={() => setShowPw((s) => !s)}
+                aria-label={showPw ? "Hide password" : "Show password"}
               >
-                {busy ? "Signing in…" : "Sign in"}
+                {showPw ? "Hide" : "Show"}
               </button>
+            </div>
 
-              <button
-                style={{ padding: 14, borderRadius: 14 }}
-                onClick={resetPassword}
-                disabled={!canSubmit}
-              >
+            <div className="ts-inputRow" style={{ justifyContent: "space-between" }}>
+              <button type="button" className="ts-miniBtn" onClick={onForgotPassword} disabled={busy}>
                 Forgot password
               </button>
-            </>
-          ) : (
-            <button
-              className="btnSecondary"
-              style={{ padding: 14, borderRadius: 14 }}
-              onClick={sendMagicLink}
-              disabled={!canSubmit}
-            >
-              {busy ? "Sending…" : "Send magic link"}
-            </button>
-          )}
 
-          {msg && <div style={{ marginTop: 6, opacity: 0.85 }}>{msg}</div>}
-          {err && <div style={{ marginTop: 6, opacity: 0.9 }}>{err}</div>}
-        </div>
+              <div style={{ display: "flex", gap: 10, alignItems: "center", opacity: 0.9, fontSize: 13 }}>
+                <span>New here?</span>
+                <Link className="ts-linkish" to="/signup">
+                  Create account
+                </Link>
+              </div>
+            </div>
+          </div>
+
+          <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
+            {busy ? "Logging in…" : "Login"}
+          </button>
+
+          <div style={{ textAlign: "center", opacity: 0.8, fontSize: 13 }}>
+            <Link className="ts-linkish" to="/">
+              Back to landing
+            </Link>
+          </div>
+        </form>
       </div>
     </div>
   );
