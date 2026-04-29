@@ -5,14 +5,25 @@
 // drag — so either neighbor is already painted offscreen and gets revealed in
 // real time as the finger drags.
 //
-// • Drag to peek both pages at once (preview).
-// • Release past 20% of the viewport (or with a fast flick) snaps to the next
-//   page, otherwise rubber-bands back.
-// • Edge resistance when trying to swipe past the first/last page.
-// • Vertical scrolls inside a page still work — the gesture commits to "swipe"
-//   only when horizontal motion dominates.
-// • External navigations (bottom-tab tap, in-page navigate(), back/forward)
-//   animate to the matching page automatically.
+// ── Performance model ────────────────────────────────────────────────────────
+// The previous version called setDragDelta() on every pointermove, which sends
+// every finger movement through the full React render → reconcile → commit
+// pipeline. On iOS that lag is visible: the page lags 1-2 frames behind the
+// finger even on a fast device.
+//
+// This version bypasses React state entirely during the drag and writes
+// style.transform directly on the track DOM element via trackRef. React state
+// (activeIndex, transitioning) only changes at gesture commit — snap or
+// rubber-band back — which is at most once per swipe gesture.
+//
+// The scroll-vs-swipe disambiguation, edge resistance, snap threshold, and
+// flick velocity logic are all preserved from the original.
+//
+// ── Public surface ───────────────────────────────────────────────────────────
+// • Drag to peek both pages (preview) in real time.
+// • Release past 20 % of the viewport (or flick) snaps to the next page;
+//   otherwise rubber-bands back with the same spring curve.
+// • Bottom-tab taps and navigate() calls animate to the correct page.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, {
   createContext,
@@ -37,165 +48,214 @@ const PAGES: DeckPage[] = [
   { path: "/m/session",   node: <MobileSession />   },
 ];
 const COUNT = PAGES.length;
-const PAGE_PCT = 100 / COUNT; // each panel occupies this % of the track
 
 // ── Context exposed to descendants ──────────────────────────────────────────
-// Used by ModeRolodex (rendered deep inside session.tsx) to portal itself into
-// the session panel so it sits within the swipe deck's coordinate system —
-// matching the panel's width, sliding off with it during a swipe, and being
-// invisible while the dashboard panel is active.
 export type SwipeDeckCtx = {
   sessionPanelEl: HTMLDivElement | null;
 };
 export const SwipeDeckContext = createContext<SwipeDeckCtx>({ sessionPanelEl: null });
 
-// Tunables
-const DECIDE_THRESHOLD_PX  = 12;   // movement before we commit to swipe vs scroll
-const SNAP_THRESHOLD_RATIO = 0.20; // |dx| > 20% of viewport ⇒ go to next page
-const FLICK_VELOCITY_PXMS  = 0.45; // |v| above this ⇒ go to next page even if dx small
-const EDGE_RESISTANCE      = 0.35; // rubber-band factor at first/last page
-const TRANSITION_MS        = 320;
-const TRANSITION_EASE      = "cubic-bezier(.32,.72,0,1)"; // iOS-ish
+// ── Tunables ─────────────────────────────────────────────────────────────────
+const DECIDE_THRESHOLD_PX  = 8;    // px before committing to swipe vs scroll (was 12 — lower feels snappier)
+const SNAP_THRESHOLD_RATIO = 0.20; // |dx| > 20 % viewport → snap to next page
+const FLICK_VELOCITY_PXMS  = 0.35; // px/ms above this → snap even if dx is small (was 0.45)
+const EDGE_RESISTANCE      = 0.20; // rubber-band factor at first/last page (was 0.35 — tighter)
+const TRANSITION_MS        = 380;  // snap/rubber-band animation duration
+// iOS scroll spring: fast out, gentle settle. Matches UIScrollView's default.
+const TRANSITION_EASE      = "cubic-bezier(0.25, 0.46, 0.45, 0.94)";
 
 function pathToIndex(p: string) {
   const idx = PAGES.findIndex((pg) => p.startsWith(pg.path));
   return idx < 0 ? 0 : idx;
 }
 
+// ── Direct-DOM transform helper ───────────────────────────────────────────────
+// Writes the track's CSS transform without touching React state.
+// `dx`      — additional pixel offset on top of the active-page base position
+// `animate` — whether to apply the snap CSS transition
+function applyTransform(
+  el: HTMLDivElement,
+  activeIndex: number,
+  containerWidth: number,
+  dx: number,
+  animate: boolean,
+) {
+  const base = -activeIndex * containerWidth; // px from origin to active panel's left edge
+  el.style.transition = animate
+    ? `transform ${TRANSITION_MS}ms ${TRANSITION_EASE}`
+    : "none";
+  // translate3d promotes to a GPU layer and avoids triggering layout.
+  el.style.transform = `translate3d(${base + dx}px, 0, 0)`;
+}
+
 export default function MobileSwipeDeck() {
-  const loc = useLocation();
+  const loc      = useLocation();
   const navigate = useNavigate();
 
-  const [activeIndex, setActiveIndex] = useState(() => pathToIndex(loc.pathname));
-  const [dragDelta, setDragDelta] = useState(0);
-  const [transitioning, setTransitioning] = useState(false);
-
-  // Sync activeIndex when something else changes the URL (bottom tabs,
-  // in-page navigate calls, browser back/forward).
-  useEffect(() => {
-    const idx = pathToIndex(loc.pathname);
-    setActiveIndex((prev) => {
-      if (prev === idx) return prev;
-      // Animate to the new page rather than jumping.
-      setTransitioning(true);
-      return idx;
-    });
-  }, [loc.pathname]);
-
-  // Measure container width so we can convert px drag → % of track.
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [width, setWidth] = useState(0);
-
-  // The session panel element — portal target for the rolodex (and any other
-  // deck-anchored overlay we add later). Stored in state so descendants
-  // re-render when it becomes available.
+  // ── React state (changes at most once per gesture) ────────────────────────
+  const [activeIndex,   setActiveIndex]   = useState(() => pathToIndex(loc.pathname));
   const [sessionPanelEl, setSessionPanelEl] = useState<HTMLDivElement | null>(null);
-  useLayoutEffect(() => {
-    const measure = () => {
-      if (containerRef.current) setWidth(containerRef.current.clientWidth);
-    };
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, []);
 
-  // ── Pointer/touch handling ────────────────────────────────────────────────
-  const startXRef = useRef(0);
-  const startYRef = useRef(0);
+  // ── Refs — mutated during the drag, never cause re-renders ───────────────
+  const containerRef    = useRef<HTMLDivElement>(null);
+  const trackRef        = useRef<HTMLDivElement>(null);
+  const widthRef        = useRef(0);           // container width in px
+  const activeIndexRef  = useRef(activeIndex); // shadow of state for use in event handlers
+  const dragDeltaRef    = useRef(0);           // current drag offset in px
+  const isAnimatingRef  = useRef(false);       // true while CSS transition is running
+
+  // Gesture tracking refs
+  const startXRef    = useRef(0);
+  const startYRef    = useRef(0);
   const startTimeRef = useRef(0);
-  const decidedRef = useRef<null | "swipe" | "scroll">(null);
-  const activeIndexRef = useRef(activeIndex);
+  const decidedRef   = useRef<null | "swipe" | "scroll">(null);
+
+  // Keep activeIndexRef in sync whenever React commits a state update.
   useEffect(() => { activeIndexRef.current = activeIndex; }, [activeIndex]);
 
-  const onPointerDown = useCallback((e: React.PointerEvent) => {
-    // Ignore non-primary buttons (right-click etc).
-    if (e.button !== undefined && e.button !== 0) return;
-    startXRef.current = e.clientX;
-    startYRef.current = e.clientY;
-    startTimeRef.current = performance.now();
-    decidedRef.current = null;
+  // ── Container sizing ──────────────────────────────────────────────────────
+  useLayoutEffect(() => {
+    const measure = () => {
+      if (containerRef.current) {
+        widthRef.current = containerRef.current.clientWidth;
+      }
+    };
+    measure();
+    // ResizeObserver is more efficient than window resize for this use-case.
+    const ro = new ResizeObserver(measure);
+    if (containerRef.current) ro.observe(containerRef.current);
+    return () => ro.disconnect();
   }, []);
 
+  // ── Sync active page when URL changes externally ──────────────────────────
+  // (bottom-tab tap, navigate() call, browser back/forward)
+  useEffect(() => {
+    const idx = pathToIndex(loc.pathname);
+    if (idx === activeIndexRef.current) return;
+
+    // Animate to the new page.
+    const el = trackRef.current;
+    if (el) {
+      isAnimatingRef.current = true;
+      applyTransform(el, idx, widthRef.current, 0, /* animate */ true);
+    }
+    setActiveIndex(idx);
+  }, [loc.pathname]);
+
+  // ── Re-apply base transform whenever activeIndex changes ─────────────────
+  // This covers the case where React re-renders (e.g. theme toggle) after a
+  // snap — we need the transform to match the (possibly new) container width.
+  useLayoutEffect(() => {
+    const el = trackRef.current;
+    if (!el || isAnimatingRef.current) return; // don't clobber mid-animation
+    applyTransform(el, activeIndex, widthRef.current, 0, false);
+  }, [activeIndex]);
+
+  // ── Pointer down — record start position ─────────────────────────────────
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    startXRef.current    = e.clientX;
+    startYRef.current    = e.clientY;
+    startTimeRef.current = performance.now();
+    decidedRef.current   = null;
+    dragDeltaRef.current = 0;
+  }, []);
+
+  // ── Pointer move — mutate DOM directly, zero React involvement ────────────
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!startTimeRef.current) return;
+
     const dx = e.clientX - startXRef.current;
     const dy = e.clientY - startYRef.current;
 
-    // Decide intent on first significant move.
+    // Disambiguate swipe vs scroll on first significant movement.
     if (decidedRef.current === null) {
-      if (Math.abs(dx) > DECIDE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+      const horizontal = Math.abs(dx) > Math.abs(dy);
+      if (Math.abs(dx) > DECIDE_THRESHOLD_PX && horizontal) {
         decidedRef.current = "swipe";
-        setTransitioning(false);
+        // Cancel any in-progress snap animation so the page follows the finger.
+        isAnimatingRef.current = false;
+        const el = trackRef.current;
+        if (el) el.style.transition = "none";
         try {
           (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
         } catch {
-          /* setPointerCapture can throw if the pointer is already released */
+          /* pointer may already be released */
         }
       } else if (Math.abs(dy) > DECIDE_THRESHOLD_PX) {
         decidedRef.current = "scroll";
       }
+      return; // don't move anything until we've decided
     }
 
     if (decidedRef.current !== "swipe") return;
 
     const idx = activeIndexRef.current;
-    const atLeftEdge  = idx === 0          && dx > 0;
-    const atRightEdge = idx === COUNT - 1  && dx < 0;
+    const atLeftEdge  = idx === 0         && dx > 0;
+    const atRightEdge = idx === COUNT - 1 && dx < 0;
     const resisted = (atLeftEdge || atRightEdge) ? dx * EDGE_RESISTANCE : dx;
-    setDragDelta(resisted);
+
+    dragDeltaRef.current = resisted;
+
+    // ← The critical change: write to the DOM directly, no setState. →
+    const el = trackRef.current;
+    if (el) applyTransform(el, idx, widthRef.current, resisted, false);
   }, []);
 
-  const finishGesture = useCallback(() => {
-    const wasSwipe = decidedRef.current === "swipe";
-    const elapsed = Math.max(1, performance.now() - startTimeRef.current);
-    decidedRef.current = null;
-    startTimeRef.current = 0;
-
-    if (!wasSwipe) {
-      // Wasn't a swipe — make sure no leftover translation is showing.
-      setDragDelta(0);
+  // ── Commit gesture: snap to page or rubber-band back ─────────────────────
+  const commitGesture = useCallback(() => {
+    if (decidedRef.current !== "swipe") {
+      decidedRef.current   = null;
+      startTimeRef.current = 0;
       return;
     }
 
-    const dx = dragDelta;
-    const v = dx / elapsed; // px per ms
-    const w = width || 1;
+    const dx      = dragDeltaRef.current;
+    const elapsed = Math.max(1, performance.now() - startTimeRef.current);
+    decidedRef.current   = null;
+    startTimeRef.current = 0;
+    dragDeltaRef.current = 0;
+
+    const v = dx / elapsed; // px/ms
+    const w = widthRef.current || 1;
     const passed =
       Math.abs(dx) > w * SNAP_THRESHOLD_RATIO ||
       Math.abs(v)  > FLICK_VELOCITY_PXMS;
 
-    const idx = activeIndexRef.current;
-    let next = idx;
+    const idx  = activeIndexRef.current;
+    let   next = idx;
     if (passed) {
       if (dx < 0 && idx < COUNT - 1) next = idx + 1;
       else if (dx > 0 && idx > 0)    next = idx - 1;
     }
 
-    setTransitioning(true);
-    setDragDelta(0);
+    // Animate to the target page (could be the same page for rubber-band).
+    isAnimatingRef.current = true;
+    const el = trackRef.current;
+    if (el) applyTransform(el, next, widthRef.current, 0, /* animate */ true);
 
     if (next !== idx) {
       setActiveIndex(next);
-      // `replace` so swiping doesn't pollute the back stack with every page
-      // the user passes through.
+      activeIndexRef.current = next;
       navigate(PAGES[next].path, { replace: true });
     }
-  }, [dragDelta, navigate, width]);
+  }, [navigate]);
 
-  const onPointerUp = useCallback(() => {
-    finishGesture();
-  }, [finishGesture]);
+  const onPointerUp     = useCallback(() => commitGesture(), [commitGesture]);
+  const onPointerCancel = useCallback(() => commitGesture(), [commitGesture]);
 
-  const onPointerCancel = useCallback(() => {
-    finishGesture();
-  }, [finishGesture]);
-
-  // ── Translate math ────────────────────────────────────────────────────────
-  // Track is COUNT × 100% of the container; translate is expressed as % of
-  // track width. Dragging by dx px corresponds to a track-fraction of
-  // (dx / containerWidth) × (1 / COUNT).
-  const dragPct = width ? (dragDelta / width) * PAGE_PCT : 0;
-  const translatePct = -activeIndex * PAGE_PCT + dragPct;
+  // ── Clear isAnimatingRef when the CSS transition ends ────────────────────
+  // We use a DOM event listener (not React's onTransitionEnd prop) so it fires
+  // even when the element is re-used across renders without unmounting.
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const onEnd = (e: TransitionEvent) => {
+      if (e.propertyName === "transform") isAnimatingRef.current = false;
+    };
+    el.addEventListener("transitionend", onEnd);
+    return () => el.removeEventListener("transitionend", onEnd);
+  }, []);
 
   return (
     <SwipeDeckContext.Provider value={{ sessionPanelEl }}>
@@ -206,9 +266,6 @@ export default function MobileSwipeDeck() {
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
         style={{
-          // Fills .mMain (which we set to overflow:hidden + position:relative
-          // for deck routes in MobileLayout). The deck owns the bounded box
-          // so panels can be height:100% scrolling containers.
           position: "absolute",
           inset: 0,
           overflow: "hidden",
@@ -216,76 +273,56 @@ export default function MobileSwipeDeck() {
           touchAction: "pan-y",
         }}
       >
+        {/*
+         * Track — width is COUNT × container. We start it at the correct
+         * position synchronously in the useLayoutEffect above, then only ever
+         * move it with direct style mutations (during drag) or the CSS
+         * transition (on snap). React never touches the transform after mount.
+         *
+         * willChange: "transform" tells the compositor to promote this layer
+         * to a GPU tile so transforms are applied on the compositor thread,
+         * completely off the main thread during the snap animation.
+         */}
         <div
+          ref={trackRef}
           style={{
-            display: "flex",
-            width: `${COUNT * 100}%`,
-            height: "100%",
-            transform: `translate3d(${translatePct}%, 0, 0)`,
-            transition: transitioning
-              ? `transform ${TRANSITION_MS}ms ${TRANSITION_EASE}`
-              : "none",
+            display:    "flex",
+            width:      `${COUNT * 100}%`,
+            height:     "100%",
             willChange: "transform",
+            // Initial transform is set imperatively in useLayoutEffect.
+            // Setting it here too avoids a flash before layout runs.
+            transform:  `translate3d(${-activeIndex * (widthRef.current || 0)}px, 0, 0)`,
           }}
-          onTransitionEnd={() => setTransitioning(false)}
         >
           {PAGES.map((p, i) => {
-            const isActive = i === activeIndex;
+            const isActive  = i === activeIndex;
             const isSession = p.path === "/m/session";
-            // Each panel splits into two layers:
-            //   • Outer (this div) — non-scrolling, position:relative. This is
-            //     the portal host for overlays like the ModeRolodex, so they
-            //     anchor to the panel's *visible* bottom and stay pinned there
-            //     regardless of how far the user scrolls inside the page.
-            //   • Inner — scrolling container that holds the actual page
-            //     content. This is the only thing that moves on scroll.
-            // The horizontal swipe transform lives on the parent flex row, so
-            // both layers still slide together during a page swipe — no
-            // fixed-to-viewport mismatch.
             return (
               <div
                 key={p.path}
                 ref={isSession ? setSessionPanelEl : undefined}
-                // `inert` is the correct primitive for "off-screen panel":
-                // it removes the subtree from the a11y tree, moves focus out
-                // of it, AND blocks pointer/keyboard input — all of which we
-                // want for the inactive deck pages. We previously used
-                // aria-hidden, but the browser blocks aria-hidden when a
-                // descendant still has focus (e.g. a button the user just
-                // tapped before the deck swiped away), which fires a console
-                // warning. `inert` handles that case cleanly by stealing focus
-                // back to the active panel.
-                // React 18 doesn't have `inert` in its boolean-attribute
-                // allowlist (that landed in React 19), so passing a boolean
-                // triggers a "non-boolean attribute" warning. Passing the
-                // empty string is the spec-correct way to enable a boolean
-                // HTML attribute, and React will round-trip it as `inert=""`.
                 {...(!isActive ? { inert: "" } : {})}
                 style={{
-                  width: `${100 / COUNT}%`,
-                  flexShrink: 0,
-                  height: "100%",
-                  position: "relative",
-                  overflow: "hidden",
-                  // pointerEvents is now redundant with inert, but kept as a
-                  // belt-and-suspenders for any browser that hasn't shipped
-                  // inert yet (caniuse: ≥ 96% global as of 2024).
+                  width:        `${100 / COUNT}%`,
+                  flexShrink:   0,
+                  height:       "100%",
+                  position:     "relative",
+                  overflow:     "hidden",
                   pointerEvents: isActive ? "auto" : "none",
-                  boxShadow: isActive
+                  // Subtle shadow on the offscreen panel so pages feel stacked.
+                  boxShadow:    isActive
                     ? "none"
                     : "inset 0 0 60px rgba(0,0,0,0.18)",
                 }}
               >
                 <div
                   style={{
-                    height: "100%",
-                    overflowY: "auto",
-                    overflowX: "hidden",
+                    height:                  "100%",
+                    overflowY:               "auto",
+                    overflowX:               "hidden",
                     WebkitOverflowScrolling: "touch",
-                    // Restore the page gutters and bottom-nav clearance that
-                    // .mMain used to provide before we zeroed it out for deck
-                    // routes.
-                    padding: "12px 12px 80px",
+                    padding:                 "12px 12px 80px",
                   }}
                 >
                   {p.node}

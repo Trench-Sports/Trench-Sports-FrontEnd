@@ -1,5 +1,6 @@
 // src/pages/mobile/session.tsx
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
 import { initTheme } from "../../lib/themeManager";
@@ -1421,7 +1422,11 @@ function BlePickerSheet({
     return (b.rssi ?? -999) - (a.rssi ?? -999);
   });
 
-  return (
+  // Portal into document.body so the sheet escapes any CSS transform on a
+  // parent (e.g. the swipe deck panel). Without this, `position: fixed` is
+  // relative to the transformed ancestor instead of the viewport, which pushes
+  // the sheet to the bottom-left corner — the same fix used by ModeRolodex.
+  return createPortal(
     <div style={{
       position: "fixed", inset: 0, zIndex: 100,
       display: "flex", alignItems: "flex-end", justifyContent: "center",
@@ -1582,7 +1587,8 @@ function BlePickerSheet({
           })}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

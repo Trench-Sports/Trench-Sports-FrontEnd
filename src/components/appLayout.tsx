@@ -16,10 +16,6 @@ import logoLight from "../images/Trench Sports Logo Power Purple.png";
 
 // ── Bottom nav tabs — point at the /m/* routes so native taps stay on the
 //    mobile pages even if the shell ever falls through to AppLayout.
-const NAV_TABS = [
-  { label: "Dashboard", to: "/m/dashboard", icon: "⚡" },
-  { label: "Sessions",  to: "/m/session",   icon: "📋" },
-];
 
 export default function AppLayout() {
   const { isNative } = usePlatform();
