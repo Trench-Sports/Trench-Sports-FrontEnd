@@ -1,20 +1,14 @@
 // src/components/mobileLayout.tsx
 // ─────────────────────────────────────────────────────────────────────────────
 // Layout for /m/* routes (mobile pages). Used by both the Capacitor iOS shell
-// and anyone hitting /m/* in a browser. Includes a fixed bottom tab bar that
-// keeps navigation inside the /m/* family of routes.
+// and anyone hitting /m/* in a browser.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useEffect, useState } from "react";
-import { Link, Outlet, useLocation } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 
 import { initTheme, toggleTheme } from "../lib/themeManager.tsx";
 import logoDark from "../images/TS.png";
 import logoLight from "../images/Trench Sports Logo Power Purple.png";
-
-const NAV_TABS = [
-  { label: "Dashboard", to: "/m/dashboard", icon: "⚡" },
-  { label: "Sessions",  to: "/m/session",   icon: "📋" },
-];
 
 export default function MobileLayout() {
   const loc = useLocation();
@@ -41,9 +35,6 @@ export default function MobileLayout() {
 
   const onToggleTheme = () => setTheme((t) => toggleTheme(t));
   const logoSrc = theme === "dark" ? logoDark : logoLight;
-
-  // Hide the bottom nav on the login screen — it's not useful pre-auth.
-  const hideBottomNav = loc.pathname.startsWith("/m/login");
 
   return (
     <div className="mShell">
@@ -94,40 +85,6 @@ export default function MobileLayout() {
       >
         <Outlet />
       </main>
-
-      {!hideBottomNav && (
-        <nav className="mBottomNav">
-          {NAV_TABS.map((tab) => {
-            const active = loc.pathname.startsWith(tab.to);
-            return (
-              <Link
-                key={tab.to}
-                to={tab.to}
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  gap: 3,
-                  padding: "8px 4px",
-                  borderRadius: 14,
-                  border: `1px solid ${active ? "rgba(180,0,255,0.38)" : "rgba(255,255,255,0.12)"}`,
-                  background: active ? "rgba(180,0,255,0.14)" : "rgba(255,255,255,0.05)",
-                  color: active ? "#b400ff" : "inherit",
-                  textDecoration: "none",
-                  fontSize: 11,
-                  fontWeight: 900,
-                  WebkitUserSelect: "none",
-                  userSelect: "none",
-                }}
-              >
-                <span style={{ fontSize: 20 }}>{tab.icon}</span>
-                {tab.label}
-              </Link>
-            );
-          })}
-        </nav>
-      )}
     </div>
   );
 }
