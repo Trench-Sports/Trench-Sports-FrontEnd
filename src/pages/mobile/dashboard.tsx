@@ -2550,6 +2550,12 @@ export default function Dashboard() {
           );
           setEditAthleteTarget(null);
         }}
+        onDeleted={(deletedId) => {
+          // Drop the athlete from local state. Team member counts will
+          // refresh on the next teams fetch (they're derived from a join).
+          setAthletes((prev) => prev.filter((a) => a.id !== deletedId));
+          setEditAthleteTarget(null);
+        }}
       />
 
       <ManageTeamModal
@@ -4150,11 +4156,11 @@ export default function Dashboard() {
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="leaderMetric">Mode</label>
                 <select id="leaderMetric" className="ts-select" value={leaderMetric} onChange={(e) => setLeaderMetric(e.target.value as MetricKey)}>
-                  <option value="strength">💥 Power</option>
-                  <option value="reaction">⚡️ Reaction</option>
-                  <option value="accuracy">🎯 Accuracy</option>
-                  <option value="volume">🥊 Volume</option>
-                  <option value="target">🏹 Target</option>
+                  <option value="strength">Power</option>
+                  <option value="reaction">Reaction</option>
+                  <option value="accuracy">Accuracy</option>
+                  <option value="volume">Volume</option>
+                  <option value="target">Target</option>
                 </select>
               </div>
             </div>
@@ -4357,7 +4363,7 @@ export default function Dashboard() {
                 const accentBdr= m === "accuracy" ? "rgba(0,220,255,0.35)" : m === "reaction" ? "rgba(255,200,0,0.35)" : m === "form" ? (isDark ? "rgba(255,255,255,0.22)" : "rgba(20,20,40,0.22)") : "rgba(180,0,255,0.40)";
                 return (
                   <button key={m} type="button" onClick={() => setAthleteImprovedMetric(m)} style={{ padding: "4px 10px", borderRadius: 6, border: isActive ? `1px solid ${accentBdr}` : "1px solid transparent", background: isActive ? accentBg : "transparent", color: isActive ? accent : isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)", font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "capitalize", transition: "all 130ms ease" }}>
-                    {m === "strength" ? "💥" : m === "reaction" ? "⚡️" : m === "accuracy" ? "🎯" : "📐"} {m === "form" ? "Form" : m}
+                    {m === "form" ? "Form" : m}
                   </button>
                 );
               })}
@@ -4445,11 +4451,11 @@ export default function Dashboard() {
               <div className="ts-leaderControls">
                 <label className="ts-leaderLabel" htmlFor="teamLeaderMetric">Mode</label>
                 <select id="teamLeaderMetric" className="ts-select" value={teamLeaderMetric} onChange={(e) => setTeamLeaderMetric(e.target.value as MetricKey)}>
-                  <option value="strength">💥 Power</option>
-                  <option value="reaction">⚡️ Reaction</option>
-                  <option value="accuracy">🎯 Accuracy</option>
-                  <option value="volume">🥊 Volume</option>
-                  <option value="target">🏹 Target</option>
+                  <option value="strength">Power</option>
+                  <option value="reaction">Reaction</option>
+                  <option value="accuracy">Accuracy</option>
+                  <option value="volume">Volume</option>
+                  <option value="target">Target</option>
                 </select>
               </div>
             </div>
@@ -4569,7 +4575,7 @@ export default function Dashboard() {
                 const accentBdr = m === "accuracy" ? "rgba(0,220,255,0.35)" : m === "reaction" ? "rgba(255,200,0,0.35)" : m === "form" ? (isDark ? "rgba(255,255,255,0.22)" : "rgba(20,20,40,0.22)") : "rgba(180,0,255,0.40)";
                 return (
                   <button key={m} type="button" onClick={() => setTeamImprovedMetric(m)} style={{ padding: "4px 10px", borderRadius: 6, border: isActive ? `1px solid ${accentBdr}` : "1px solid transparent", background: isActive ? accentBg : "transparent", color: isActive ? accent : isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)", font: "inherit", fontSize: 11, fontWeight: 700, cursor: "pointer", textTransform: "capitalize", transition: "all 130ms ease" }}>
-                    {m === "strength" ? "💥" : m === "reaction" ? "⚡️" : m === "accuracy" ? "🎯" : "📐"} {m === "form" ? "Form" : m}
+                    {m === "form" ? "Form" : m}
                   </button>
                 );
               })}

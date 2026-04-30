@@ -7,6 +7,7 @@ import EditAthleteModal from "../components/editAthlete";
 import EditProfileModal from "../components/editProfile";
 import ProgramModal from "../components/program";
 import ManageTeamModal from "../components/manageTeam";
+import ImportRosterModal from "../components/importRoster";
 import { supabase } from "../supabaseClient";
 import StrikeCompass from "../components/strikeCompass";
 
@@ -125,12 +126,14 @@ export default function Dashboard() {
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [showProgram, setShowProgram] = useState(false);
+  const [showImportRoster, setShowImportRoster] = useState(false);
 
   // ---------- profile ----------
   const [profile, setProfile] = useState<Profile | null>(null);
   const [programId, setProgramId] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [coreTeamId, setCoreTeamId] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -168,6 +171,7 @@ export default function Dashboard() {
       setProgramId(pid);
       setUserRole(role);
       setCoreTeamId(coachCoreTeamId);
+      setCurrentUserId(user.id);
       setProfile({
         name: [data.first_name, data.last_name].filter(Boolean).join(" ") || "—",
         role: data.role ?? "",
@@ -2370,6 +2374,12 @@ export default function Dashboard() {
           );
           setEditAthleteTarget(null);
         }}
+        onDeleted={(deletedId) => {
+          // Drop the athlete from local state. Team member counts will
+          // refresh on the next teams fetch (they're derived from a join).
+          setAthletes((prev) => prev.filter((a) => a.id !== deletedId));
+          setEditAthleteTarget(null);
+        }}
       />
 
       <ManageTeamModal
@@ -2400,6 +2410,26 @@ export default function Dashboard() {
         onClose={() => setShowProgram(false)}
       />
 
+      {userRole === "admin" && (
+        <ImportRosterModal
+          open={showImportRoster}
+          onClose={() => setShowImportRoster(false)}
+          onImported={(count) => {
+            console.log(`[dashboard] Imported ${count} athletes`);
+            // If the athletes tab is already open, trigger a re-fetch by
+            // briefly resetting athletesLoading — the useEffect re-runs
+            // whenever activeTab === "athletes", so switching away and back
+            // is the cleanest way to force a fresh query.
+            if (activeTab === "athletes") {
+              setAthletes([]);
+              setAthletesLoading(true);
+            }
+          }}
+          programId={programId}
+          userId={currentUserId}
+        />
+      )}
+
       {/* PROFILE HEADER — null while fetching, populates once Supabase responds */}
       <ProfileHeader
         profile={profile}
@@ -2412,32 +2442,52 @@ export default function Dashboard() {
         <div className="ts-dashHead">
           <h1 className="ts-dashTitle">Dashboard</h1>
 
-          {/* TABS */}
+          {/* TABS + ACTIONS — single row */}
           <div className="ts-tabsRow" role="tablist" aria-label="Dashboard sections">
             <div className="ts-tabs">
               {tabBtn("recent", "Recent Session")}
               {tabBtn("insights", "Insights and Analysis")}
               {tabBtn("athletes", "Individual Athletes")}
             </div>
+            <div className="ts-tabs ts-dashActions">
+              <button
+                type="button"
+                className="ts-tabBtn"
+                onClick={() => navigate("/session")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                New Session
+              </button>
+              {userRole === "admin" && (
+                <button
+                  type="button"
+                  className="ts-tabBtn"
+                  onClick={() => setShowImportRoster(true)}
+                  title="Import multiple athletes from a CSV file"
+                >
+                  <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                    <path d="M7 9V1M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+                    <path d="M1 11h12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  </svg>
+                  Import Roster
+                </button>
+              )}
+              <button
+                type="button"
+                className="ts-tabBtn ts-actionPrimary"
+                onClick={() => setShowCreateAthlete(true)}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                Add Athlete
+              </button>
+            </div>
           </div>
 
           <p className="ts-dashSub">Realtime training metrics + AI-ready analysis.</p>
-        </div>
-
-        <div className="ts-dashActions">
-          <button className="ts-btn ts-btnGhost" onClick={() => navigate("/session")}>
-            New Session
-          </button>
-          <button
-            type="button"
-            className="ts-btn ts-btnSecondary ts-addAthleteBtn"
-            onClick={() => setShowCreateAthlete(true)}
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
-              <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            Add Athlete
-          </button>
         </div>
       </div>
 
@@ -5924,13 +5974,7 @@ export default function Dashboard() {
           margin: 6px 0 0;
         }
         .ts-dashActions {
-          display: flex;
-          flex-direction: column;
-          align-items: stretch;
-          gap: 8px;
-          flex-shrink: 0;
-          padding-top: 4px;
-          min-width: 130px;
+          /* row layout inherited from ts-tabs; no column overrides */
         }
 
         /* Buttons */
@@ -6044,13 +6088,6 @@ export default function Dashboard() {
             gap: 12px;
             margin-bottom: 18px;
           }
-          .ts-dashActions {
-            width: 100%;
-          }
-          .ts-dashActions .ts-btn {
-            width: 100%;
-            justify-content: center;
-          }
           .ts-dashTitle {
             font-size: 22px;
           }
@@ -6108,6 +6145,12 @@ export default function Dashboard() {
           display:flex;
           gap:10px;
           flex-wrap:wrap;
+          border:1px solid rgba(255,255,255,0.20);
+          border-radius:999px;
+          padding:4px;
+        }
+        :root[data-theme="light"] .ts-tabs{
+          border-color:rgba(0,0,0,0.75);
         }
         .ts-tabBtn{
           appearance:none;
@@ -6137,6 +6180,44 @@ export default function Dashboard() {
         }
         .ts-tabBtn:active{
           transform: translateY(1px);
+        }
+
+        /* ── Light mode pill overrides ── */
+        :root[data-theme="light"] .ts-tabBtn {
+          border-color: rgba(10,10,20,0.28);
+          background: rgba(10,10,20,0.04);
+          color: rgba(10,10,20,0.80);
+        }
+        :root[data-theme="light"] .ts-tabBtn:hover {
+          border-color: rgba(10,10,20,0.45);
+          background: rgba(10,10,20,0.07);
+          color: rgba(10,10,20,0.95);
+        }
+        :root[data-theme="light"] .ts-tabBtn.isActive {
+          border-color: rgba(10,10,20,0.70);
+          background: rgba(10,10,20,0.07);
+          color: rgba(10,10,20,1);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+        }
+        :root[data-theme="light"] .ts-actionPrimary {
+          background: rgba(130,0,200,0.08) !important;
+          border-color: rgba(110,0,180,0.45) !important;
+          color: rgba(100,0,170,0.95) !important;
+        }
+        :root[data-theme="light"] .ts-actionPrimary:hover {
+          background: rgba(130,0,200,0.14) !important;
+          border-color: rgba(110,0,180,0.65) !important;
+        }
+
+        /* Action button — purple accent variant (mirrors the old ts-btnSecondary) */
+        .ts-actionPrimary {
+          background: rgba(180,0,255,0.18) !important;
+          border-color: rgba(180,0,255,0.50) !important;
+          color: rgba(210,140,255,0.96) !important;
+        }
+        .ts-actionPrimary:hover {
+          background: rgba(180,0,255,0.28) !important;
+          border-color: rgba(180,0,255,0.70) !important;
         }
 
         /* Avatar popover */

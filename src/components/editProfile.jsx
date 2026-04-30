@@ -387,6 +387,19 @@ export default function EditProfileModal({ open, onClose, onSaved }) {
     }
   }
 
+  // ── Logout ────────────────────────────────────────────────────────────────────
+
+  async function handleLogout() {
+    if (!supabase) return;
+    try {
+      const { error: signOutErr } = await supabase.auth.signOut();
+      if (signOutErr) console.warn("[auth] signOut error:", signOutErr);
+    } finally {
+      // Mirror the redirect pattern used elsewhere in the app
+      window.location.href = "/";
+    }
+  }
+
   // ── Delete account ───────────────────────────────────────────────────────────
 
   async function handleDeleteAccount() {
@@ -418,9 +431,46 @@ export default function EditProfileModal({ open, onClose, onSaved }) {
   }
 
   // ── Footer ────────────────────────────────────────────────────────────────────
+  // The Modal footer uses `justify-content: flex-end`, so `marginRight: auto`
+  // on the first child pushes the Logout button to the far left while the
+  // Save Changes button stays anchored on the right.
 
   const footer = (
     <>
+      <button
+        type="button"
+        onClick={handleLogout}
+        disabled={loading || bootstrapping || deleting}
+        style={{
+          marginRight: "auto",
+          padding: "10px 16px",
+          borderRadius: "12px",
+          border: "1px solid var(--btn-border)",
+          background: "var(--btn-bg)",
+          color: "var(--text, rgba(255,255,255,0.92))",
+          cursor: loading || bootstrapping || deleting ? "not-allowed" : "pointer",
+          fontSize: "14px",
+          fontWeight: 700,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: "8px",
+          transition: "border-color 160ms ease, background 160ms ease, color 160ms ease, transform 160ms ease",
+          opacity: loading || bootstrapping || deleting ? 0.6 : 1,
+        }}
+        onMouseEnter={(e) => {
+          if (loading || bootstrapping || deleting) return;
+          e.currentTarget.style.borderColor = "rgba(180,0,255,0.40)";
+          e.currentTarget.style.background = "rgba(180,0,255,0.10)";
+          e.currentTarget.style.transform = "translateY(-1px)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.borderColor = "var(--btn-border)";
+          e.currentTarget.style.background = "var(--btn-bg)";
+          e.currentTarget.style.transform = "translateY(0)";
+        }}
+      >
+        <LogoutIcon /> Log out
+      </button>
       <button
         type="button"
         className="ts-btn ts-btnPrimary"
@@ -455,24 +505,6 @@ export default function EditProfileModal({ open, onClose, onSaved }) {
               <CheckIcon /> Profile saved successfully.
             </div>
           )}
-
-          {/* ── Avatar preview + pic URL ── */}
-          <div style={F.sectionLabel}>Photo</div>
-          <div style={F.avatarWrap}>
-            <AvatarPreview url={form.profilePic} initials={initials} />
-            <div style={F.avatarMeta}>
-              <Field
-                label="Profile picture URL"
-                type="url"
-                placeholder="https://…"
-                value={form.profilePic}
-                onChange={set("profilePic")}
-                hint="Paste any public image URL — preview updates live"
-              />
-            </div>
-          </div>
-
-          <div style={F.divider} />
 
           {/* ── Identity ── */}
           <div style={F.sectionLabel}>Identity</div>
@@ -658,6 +690,16 @@ function LockIcon() {
     <svg width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true" style={{ flexShrink: 0, opacity: 0.6 }}>
       <rect x="2" y="5" width="8" height="6" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
       <path d="M4 5V3.5a2 2 0 1 1 4 0V5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function LogoutIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <path d="M5.5 2H3a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h2.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      <path d="M8 4l3 3-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M11 7H6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

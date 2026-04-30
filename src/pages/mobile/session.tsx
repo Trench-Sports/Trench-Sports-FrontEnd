@@ -1,5 +1,5 @@
 // src/pages/mobile/session.tsx
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
@@ -295,6 +295,302 @@ function useDismissSwipe(
   };
 
   return { onTouchStart, onTouchMove, onTouchEnd, style, drag };
+}
+
+// ─── Wave 3 #1 — AthleteRow ──────────────────────────────────────────────────
+// Roster row with always-visible "Add first" / "Add last" inline buttons:
+//   purple "Add first" → unshift onto queue
+//   black  "Add last"  → push onto queue
+// Tap on the row body selects the athlete (or deselects when already selected).
+function AthleteRow({
+  athlete,
+  selected,
+  inQueue,
+  isDark,
+  onSelect,
+  onAddFirst,
+  onAddLast,
+}: {
+  athlete: { id: string; first_name: string; last_name: string; position: string | null; sport: string | null };
+  selected: boolean;
+  inQueue: any;
+  isDark: boolean;
+  onSelect: () => void;
+  onAddFirst: () => any;
+  onAddLast: () => any;
+}) {
+  const initials = `${athlete.first_name[0] ?? ""}${athlete.last_name[0] ?? ""}`.toUpperCase();
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        borderRadius: 11,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={onSelect}
+        style={{
+          position: "relative",
+          display: "flex", alignItems: "center", gap: 10,
+          padding: "9px 11px",
+          cursor: "pointer",
+          border: selected ? "1px solid rgba(180,0,255,0.50)" : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
+          background: selected ? (isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.07)") : isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)",
+          borderRadius: 11,
+          transition: "background 140ms ease, border-color 140ms ease",
+          userSelect: "none",
+          WebkitUserSelect: "none",
+        }}
+      >
+        <div style={{
+          width: 34, height: 34, borderRadius: "50%", flexShrink: 0,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 12, fontWeight: 800,
+          background: selected ? "linear-gradient(135deg, rgba(180,0,255,0.45), rgba(180,0,255,0.20))" : "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
+          border: selected ? "1px solid rgba(180,0,255,0.55)" : "1px solid rgba(180,0,255,0.22)",
+          color: selected ? "rgba(220,150,255,1)" : "rgba(200,120,255,0.85)",
+        }}>{initials}</div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {athlete.first_name} {athlete.last_name}
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
+            {[athlete.position, athlete.sport].filter(Boolean).join(" · ") || "—"}
+          </div>
+        </div>
+        {/* ── Queue action buttons — always visible inline ── */}
+        {inQueue ? (
+          <div title="In queue" style={{
+            fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+            padding: "2px 6px", borderRadius: 999,
+            background: "rgba(180,0,255,0.15)", color: "rgba(220,150,255,1)",
+            border: "1px solid rgba(180,0,255,0.35)", flexShrink: 0,
+          }}>QUEUED</div>
+        ) : (
+          <div style={{ display: "flex", gap: 4, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAddFirst(); }}
+              title="Add to front of queue"
+              aria-label={`Add ${athlete.first_name} ${athlete.last_name} to front of queue`}
+              style={{
+                height: 28, borderRadius: 7, border: "none",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                gap: 4, padding: "0 8px",
+                background: "linear-gradient(135deg, rgba(180,0,255,0.85), rgba(140,0,210,0.85))",
+                color: "#fff",
+                flexShrink: 0,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M8 13V4M8 4l-4 4M8 4l4 4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M3 1.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onAddLast(); }}
+              title="Add to end of queue"
+              aria-label={`Add ${athlete.first_name} ${athlete.last_name} to end of queue`}
+              style={{
+                height: 28, borderRadius: 7,
+                border: isDark ? "1px solid rgba(255,255,255,0.10)" : "1px solid rgba(0,0,0,0.14)",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                gap: 4, padding: "0 8px",
+                background: isDark
+                  ? "linear-gradient(135deg, rgba(40,40,40,0.95), rgba(10,10,10,0.95))"
+                  : "linear-gradient(135deg, rgba(245,245,245,0.95), rgba(225,225,225,0.95))",
+                color: isDark ? "#fff" : "#222",
+                flexShrink: 0,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3v9M8 12l-4-4M8 12l4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+                <path d="M3 14.5h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+        )}
+        {selected && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, boxShadow: "0 0 6px 2px rgba(180,0,255,0.55)" }} />}
+        <svg width="10" height="10" viewBox="0 0 10 10" fill="none" style={{ opacity: 0.35, flexShrink: 0 }}>
+          <path d="M3 1l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+// ─── Wave 3 #1 — QueueRow ────────────────────────────────────────────────────
+// Queue list row with a drag handle on the left and a remove button on the
+// right. Reorder is driven by the parent: it tracks where the picked-up row
+// is hovering (overIdx vs fromIdx) and tells each row how much to translate
+// via `dragTranslateY`. Three render states matter here:
+//
+//   isDragging       — this is the picked-up row. translateY tracks the
+//                      finger 1:1 (no transition), and a lift effect is
+//                      composed on top: gentle scale-up + tilt + drop
+//                      shadow + raised z-index.
+//   flipFromY != 0   — this row was *just released*. We render it at the
+//                      compensating flip transform with no transition for
+//                      one frame, then the parent clears flipFromY and the
+//                      row glides into its new slot via the standard
+//                      transform transition.
+//   neighbor offset  — non-dragged rows that need to make space. They
+//                      render with translateY(±rowHeight), animated by the
+//                      same cubic-bezier transition so they slide rather
+//                      than snap.
+function QueueRow({
+  athlete,
+  position,            // 0 = "Now", 1+ = numbered
+  isDragging,
+  dragTranslateY,
+  flipFromY,
+  handleProps,
+  isDark,
+  onRemove,
+}: {
+  athlete: { id: string; first_name: string; last_name: string; position: string | null; sport: string | null };
+  position: number;
+  isDragging: boolean;
+  dragTranslateY: number;
+  flipFromY: number;
+  handleProps: any;
+  isDark: boolean;
+  onRemove: () => any;
+}) {
+  const initials = `${athlete.first_name[0] ?? ""}${athlete.last_name[0] ?? ""}`.toUpperCase();
+  const isNow = position === 0;
+
+  // The dragged row composes its translateY with a slight scale + tilt so
+  // the row visibly "lifts off the page" while the finger moves it. The
+  // tilt direction follows pointer travel for a touch of physicality, but
+  // the magnitude stays small so it doesn't feel cartoonish.
+  const tiltDeg = isDragging ? Math.max(-2, Math.min(2, dragTranslateY * 0.012)) : 0;
+  const transform = isDragging
+    ? `translate3d(0, ${dragTranslateY}px, 0) scale(1.025) rotate(${tiltDeg}deg)`
+    : flipFromY !== 0
+      ? `translate3d(0, ${flipFromY}px, 0)`
+      : dragTranslateY !== 0
+        ? `translate3d(0, ${dragTranslateY}px, 0)`
+        : "none";
+
+  // While actively dragging, transform must be transition-free (we want
+  // 1:1 finger tracking); shadow + background can still ease in. The FLIP
+  // frame also runs without a transform transition so the compensating
+  // offset applies instantly. Everything else (neighbors making space,
+  // post-release glide) uses the same cubic-bezier for visual consistency.
+  const transition = isDragging
+    ? "background 140ms ease, box-shadow 220ms ease, border-color 140ms ease"
+    : flipFromY !== 0
+      ? "none"
+      : "transform 260ms cubic-bezier(.22,.61,.36,1), background 140ms ease, box-shadow 260ms ease, border-color 140ms ease";
+
+  return (
+    <div
+      data-queue-id={athlete.id}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "9px 11px", borderRadius: 11,
+        border: isDragging
+          ? "1px solid rgba(180,0,255,0.45)"
+          : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
+        background: isDragging
+          ? (isDark ? "rgba(180,0,255,0.16)" : "rgba(180,0,255,0.10)")
+          : isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)",
+        boxShadow: isDragging
+          ? isDark
+            ? "0 18px 36px -8px rgba(0,0,0,0.70), 0 0 0 1px rgba(180,0,255,0.30)"
+            : "0 8px 24px -4px rgba(0,0,0,0.18), 0 0 0 1px rgba(180,0,255,0.30)"
+          : "none",
+        transform,
+        transition,
+        position: "relative",
+        zIndex: isDragging ? 20 : 1,
+        willChange: isDragging ? "transform" : undefined,
+        touchAction: "pan-y",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+      }}
+    >
+      {/* Drag handle — dot grid (2 × 3 dots) */}
+      <button
+        type="button"
+        {...handleProps}
+        aria-label="Drag to reorder"
+        style={{
+          flexShrink: 0, width: 18, height: 26, padding: 0,
+          background: "none", border: "none",
+          cursor: isDragging ? "grabbing" : "grab",
+          color: isDark ? "rgba(255,255,255,0.45)" : "rgba(0,0,0,0.30)", display: "flex", alignItems: "center", justifyContent: "center",
+          touchAction: "none",
+        }}
+      >
+        <svg width="12" height="18" viewBox="0 0 12 18" fill="none">
+          {[3, 9, 15].map(y => (
+            <g key={y}>
+              <circle cx="3" cy={y} r="1.4" fill="currentColor" />
+              <circle cx="9" cy={y} r="1.4" fill="currentColor" />
+            </g>
+          ))}
+        </svg>
+      </button>
+
+      {/* Position pill: "Now" badge for index 0, dark numbered chip otherwise */}
+      {isNow ? (
+        <div style={{
+          flexShrink: 0,
+          fontSize: 10, fontWeight: 800, letterSpacing: "0.04em",
+          padding: "3px 9px", borderRadius: 999,
+          background: "rgba(180,0,255,0.18)",
+          color: "rgba(220,150,255,1)",
+          border: "1px solid rgba(180,0,255,0.45)",
+        }}>Now</div>
+      ) : (
+        <div style={{
+          flexShrink: 0,
+          width: 22, height: 22, borderRadius: "50%",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 11, fontWeight: 800,
+          color: isDark ? "rgba(255,255,255,0.75)" : "rgba(0,0,0,0.60)",
+          background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)",
+          border: isDark ? "1px solid rgba(255,255,255,0.10)" : "1px solid rgba(0,0,0,0.12)",
+        }}>{position}</div>
+      )}
+
+      {/* Avatar */}
+      <div style={{
+        width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 11, fontWeight: 800,
+        background: "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
+        border: "1px solid rgba(180,0,255,0.22)",
+        color: "rgba(200,120,255,0.85)",
+      }}>{initials}</div>
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {athlete.first_name} {athlete.last_name}
+        </div>
+        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
+          {[athlete.position, athlete.sport].filter(Boolean).join(" · ") || "—"}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Remove ${athlete.first_name} ${athlete.last_name} from queue`}
+        style={{
+          flexShrink: 0,
+          background: "none", border: "none", cursor: "pointer",
+          color: isDark ? "rgba(255,255,255,0.55)" : "rgba(0,0,0,0.40)",
+          padding: 4, lineHeight: 1, fontSize: 14,
+        }}
+      >✕</button>
+    </div>
+  );
 }
 
 // ─── Wave 1 #3 — Skeleton ────────────────────────────────────────────────────
@@ -1633,6 +1929,204 @@ export default function Session() {
   const [selectedAthlete, setSelectedAthlete] = useState<Athlete | null>(null);
   const [athletesLoading, setAthletesLoading] = useState(false);
 
+  // ── Wave 3 #1 — Roster / Queue ──────────────────────────────────────────────
+  // The roster is the searchable source list; the queue is a coach-curated
+  // "up next" line. unshift = "Add first" (front), push = "Add last" (back).
+  // splice handles drop-reorder.
+  type AthleteView = "roster" | "queue";
+  const [athleteView, setAthleteView] = useState<AthleteView>("roster");
+  const [queue,       setQueue]       = useState<Athlete[]>([]);
+
+  // ── Wave 3 #1 — Queue drag-to-reorder state ────────────────────────────────
+  // dragInfo holds everything we need during an active drag:
+  //   fromIdx       – the array index where the row was when picked up
+  //   overIdx       – the array slot the finger is currently hovering over
+  //                   (this is what the row would occupy if dropped now)
+  //   startPointerY – pointer Y at the moment of pickup
+  //   pointerY      – current pointer Y (drives the lift translateY)
+  //   rowHeight     – measured at pickup, used to slide neighbors by 1 row
+  //   athleteId     – stable id of the picked-up athlete (used by the
+  //                   FLIP-release pass to find the row after the array
+  //                   reorders, since indexes shift)
+  // The array is NOT reordered during the drag — neighbors slide via CSS-
+  // transitioned transforms, and the splice happens once on release. This is
+  // what makes the gesture feel like picking the row up rather than swapping
+  // chunks of the list around.
+  type QueueDragInfo = {
+    fromIdx: number;
+    overIdx: number;
+    startPointerY: number;
+    pointerY: number;
+    rowHeight: number;
+    athleteId: string;
+  };
+  const [dragInfo, setDragInfo] = useState<QueueDragInfo | null>(null);
+
+  // After release, the dragged row's natural DOM position has changed (the
+  // queue was just spliced) but the user's finger left it visually somewhere
+  // else. We capture that visual delta as a one-frame FLIP transform and then
+  // clear it on the next animation frame, so CSS transitions the row from its
+  // last finger position into its new slot rather than snapping.
+  const [flipRelease, setFlipRelease] = useState<{ athleteId: string; deltaY: number } | null>(null);
+
+  // Queue mutators — kept tiny so the row callbacks stay readable.
+  const queueAddFirst = useCallback((a: Athlete) => {
+    setQueue(q => {
+      if (q.some(x => x.id === a.id)) return q;
+      // Auto-switch to queue view when first item is added so the user
+      // immediately sees the queue they just started building.
+      if (q.length === 0) setAthleteView("queue");
+      return [a, ...q];
+    });
+  }, []);
+  const queueAddLast = useCallback((a: Athlete) => {
+    setQueue(q => {
+      if (q.some(x => x.id === a.id)) return q;
+      if (q.length === 0) setAthleteView("queue");
+      return [...q, a];
+    });
+  }, []);
+  const queueRemove = useCallback((id: string) => {
+    setQueue(q => q.filter(x => x.id !== id));
+  }, []);
+  const queueClear = useCallback(() => setQueue([]), []);
+  const queueMove = useCallback((from: number, to: number) => {
+    setQueue(q => {
+      if (from === to || from < 0 || to < 0 || from >= q.length || to >= q.length) return q;
+      const next = q.slice();
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+  }, []);
+
+  // Queue drag-to-reorder. We capture the pointer on the dot-grid handle so
+  // every subsequent move/up event re-fires on the same button. queueListRef
+  // is the scroll container. naturalRectsRef caches each row's bounding rect
+  // captured at pickup time, before any drag transforms are applied — these
+  // are the slot positions we hit-test the pointer against during the move,
+  // so the slot mapping stays stable even as visible rows slide around.
+  const queueListRef     = useRef<HTMLDivElement | null>(null);
+  const naturalRectsRef  = useRef<{ top: number; bottom: number }[]>([]);
+  // We need the *current* queue inside the pointerDown closure to read the
+  // picked athlete's id, but we don't want to invalidate the callback every
+  // time the queue changes (that would re-bind handlers mid-drag). A ref
+  // keeps the closure stable while always pointing at the latest array.
+  const queueRef = useRef<Athlete[]>(queue);
+  useEffect(() => { queueRef.current = queue; }, [queue]);
+
+  const queueHandlePropsFor = useCallback((idx: number) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const list = queueListRef.current;
+      if (!list) return;
+
+      // Snapshot every row's natural top/bottom *before* we apply any drag
+      // transforms — these are the slot lanes the pointer hit-tests against.
+      const rows = list.querySelectorAll('[data-queue-id]');
+      const rects: { top: number; bottom: number }[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const r = (rows[i] as HTMLElement).getBoundingClientRect();
+        rects.push({ top: r.top, bottom: r.bottom });
+      }
+      naturalRectsRef.current = rects;
+
+      // Distance from one slot's top to the next, used to slide neighbors
+      // by exactly one row when they need to make space. Falls back to the
+      // first row's height when there's only one row (no drag possible
+      // anyway, but keeps the math safe).
+      const rowHeight = rects.length > 1
+        ? rects[1].top - rects[0].top
+        : (rects[0] ? rects[0].bottom - rects[0].top : 50);
+
+      const athleteId = queueRef.current[idx]?.id ?? "";
+
+      setDragInfo({
+        fromIdx: idx,
+        overIdx: idx,
+        startPointerY: e.clientY,
+        pointerY: e.clientY,
+        rowHeight,
+        athleteId,
+      });
+
+      try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId); } catch {}
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      setDragInfo(prev => {
+        if (!prev) return prev;
+        const rects = naturalRectsRef.current;
+        const y = e.clientY;
+        let overIdx = prev.fromIdx;
+
+        if (rects.length > 0) {
+          if (y < rects[0].top) {
+            overIdx = 0;
+          } else if (y >= rects[rects.length - 1].bottom) {
+            overIdx = rects.length - 1;
+          } else {
+            for (let i = 0; i < rects.length; i++) {
+              if (y >= rects[i].top && y < rects[i].bottom) {
+                overIdx = i;
+                break;
+              }
+            }
+          }
+        }
+
+        // Bail out of state-change churn if nothing about the drag changed.
+        if (prev.pointerY === y && prev.overIdx === overIdx) return prev;
+        return { ...prev, pointerY: y, overIdx };
+      });
+    },
+    onPointerUp: () => {
+      setDragInfo(prev => {
+        if (!prev) return null;
+        const totalDelta = prev.pointerY - prev.startPointerY;
+        const slotsMoved = prev.overIdx - prev.fromIdx;
+
+        if (slotsMoved !== 0) {
+          queueMove(prev.fromIdx, prev.overIdx);
+        }
+
+        // FLIP delta — after the array reorder, the row's natural DOM top
+        // jumps by `slotsMoved * rowHeight`. To avoid a visible snap we
+        // start the post-release frame with a transform that keeps the row
+        // visually in the same place the finger left it, then transition
+        // it to translateY(0) on the next frame.
+        const flipDelta = totalDelta - slotsMoved * prev.rowHeight;
+        if (Math.abs(flipDelta) > 0.5 && prev.athleteId) {
+          setFlipRelease({ athleteId: prev.athleteId, deltaY: flipDelta });
+        }
+
+        return null;
+      });
+    },
+    onPointerCancel: () => {
+      setDragInfo(null);
+    },
+  }), [queueMove]);
+
+  // FLIP step 2 — clear the compensating transform on the next animation
+  // frame so the CSS transition kicks in and the row glides to its new slot.
+  useLayoutEffect(() => {
+    if (!flipRelease) return;
+    const id = requestAnimationFrame(() => setFlipRelease(null));
+    return () => cancelAnimationFrame(id);
+  }, [flipRelease]);
+
+  const queueIds = queue.map(q => q.id);
+  const isInQueue = useCallback((id: string) => queueIds.includes(id), [queueIds]);
+
+  // Snap back to the Roster tab whenever the queue drains — avoids leaving the
+  // user staring at an empty-state panel after they hit "Clear all".
+  useEffect(() => {
+    if (queue.length === 0 && athleteView === "queue") setAthleteView("roster");
+  }, [queue.length, athleteView]);
+
   useEffect(() => {
     if (!programId || !supabase) return;
     setAthletesLoading(true);
@@ -2898,92 +3392,262 @@ export default function Session() {
 
           {/* Athlete card */}
           <div className={flowStep === 1 ? "ts-flow-athlete" : undefined} style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
-            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              Athlete
-              {flowStep === 1 && (
-                <span style={{ fontSize: 10, fontWeight: 700, color: "#b400ff", letterSpacing: "0.06em", animation: "tsBlink 1.4s ease-in-out infinite" }}>
-                  Step 1 — Pick athlete ↓
-                </span>
-              )}
-            </div>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                Athletes
+                {flowStep === 1 && (
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#b400ff", letterSpacing: "0.06em", animation: "tsBlink 1.4s ease-in-out infinite", whiteSpace: "nowrap" }}>
+                    Step 1 — Pick ↓
+                  </span>
+                )}
+              </span>
 
-            {/* Search */}
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
-              <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
-                <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.6" />
-                <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-              </svg>
-              <input
-                value={athleteFilter}
-                onChange={e => setAthleteFilter(e.target.value)}
-                placeholder="Search athletes…"
-                style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13 }}
-              />
-              {athleteFilter && (
-                <button onClick={() => setAthleteFilter("")} style={{ background: "none", border: "none", color: "var(--text)", opacity: 0.4, cursor: "pointer", padding: "0 2px", fontSize: 12, lineHeight: 1 }}>✕</button>
-              )}
-            </div>
-
-            {/* List */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
-              {athletesLoading ? (
-                /* Wave 1 #3 — Skeleton rows replace the legacy "Loading…" text. */
-                <>
-                  {[0, 1, 2, 3, 4].map(i => (
-                    <div key={i} style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "9px 11px", borderRadius: 11,
-                      border: "1px solid rgba(255,255,255,0.04)",
-                      background: "rgba(255,255,255,0.02)",
-                    }}>
-                      <Skeleton w={34} h={34} r="50%" />
-                      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
-                        <Skeleton w={`${60 + ((i * 13) % 30)}%`} h={11} />
-                        <Skeleton w={`${30 + ((i * 17) % 25)}%`} h={9} />
-                      </div>
-                    </div>
-                  ))}
-                </>
-              ) : filteredAthletes.length === 0 ? (
-                <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
-                  {athleteFilter ? "No results" : "No athletes found"}
-                </div>
-              ) : filteredAthletes.map(a => {
-                const sel      = selectedAthlete?.id === a.id;
-                const initials = `${a.first_name[0]}${a.last_name[0]}`.toUpperCase();
-                return (
-                  <div
-                    key={a.id}
-                    onClick={() => { setSelectedAthlete(sel ? null : a); if (sel) stopSession(); }}
+              {/* Roster ⇄ Queue toggle — single button that swaps views on
+                  click. Appears as soon as the first athlete is queued and
+                  auto-animates in with a slide+fade. Carries a live count
+                  badge that pulses whenever the count changes (React key swap
+                  re-fires the CSS animation). Purple highlight when in Queue
+                  view; neutral when in Roster view. */}
+              {queue.length > 0 && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={athleteView === "queue"}
+                  aria-label={
+                    athleteView === "queue"
+                      ? "Switch to roster view"
+                      : `Switch to queue view (${queue.length} athlete${queue.length !== 1 ? "s" : ""})`
+                  }
+                  title={athleteView === "queue" ? "Switch to Roster" : "Switch to Queue"}
+                  onClick={() => setAthleteView(athleteView === "queue" ? "roster" : "queue")}
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 6,
+                    padding: "5px 10px", borderRadius: 8, cursor: "pointer",
+                    fontSize: 11, fontWeight: 700, letterSpacing: "0.04em",
+                    color: "var(--text)",
+                    background: athleteView === "queue"
+                      ? "rgba(180,0,255,0.22)"
+                      : "rgba(255,255,255,0.06)",
+                    border: athleteView === "queue"
+                      ? "1px solid rgba(180,0,255,0.50)"
+                      : "1px solid rgba(255,255,255,0.15)",
+                    flexShrink: 0,
+                    animation: "tsSlideUp 0.22s ease-out",
+                    transition: "all 150ms ease",
+                  }}
+                >
+                  <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.7, flexShrink: 0 }}>
+                    <path d="M3 5h10M10 2l3 3-3 3M13 11H3M6 14l-3-3 3-3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  {athleteView === "queue" ? "Queue" : "Roster"}
+                  <span
+                    key={queue.length}
                     style={{
-                      display: "flex", alignItems: "center", gap: 10,
-                      padding: "9px 11px", borderRadius: 11, cursor: "pointer",
-                      border: sel ? "1px solid rgba(180,0,255,0.50)" : "1px solid rgba(255,255,255,0.06)",
-                      background: sel ? "rgba(180,0,255,0.10)" : "rgba(255,255,255,0.02)",
-                      transition: "all 140ms ease",
+                      minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999,
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 9, fontWeight: 800,
+                      background: athleteView === "queue"
+                        ? "rgba(180,0,255,0.85)"
+                        : "rgba(180,0,255,0.30)",
+                      color: "#fff",
+                      animation: "tsValuePop 240ms ease-out",
                     }}
-                  >
-                    <div style={{
-                      width: 34, height: 34, borderRadius: "50%", flexShrink: 0,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      fontSize: 12, fontWeight: 800,
-                      background: sel ? "linear-gradient(135deg, rgba(180,0,255,0.45), rgba(180,0,255,0.20))" : "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
-                      border: sel ? "1px solid rgba(180,0,255,0.55)" : "1px solid rgba(180,0,255,0.22)",
-                      color: sel ? "rgba(220,150,255,1)" : "rgba(200,120,255,0.85)",
-                    }}>{initials}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                        {a.first_name} {a.last_name}
-                      </div>
-                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
-                        {[a.position, a.sport].filter(Boolean).join(" · ") || "—"}
-                      </div>
-                    </div>
-                    {sel && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, boxShadow: "0 0 6px 2px rgba(180,0,255,0.55)" }} />}
-                  </div>
-                );
-              })}
+                  >{queue.length}</span>
+                </button>
+              )}
             </div>
+
+            {athleteView === "roster" ? (
+              <>
+                {/* Search */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
+                    <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.6" />
+                    <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
+                  <input
+                    value={athleteFilter}
+                    onChange={e => setAthleteFilter(e.target.value)}
+                    placeholder="Search athletes…"
+                    style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13 }}
+                  />
+                  {athleteFilter && (
+                    <button onClick={() => setAthleteFilter("")} style={{ background: "none", border: "none", color: "var(--text)", opacity: 0.4, cursor: "pointer", padding: "0 2px", fontSize: 12, lineHeight: 1 }}>✕</button>
+                  )}
+                </div>
+
+                {/* Queue hint — only show when there's something to queue. */}
+                {!athletesLoading && filteredAthletes.length > 0 && (
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 8, opacity: 0.85, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                      background: "linear-gradient(135deg, rgba(180,0,255,0.75), rgba(140,0,210,0.75))",
+                    }}>
+                      <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 13V4M8 4l-4 4M8 4l4 4" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M3 1.5h10" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    </span>
+                    Add first &nbsp;·&nbsp;
+                    <span style={{
+                      display: "inline-flex", alignItems: "center", justifyContent: "center",
+                      width: 16, height: 16, borderRadius: 4, flexShrink: 0,
+                      background: "linear-gradient(135deg, rgba(40,40,40,0.95), rgba(10,10,10,0.95))",
+                      border: "1px solid rgba(255,255,255,0.12)",
+                    }}>
+                      <svg width="9" height="9" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 3v9M8 12l-4-4M8 12l4-4" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                        <path d="M3 14.5h10" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                      </svg>
+                    </span>
+                    Add last
+                  </div>
+                )}
+
+                {/* List */}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+                  {athletesLoading ? (
+                    /* Wave 1 #3 — Skeleton rows replace the legacy "Loading…" text. */
+                    <>
+                      {[0, 1, 2, 3, 4].map(i => (
+                        <div key={i} style={{
+                          display: "flex", alignItems: "center", gap: 10,
+                          padding: "9px 11px", borderRadius: 11,
+                          border: "1px solid rgba(255,255,255,0.04)",
+                          background: "rgba(255,255,255,0.02)",
+                        }}>
+                          <Skeleton w={34} h={34} r="50%" />
+                          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
+                            <Skeleton w={`${60 + ((i * 13) % 30)}%`} h={11} />
+                            <Skeleton w={`${30 + ((i * 17) % 25)}%`} h={9} />
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  ) : filteredAthletes.length === 0 ? (
+                    <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
+                      {athleteFilter ? "No results" : "No athletes found"}
+                    </div>
+                  ) : filteredAthletes.map((a: Athlete) => {
+                    const sel = selectedAthlete?.id === a.id;
+                    return (
+                      <AthleteRow
+                        key={a.id}
+                        athlete={a}
+                        selected={sel}
+                        inQueue={isInQueue(a.id)}
+                        isDark={isDark}
+                        onSelect={() => { setSelectedAthlete(sel ? null : a); if (sel) stopSession(); }}
+                        onAddFirst={() => queueAddFirst(a)}
+                        onAddLast={() => queueAddLast(a)}
+                      />
+                    );
+                  })}
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Queue view */}
+                {queue.length === 0 ? (
+                  <div style={{
+                    fontSize: 13, color: "var(--muted)", textAlign: "center",
+                    padding: "28px 8px",
+                    border: isDark ? "1px dashed rgba(255,255,255,0.08)" : "1px dashed rgba(0,0,0,0.12)",
+                    borderRadius: 12,
+                    background: isDark ? "rgba(255,255,255,0.015)" : "rgba(0,0,0,0.02)",
+                  }}>
+                    Queue is empty.<br />
+                    <span style={{ fontSize: 11, opacity: 0.8 }}>
+                      Switch to <b>Roster</b> and tap <b>First</b> or <b>Last</b> on an athlete to queue them.
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    {/* Queue action bar — count + clear all at top */}
+                    <div style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      marginBottom: 8,
+                      padding: "6px 10px",
+                      borderRadius: 9,
+                      background: "rgba(180,0,255,0.06)",
+                      border: "1px solid rgba(180,0,255,0.15)",
+                    }}>
+                      <span style={{ fontSize: 11, color: "rgba(200,140,255,0.80)", fontWeight: 600 }}>
+                        {queue.length} athlete{queue.length !== 1 ? "s" : ""} · drag to reorder
+                      </span>
+                      <button
+                        type="button"
+                        onClick={queueClear}
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 4,
+                          background: "rgba(255,70,90,0.10)",
+                          border: "1px solid rgba(255,70,90,0.25)",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          color: "rgba(255,100,115,0.95)",
+                          fontSize: 11, fontWeight: 700,
+                          letterSpacing: "0.03em",
+                          padding: "3px 8px",
+                          transition: "background 140ms ease",
+                        }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "rgba(255,70,90,0.18)")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "rgba(255,70,90,0.10)")}
+                      >
+                        <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+                          <path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                        </svg>
+                        Clear all
+                      </button>
+                    </div>
+
+                    <div
+                      ref={queueListRef}
+                      style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}
+                    >
+                      {queue.map((a: Athlete, idx: number) => {
+                        // Per-row visual offset during an active drag:
+                        //   • Picked-up row → follows the finger (translateY = pointer delta)
+                        //   • Rows between fromIdx and overIdx → slide one row to make space
+                        //   • Everyone else → 0 (their natural position)
+                        let dragTranslateY = 0;
+                        const isDraggedRow = dragInfo?.fromIdx === idx;
+                        if (dragInfo) {
+                          if (isDraggedRow) {
+                            dragTranslateY = dragInfo.pointerY - dragInfo.startPointerY;
+                          } else {
+                            const { fromIdx, overIdx, rowHeight } = dragInfo;
+                            if (overIdx > fromIdx && idx > fromIdx && idx <= overIdx) {
+                              dragTranslateY = -rowHeight;
+                            } else if (overIdx < fromIdx && idx < fromIdx && idx >= overIdx) {
+                              dragTranslateY = rowHeight;
+                            }
+                          }
+                        }
+                        // FLIP applies for one frame after release on the row that
+                        // was just dropped — by id, since indexes have shifted.
+                        const flipFromY = (flipRelease && flipRelease.athleteId === a.id)
+                          ? flipRelease.deltaY
+                          : 0;
+                        return (
+                          <QueueRow
+                            key={a.id}
+                            athlete={a}
+                            position={idx}
+                            isDragging={isDraggedRow}
+                            dragTranslateY={dragTranslateY}
+                            flipFromY={flipFromY}
+                            handleProps={queueHandlePropsFor(idx)}
+                            isDark={isDark}
+                            onRemove={() => queueRemove(a.id)}
+                          />
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
 
           {/* BLE card */}
