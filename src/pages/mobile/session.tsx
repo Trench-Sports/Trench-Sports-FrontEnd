@@ -327,14 +327,18 @@ function AthleteRow({
         position: "relative",
         borderRadius: 11,
         overflow: "hidden",
+        height: 58,
+        flexShrink: 0,
+        boxSizing: "border-box",
       }}
     >
       <div
         onClick={onSelect}
         style={{
-          position: "relative",
+          position: "absolute",
+          inset: 0,
           display: "flex", alignItems: "center", gap: 10,
-          padding: "9px 11px",
+          padding: "0 11px",
           cursor: "pointer",
           border: selected ? "1px solid rgba(180,0,255,0.50)" : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
           background: selected ? (isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.07)") : isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)",
@@ -342,6 +346,7 @@ function AthleteRow({
           transition: "background 140ms ease, border-color 140ms ease",
           userSelect: "none",
           WebkitUserSelect: "none",
+          boxSizing: "border-box",
         }}
       >
         <div style={{
@@ -492,7 +497,11 @@ function QueueRow({
       data-queue-id={athlete.id}
       style={{
         display: "flex", alignItems: "center", gap: 10,
-        padding: "9px 11px", borderRadius: 11,
+        padding: "0 11px",
+        height: 58,
+        flexShrink: 0,
+        boxSizing: "border-box",
+        borderRadius: 11,
         border: isDragging
           ? "1px solid rgba(180,0,255,0.45)"
           : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
@@ -1975,21 +1984,42 @@ export default function Session() {
       if (q.some(x => x.id === a.id)) return q;
       // Auto-switch to queue view when first item is added so the user
       // immediately sees the queue they just started building.
-      if (q.length === 0) setAthleteView("queue");
+      if (q.length === 0) {
+        setAthleteView("queue");
+        // Auto-select the first queued athlete so the session can start immediately.
+        setSelectedAthlete(a);
+      }
       return [a, ...q];
     });
   }, []);
   const queueAddLast = useCallback((a: Athlete) => {
     setQueue(q => {
       if (q.some(x => x.id === a.id)) return q;
-      if (q.length === 0) setAthleteView("queue");
+      if (q.length === 0) {
+        setAthleteView("queue");
+        // Auto-select the first queued athlete so the session can start immediately.
+        setSelectedAthlete(a);
+      }
       return [...q, a];
     });
   }, []);
   const queueRemove = useCallback((id: string) => {
-    setQueue(q => q.filter(x => x.id !== id));
+    setQueue(q => {
+      const next = q.filter(x => x.id !== id);
+      // If the removed athlete was the currently selected one, advance to the
+      // new head of the queue (or clear selection if the queue is now empty).
+      setSelectedAthlete(prev => {
+        if (prev?.id !== id) return prev;
+        return next[0] ?? null;
+      });
+      return next;
+    });
   }, []);
-  const queueClear = useCallback(() => setQueue([]), []);
+  const queueClear = useCallback(() => {
+    setQueue([]);
+    // Clear selection when the whole queue is wiped.
+    setSelectedAthlete(null);
+  }, []);
   const queueMove = useCallback((from: number, to: number) => {
     setQueue(q => {
       if (from === to || from < 0 || to < 0 || from >= q.length || to >= q.length) return q;
@@ -3199,6 +3229,13 @@ export default function Session() {
         deviceId:    deviceInfo?.id,
       });
       setSaveState("saved");
+      // Advance queue: pop the athlete we just saved and select the next one.
+      setQueue(q => {
+        if (q.length === 0) return q;
+        const next = q.slice(1);
+        setSelectedAthlete(next[0] ?? null);
+        return next;
+      });
     } catch (err: any) {
       console.error("Session save failed:", err);
       setSaveError(err.message ?? "Unknown error");
@@ -3391,7 +3428,7 @@ export default function Session() {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
           {/* Athlete card */}
-          <div className={flowStep === 1 ? "ts-flow-athlete" : undefined} style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
+          <div className={flowStep === 1 ? "ts-flow-athlete" : undefined} style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, display: "flex", flexDirection: "column", height: 480, minHeight: 360, maxHeight: 560 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
                 Athletes
@@ -3458,7 +3495,7 @@ export default function Session() {
             </div>
 
             {athleteView === "roster" ? (
-              <>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 {/* Search */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
                   <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
@@ -3506,14 +3543,17 @@ export default function Session() {
                 )}
 
                 {/* List */}
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minHeight: 0, overflowY: "auto", paddingRight: 2 }}>
                   {athletesLoading ? (
                     /* Wave 1 #3 — Skeleton rows replace the legacy "Loading…" text. */
                     <>
                       {[0, 1, 2, 3, 4].map(i => (
                         <div key={i} style={{
                           display: "flex", alignItems: "center", gap: 10,
-                          padding: "9px 11px", borderRadius: 11,
+                          height: 58,
+                          flexShrink: 0,
+                          boxSizing: "border-box",
+                          padding: "0 11px", borderRadius: 11,
                           border: "1px solid rgba(255,255,255,0.04)",
                           background: "rgba(255,255,255,0.02)",
                         }}>
@@ -3545,9 +3585,9 @@ export default function Session() {
                     );
                   })}
                 </div>
-              </>
+              </div>
             ) : (
-              <>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 {/* Queue view */}
                 {queue.length === 0 ? (
                   <div style={{
@@ -3603,7 +3643,7 @@ export default function Session() {
 
                     <div
                       ref={queueListRef}
-                      style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto" }}
+                      style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minHeight: 0, overflowY: "auto", paddingRight: 2 }}
                     >
                       {queue.map((a: Athlete, idx: number) => {
                         // Per-row visual offset during an active drag:
@@ -3646,7 +3686,7 @@ export default function Session() {
                     </div>
                   </>
                 )}
-              </>
+              </div>
             )}
           </div>
 

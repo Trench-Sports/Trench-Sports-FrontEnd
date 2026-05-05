@@ -95,32 +95,172 @@ interface Team {
   parent_team_id: string | null;
 }
 
+// ─── Adaptive CSS variables injected once ────────────────────────────────────
+// Dark-mode values are the originals; light-mode overrides flip whites→darks.
+
+const ADAPTIVE_STYLES = `
+  .ir-root {
+    --ir-text:          rgba(255,255,255,0.92);
+    --ir-muted:         rgba(255,255,255,0.55);
+    --ir-muted-weak:    rgba(255,255,255,0.45);
+    --ir-divider:       rgba(255,255,255,0.07);
+    --ir-border:        rgba(255,255,255,0.12);
+    --ir-border-weak:   rgba(255,255,255,0.08);
+    --ir-surface:       rgba(255,255,255,0.04);
+    --ir-surface-hover: rgba(255,255,255,0.025);
+    --ir-dot-inactive:  rgba(255,255,255,0.14);
+    --ir-connector:     rgba(255,255,255,0.10);
+    --ir-drag-border:   rgba(255,255,255,0.16);
+    --ir-drag-bg:       rgba(255,255,255,0.025);
+    --ir-col-opt-bg:    rgba(255,255,255,0.05);
+    --ir-col-opt-border:rgba(255,255,255,0.10);
+    --ir-col-opt-text:  rgba(255,255,255,0.55);
+    --ir-skip-border:   rgba(255,255,255,0.12);
+    --ir-skip-bg:       rgba(255,255,255,0.04);
+    --ir-skip-text:     rgba(255,255,255,0.45);
+    --ir-dl-border:     rgba(255,255,255,0.14);
+    --ir-dl-bg:         rgba(255,255,255,0.04);
+    --ir-dl-text:       rgba(255,255,255,0.60);
+    --ir-req-note:      rgba(255,255,255,0.38);
+    --ir-dot-sep:       rgba(255,255,255,0.25);
+    --ir-row-num:       rgba(255,255,255,0.38);
+    --ir-col-label:     rgba(255,255,255,0.42);
+    --ir-col-empty:     rgba(255,255,255,0.30);
+    /* warning */
+    --ir-warn-bg:       rgba(255,190,0,0.10);
+    --ir-warn-border:   rgba(255,190,0,0.32);
+    --ir-warn-text:     rgba(255,200,40,0.95);
+    --ir-warn-bar:      rgba(255,200,40,0.90);
+    --ir-warn-dupe-bg:  rgba(255,190,0,0.07);
+    --ir-warn-dupe-bd:  rgba(255,190,0,0.18);
+    --ir-warn-dupe-txt: rgba(255,200,40,0.85);
+    --ir-warn-ack-bd:   rgba(255,190,0,0.24);
+    --ir-warn-ack-bg:   rgba(255,190,0,0.06);
+    --ir-warn-ack-txt:  rgba(255,200,40,0.85);
+    /* error */
+    --ir-err-bg:        rgba(255,70,70,0.10);
+    --ir-err-border:    rgba(255,70,70,0.30);
+    --ir-err-text:      rgba(255,110,100,0.95);
+    --ir-err-bar:       rgba(255,110,100,0.90);
+  }
+  @media (prefers-color-scheme: light) {
+    .ir-root {
+      --ir-text:          rgba(15,10,30,0.92);
+      --ir-muted:         rgba(15,10,30,0.55);
+      --ir-muted-weak:    rgba(15,10,30,0.48);
+      --ir-divider:       rgba(15,10,30,0.10);
+      --ir-border:        rgba(15,10,30,0.16);
+      --ir-border-weak:   rgba(15,10,30,0.10);
+      --ir-surface:       rgba(15,10,30,0.04);
+      --ir-surface-hover: rgba(15,10,30,0.03);
+      --ir-dot-inactive:  rgba(15,10,30,0.14);
+      --ir-connector:     rgba(15,10,30,0.12);
+      --ir-drag-border:   rgba(15,10,30,0.20);
+      --ir-drag-bg:       rgba(15,10,30,0.03);
+      --ir-col-opt-bg:    rgba(15,10,30,0.05);
+      --ir-col-opt-border:rgba(15,10,30,0.14);
+      --ir-col-opt-text:  rgba(15,10,30,0.60);
+      --ir-skip-border:   rgba(15,10,30,0.16);
+      --ir-skip-bg:       rgba(15,10,30,0.04);
+      --ir-skip-text:     rgba(15,10,30,0.50);
+      --ir-dl-border:     rgba(15,10,30,0.16);
+      --ir-dl-bg:         rgba(15,10,30,0.04);
+      --ir-dl-text:       rgba(15,10,30,0.60);
+      --ir-req-note:      rgba(15,10,30,0.45);
+      --ir-dot-sep:       rgba(15,10,30,0.25);
+      --ir-row-num:       rgba(15,10,30,0.45);
+      --ir-col-label:     rgba(15,10,30,0.55);
+      --ir-col-empty:     rgba(15,10,30,0.35);
+      /* warning */
+      --ir-warn-bg:       rgba(180,120,0,0.08);
+      --ir-warn-border:   rgba(160,100,0,0.40);
+      --ir-warn-text:     rgba(140,85,0,0.95);
+      --ir-warn-bar:      rgba(140,85,0,0.90);
+      --ir-warn-dupe-bg:  rgba(180,120,0,0.07);
+      --ir-warn-dupe-bd:  rgba(160,100,0,0.30);
+      --ir-warn-dupe-txt: rgba(140,85,0,0.90);
+      --ir-warn-ack-bd:   rgba(160,100,0,0.35);
+      --ir-warn-ack-bg:   rgba(180,120,0,0.06);
+      --ir-warn-ack-txt:  rgba(140,85,0,0.90);
+      /* error */
+      --ir-err-bg:        rgba(180,30,30,0.08);
+      --ir-err-border:    rgba(160,20,20,0.35);
+      --ir-err-text:      rgba(160,20,20,0.95);
+      --ir-err-bar:       rgba(160,20,20,0.90);
+    }
+  }
+  [data-theme="light"] .ir-root {
+    --ir-text:          rgba(15,10,30,0.92);
+    --ir-muted:         rgba(15,10,30,0.55);
+    --ir-muted-weak:    rgba(15,10,30,0.48);
+    --ir-divider:       rgba(15,10,30,0.10);
+    --ir-border:        rgba(15,10,30,0.16);
+    --ir-border-weak:   rgba(15,10,30,0.10);
+    --ir-surface:       rgba(15,10,30,0.04);
+    --ir-surface-hover: rgba(15,10,30,0.03);
+    --ir-dot-inactive:  rgba(15,10,30,0.14);
+    --ir-connector:     rgba(15,10,30,0.12);
+    --ir-drag-border:   rgba(15,10,30,0.20);
+    --ir-drag-bg:       rgba(15,10,30,0.03);
+    --ir-col-opt-bg:    rgba(15,10,30,0.05);
+    --ir-col-opt-border:rgba(15,10,30,0.14);
+    --ir-col-opt-text:  rgba(15,10,30,0.60);
+    --ir-skip-border:   rgba(15,10,30,0.16);
+    --ir-skip-bg:       rgba(15,10,30,0.04);
+    --ir-skip-text:     rgba(15,10,30,0.50);
+    --ir-dl-border:     rgba(15,10,30,0.16);
+    --ir-dl-bg:         rgba(15,10,30,0.04);
+    --ir-dl-text:       rgba(15,10,30,0.60);
+    --ir-req-note:      rgba(15,10,30,0.45);
+    --ir-dot-sep:       rgba(15,10,30,0.25);
+    --ir-row-num:       rgba(15,10,30,0.45);
+    --ir-col-label:     rgba(15,10,30,0.55);
+    --ir-col-empty:     rgba(15,10,30,0.35);
+    /* warning */
+    --ir-warn-bg:       rgba(180,120,0,0.08);
+    --ir-warn-border:   rgba(160,100,0,0.40);
+    --ir-warn-text:     rgba(140,85,0,0.95);
+    --ir-warn-bar:      rgba(140,85,0,0.90);
+    --ir-warn-dupe-bg:  rgba(180,120,0,0.07);
+    --ir-warn-dupe-bd:  rgba(160,100,0,0.30);
+    --ir-warn-dupe-txt: rgba(140,85,0,0.90);
+    --ir-warn-ack-bd:   rgba(160,100,0,0.35);
+    --ir-warn-ack-bg:   rgba(180,120,0,0.06);
+    --ir-warn-ack-txt:  rgba(140,85,0,0.90);
+    /* error */
+    --ir-err-bg:        rgba(180,30,30,0.08);
+    --ir-err-border:    rgba(160,20,20,0.35);
+    --ir-err-text:      rgba(160,20,20,0.95);
+    --ir-err-bar:       rgba(160,20,20,0.90);
+  }
+`;
+
 // ─── Shared field styles (mirrors createAthlete.jsx) ─────────────────────────
 
 const F = {
   group: { display: "flex", flexDirection: "column" as const, gap: "6px" },
-  label: { fontSize: "13px", fontWeight: 700, color: "var(--muted, rgba(255,255,255,0.65))", letterSpacing: "0.02em" },
+  label: { fontSize: "13px", fontWeight: 700, color: "var(--muted, var(--ir-muted))", letterSpacing: "0.02em" },
   input: {
     width: "100%", boxSizing: "border-box" as const,
     padding: "10px 13px", borderRadius: "12px",
-    border: "1px solid var(--btn-border)",
-    background: "var(--btn-bg)",
-    color: "var(--text, rgba(255,255,255,0.92))",
+    border: "1px solid var(--btn-border, var(--ir-border))",
+    background: "var(--btn-bg, var(--ir-surface))",
+    color: "var(--text, var(--ir-text))",
     fontSize: "15px", outline: "none",
     transition: "border-color 160ms ease, box-shadow 160ms ease",
   },
   inputFocus: { borderColor: "var(--accent, #b400ff)", boxShadow: "0 0 0 3px rgba(180,0,255,0.14)" },
   error: {
     padding: "10px 13px", borderRadius: "12px",
-    border: "1px solid rgba(255,80,80,0.30)",
-    background: "rgba(255,80,80,0.08)",
-    color: "rgba(255,130,130,0.95)", fontSize: "13px",
+    border: "1px solid rgba(220,50,50,0.35)",
+    background: "rgba(220,50,50,0.08)",
+    color: "rgba(200,50,50,0.95)", fontSize: "13px",
   },
-  divider: { height: "1px", background: "rgba(255,255,255,0.07)", margin: "4px 0" },
+  divider: { height: "1px", background: "var(--ir-divider)", margin: "4px 0" },
   sectionLabel: {
     fontSize: "11px", fontWeight: 800, letterSpacing: "0.08em",
     textTransform: "uppercase" as const,
-    color: "var(--muted, rgba(255,255,255,0.45))", marginBottom: "2px",
+    color: "var(--muted, var(--ir-muted-weak))", marginBottom: "2px",
   },
 };
 
@@ -211,9 +351,9 @@ function SelectField({ label, required, children, ...p }: any) {
 // ─── Status badge ─────────────────────────────────────────────────────────────
 
 const STATUS_COLORS: Record<RowStatus, { bg: string; border: string; color: string; label: string }> = {
-  valid:   { bg: "rgba(0,220,140,0.10)",  border: "rgba(0,220,140,0.30)",  color: "rgba(0,200,130,0.95)", label: "Valid"   },
-  warning: { bg: "rgba(255,190,0,0.10)",  border: "rgba(255,190,0,0.32)",  color: "rgba(255,200,40,0.95)", label: "Warning" },
-  error:   { bg: "rgba(255,70,70,0.10)",  border: "rgba(255,70,70,0.30)",  color: "rgba(255,110,100,0.95)", label: "Error"  },
+  valid:   { bg: "rgba(0,220,140,0.10)",       border: "rgba(0,220,140,0.30)",       color: "rgba(0,200,130,0.95)",  label: "Valid"   },
+  warning: { bg: "var(--ir-warn-bg)",           border: "var(--ir-warn-border)",      color: "var(--ir-warn-text)",   label: "Warning" },
+  error:   { bg: "var(--ir-err-bg)",            border: "var(--ir-err-border)",       color: "var(--ir-err-text)",    label: "Error"   },
 };
 
 function StatusBadge({ status }: { status: RowStatus }) {
@@ -246,11 +386,11 @@ function StepDots({ step, total }: { step: number; total: number }) {
                 ? "rgba(180,0,255,0.55)"
                 : active
                 ? "rgba(180,0,255,0.90)"
-                : "rgba(255,255,255,0.14)",
+                : "var(--ir-dot-inactive)",
               transition: "width 200ms ease, background 200ms ease",
             }} />
             {i < total - 1 && (
-              <div style={{ flex: 1, height: 1, background: done ? "rgba(180,0,255,0.30)" : "rgba(255,255,255,0.10)" }} />
+              <div style={{ flex: 1, height: 1, background: done ? "rgba(180,0,255,0.30)" : "var(--ir-connector)" }} />
             )}
           </React.Fragment>
         );
@@ -597,7 +737,7 @@ export default function ImportRosterModal({
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
         <div style={F.sectionLabel}>Assign to Team</div>
-        <p style={{ margin: 0, fontSize: 13, color: "var(--muted, rgba(255,255,255,0.55))", lineHeight: 1.5 }}>
+        <p style={{ margin: 0, fontSize: 13, color: "var(--muted, var(--ir-muted))", lineHeight: 1.5 }}>
           All imported athletes will be assigned to the selected core team. Sub-team assignments can be made individually after import.
         </p>
         {teamsLoading ? (
@@ -620,7 +760,7 @@ export default function ImportRosterModal({
         <div style={F.divider} />
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={F.sectionLabel}>CSV Template</div>
-          <p style={{ margin: 0, fontSize: 13, color: "var(--muted, rgba(255,255,255,0.55))", lineHeight: 1.5 }}>
+          <p style={{ margin: 0, fontSize: 13, color: "var(--muted, var(--ir-muted))", lineHeight: 1.5 }}>
             Download our template with all supported columns. The first row is headers; the second row is an example — both are handled automatically.
           </p>
           <button
@@ -658,9 +798,9 @@ export default function ImportRosterModal({
           onDragLeave={handleDragLeave}
           onClick={() => fileInputRef.current?.click()}
           style={{
-            border: `2px dashed ${isDragging ? "rgba(180,0,255,0.70)" : "rgba(255,255,255,0.16)"}`,
+            border: `2px dashed ${isDragging ? "rgba(180,0,255,1)" : "rgba(180,0,255,0.45)"}`,
             borderRadius: 16,
-            background: isDragging ? "rgba(180,0,255,0.06)" : "rgba(255,255,255,0.025)",
+            background: isDragging ? "rgba(180,0,255,0.06)" : "var(--ir-drag-bg)",
             padding: "36px 24px",
             display: "flex", flexDirection: "column", alignItems: "center", gap: 10,
             cursor: "pointer",
@@ -668,10 +808,10 @@ export default function ImportRosterModal({
           }}
         >
           <UploadCloudIcon />
-          <div style={{ fontSize: 14, fontWeight: 700, textAlign: "center" }}>
+          <div style={{ fontSize: 14, fontWeight: 700, textAlign: "center", color: "var(--ir-text)" }}>
             {isDragging ? "Drop your CSV here" : "Drag & drop a CSV, or click to browse"}
           </div>
-          <div style={{ fontSize: 12, opacity: 0.40, textAlign: "center" }}>
+          <div style={{ fontSize: 12, color: "var(--ir-muted)", opacity: 0.75, textAlign: "center" }}>
             Accepts .csv files up to {MAX_ROWS} athletes
           </div>
           <input
@@ -697,16 +837,16 @@ export default function ImportRosterModal({
                 key={col}
                 style={{
                   padding: "3px 9px", borderRadius: 999, fontSize: 11, fontWeight: 700,
-                  background: REQUIRED.has(col) ? "rgba(180,0,255,0.12)" : "rgba(255,255,255,0.05)",
-                  border: REQUIRED.has(col) ? "1px solid rgba(180,0,255,0.30)" : "1px solid rgba(255,255,255,0.10)",
-                  color: REQUIRED.has(col) ? "rgba(210,140,255,0.95)" : "rgba(255,255,255,0.55)",
+                  background: REQUIRED.has(col) ? "rgba(180,0,255,0.12)" : "var(--ir-col-opt-bg)",
+                  border: REQUIRED.has(col) ? "1px solid rgba(180,0,255,0.30)" : "1px solid var(--ir-col-opt-border)",
+                  color: REQUIRED.has(col) ? "rgba(210,140,255,0.95)" : "var(--ir-col-opt-text)",
                 }}
               >
                 {col}{REQUIRED.has(col) ? " *" : ""}
               </span>
             ))}
           </div>
-          <div style={{ fontSize: 11, opacity: 0.38, marginTop: 2 }}>* required field</div>
+          <div style={{ fontSize: 11, color: "var(--ir-req-note)", marginTop: 2 }}>* required field</div>
         </div>
       </div>
     );
@@ -723,49 +863,58 @@ export default function ImportRosterModal({
         {/* Sticky summary bar */}
         <div style={{
           position: "sticky", top: 0, zIndex: 10,
-          display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+          display: "flex", alignItems: "center",
           padding: "10px 0 12px",
-          background: "var(--panel-bg, rgba(12,12,18,0.98))",
-          borderBottom: "1px solid rgba(255,255,255,0.07)",
+          background: "transparent",
+          borderBottom: "1px solid var(--ir-divider)",
           marginBottom: 14,
         }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(0,220,130,0.90)" }}>
-            {effectiveValid.length} valid
-          </span>
-          <span style={{ opacity: 0.25 }}>·</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,200,40,0.90)" }}>
-            {effectiveWarnings.length} warning{effectiveWarnings.length !== 1 ? "s" : ""}
-          </span>
-          <span style={{ opacity: 0.25 }}>·</span>
-          <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(255,110,100,0.90)" }}>
-            {effectiveErrors.length} error{effectiveErrors.length !== 1 ? "s" : ""}
-          </span>
-          {skippedCount > 0 && (
-            <>
-              <span style={{ opacity: 0.25 }}>·</span>
-              <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.45 }}>
-                {skippedCount} skipped
-              </span>
-            </>
-          )}
+          {/* Left spacer — same width as the right-side button so the stats stay truly centered */}
           <div style={{ flex: 1 }} />
-          {(effectiveErrors.length > 0 || skippedCount > 0) && (
-            <button
-              type="button"
-              onClick={handleDownloadErrors}
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 5,
-                padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
-                border: "1px solid rgba(255,255,255,0.14)",
-                background: "rgba(255,255,255,0.04)",
-                color: "rgba(255,255,255,0.55)",
-                transition: "background 120ms ease",
-              }}
-            >
-              <DownloadIcon size={11} />
-              Export errors
-            </button>
-          )}
+
+          {/* Centered stats group */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "rgba(0,220,130,0.90)" }}>
+              {effectiveValid.length} valid
+            </span>
+            <span style={{ color: "var(--ir-dot-sep)" }}>·</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ir-warn-bar)" }}>
+              {effectiveWarnings.length} warning{effectiveWarnings.length !== 1 ? "s" : ""}
+            </span>
+            <span style={{ color: "var(--ir-dot-sep)" }}>·</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ir-err-bar)" }}>
+              {effectiveErrors.length} error{effectiveErrors.length !== 1 ? "s" : ""}
+            </span>
+            {skippedCount > 0 && (
+              <>
+                <span style={{ color: "var(--ir-dot-sep)" }}>·</span>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--ir-muted)" }}>
+                  {skippedCount} skipped
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* Right side — export button (or spacer to keep stats centered when absent) */}
+          <div style={{ flex: 1, display: "flex", justifyContent: "flex-end" }}>
+            {(effectiveErrors.length > 0 || skippedCount > 0) && (
+              <button
+                type="button"
+                onClick={handleDownloadErrors}
+                style={{
+                  display: "inline-flex", alignItems: "center", gap: 5,
+                  padding: "5px 10px", borderRadius: 8, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  border: "1px solid var(--ir-dl-border)",
+                  background: "var(--ir-dl-bg)",
+                  color: "var(--ir-dl-text)",
+                  transition: "background 120ms ease",
+                }}
+              >
+                <DownloadIcon size={11} />
+                Export errors
+              </button>
+            )}
+          </div>
         </div>
 
         {previewError && <div style={{ ...F.error, marginBottom: 12 }}>{previewError}</div>}
@@ -788,7 +937,7 @@ export default function ImportRosterModal({
               >
                 {/* Header row: row number + badge + skip */}
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 7 }}>
-                  <span style={{ fontSize: 10, fontWeight: 800, opacity: 0.38, minWidth: 28 }}>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: "var(--ir-row-num)", minWidth: 28 }}>
                     #{row.csvLine}
                   </span>
                   <StatusBadge status={row.status} />
@@ -806,9 +955,9 @@ export default function ImportRosterModal({
                       cursor: "pointer",
                       border: row.skipped
                         ? "1px solid rgba(180,0,255,0.35)"
-                        : "1px solid rgba(255,255,255,0.12)",
-                      background: row.skipped ? "rgba(180,0,255,0.12)" : "rgba(255,255,255,0.04)",
-                      color: row.skipped ? "rgba(200,130,255,0.95)" : "rgba(255,255,255,0.45)",
+                        : "1px solid var(--ir-skip-border)",
+                      background: row.skipped ? "rgba(180,0,255,0.12)" : "var(--ir-skip-bg)",
+                      color: row.skipped ? "rgba(200,130,255,0.95)" : "var(--ir-skip-text)",
                       transition: "all 140ms ease",
                     }}
                   >
@@ -822,9 +971,9 @@ export default function ImportRosterModal({
                     const val = row.data[col];
                     if (!val && !REQUIRED.has(col)) return null;
                     return (
-                      <span key={col} style={{ fontSize: 12, color: "var(--text, rgba(255,255,255,0.80))" }}>
-                        <span style={{ opacity: 0.42, marginRight: 3 }}>{COL_LABELS[col]}:</span>
-                        <span style={{ fontWeight: 600 }}>{val || <em style={{ opacity: 0.30 }}>—</em>}</span>
+                      <span key={col} style={{ fontSize: 12, color: "var(--text, var(--ir-text))" }}>
+                        <span style={{ color: "var(--ir-col-label)", marginRight: 3 }}>{COL_LABELS[col]}:</span>
+                        <span style={{ fontWeight: 600 }}>{val || <em style={{ color: "var(--ir-col-empty)" }}>—</em>}</span>
                       </span>
                     );
                   })}
@@ -834,9 +983,9 @@ export default function ImportRosterModal({
                 {row.duplicate && !row.skipped && (
                   <div style={{
                     marginTop: 8, padding: "7px 10px", borderRadius: 8,
-                    background: "rgba(255,190,0,0.07)",
-                    border: "1px solid rgba(255,190,0,0.18)",
-                    fontSize: 11, color: "rgba(255,200,40,0.85)",
+                    background: "var(--ir-warn-dupe-bg)",
+                    border: "1px solid var(--ir-warn-dupe-bd)",
+                    fontSize: 11, color: "var(--ir-warn-dupe-txt)",
                   }}>
                     Existing: {row.duplicate.first_name} {row.duplicate.last_name}
                     {row.duplicate.sport ? ` · ${row.duplicate.sport}` : ""}
@@ -854,8 +1003,8 @@ export default function ImportRosterModal({
           <label style={{
             display: "flex", alignItems: "flex-start", gap: 10, marginTop: 16,
             padding: "11px 13px", borderRadius: 11,
-            border: "1px solid rgba(255,190,0,0.24)",
-            background: "rgba(255,190,0,0.06)",
+            border: "1px solid var(--ir-warn-ack-bd)",
+            background: "var(--ir-warn-ack-bg)",
             cursor: "pointer",
           }}>
             <input
@@ -864,7 +1013,7 @@ export default function ImportRosterModal({
               onChange={(e) => setWarningsAcknowledged(e.target.checked)}
               style={{ marginTop: 2, accentColor: "#b400ff", flexShrink: 0 }}
             />
-            <span style={{ fontSize: 13, color: "rgba(255,200,40,0.85)", lineHeight: 1.5 }}>
+            <span style={{ fontSize: 13, color: "var(--ir-warn-ack-txt)", lineHeight: 1.5 }}>
               I understand {activeWarnings} row{activeWarnings !== 1 ? "s" : ""} may create duplicate athlete records. Proceed anyway.
             </span>
           </label>
@@ -902,9 +1051,9 @@ export default function ImportRosterModal({
             style={{
               display: "inline-flex", alignItems: "center", gap: 6,
               padding: "8px 14px", borderRadius: 9, fontSize: 12, fontWeight: 700, cursor: "pointer",
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: "rgba(255,255,255,0.04)",
-              color: "rgba(255,255,255,0.60)",
+              border: "1px solid var(--ir-dl-border)",
+              background: "var(--ir-dl-bg)",
+              color: "var(--ir-dl-text)",
             }}
           >
             <DownloadIcon />
@@ -937,7 +1086,7 @@ export default function ImportRosterModal({
           </button>
           <div style={{ flex: 1 }} />
           {importError && (
-            <span style={{ fontSize: 12, color: "rgba(255,110,100,0.90)", maxWidth: 200, textAlign: "right" }}>
+            <span style={{ fontSize: 12, color: "rgba(200,50,50,0.90)", maxWidth: 200, textAlign: "right" }}>
               {importError}
             </span>
           )}
@@ -1004,11 +1153,14 @@ export default function ImportRosterModal({
       size="lg"
       footer={renderFooter()}
     >
-      <StepDots step={step} total={4} />
-      {step === 0 && renderStep0()}
-      {step === 1 && renderStep1()}
-      {step === 2 && renderStep2()}
-      {step === 3 && renderStep3()}
+      <div className="ir-root">
+        <style>{ADAPTIVE_STYLES}</style>
+        <StepDots step={step} total={4} />
+        {step === 0 && renderStep0()}
+        {step === 1 && renderStep1()}
+        {step === 2 && renderStep2()}
+        {step === 3 && renderStep3()}
+      </div>
     </Modal>
   );
 }

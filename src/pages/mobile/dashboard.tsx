@@ -2711,36 +2711,42 @@ export default function Dashboard() {
         <div className="ts-dashHead">
           <h1 className="ts-dashTitle">Dashboard</h1>
 
-          {/* TABS */}
+          {/* TABS + ACTIONS — single row */}
           <div className="ts-tabsRow" role="tablist" aria-label="Dashboard sections">
             <div
-              className="ts-tabs"
+              className="ts-tabs ts-sectionTabs"
               onTouchStart={tabSwipe.onTouchStart}
               onTouchEnd={tabSwipe.onTouchEnd}
             >
               {tabBtn("recent", "Recent Session")}
-              {tabBtn("insights", "Insights and Analysis")}
+              {tabBtn("insights", "Insights & Analysis")}
               {tabBtn("athletes", "Individual Athletes")}
+            </div>
+            <div className="ts-tabs ts-dashActions">
+              <button
+                type="button"
+                className="ts-tabBtn"
+                onClick={() => navigate("/m/session")}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                New Session
+              </button>
+              <button
+                type="button"
+                className="ts-tabBtn ts-actionPrimary"
+                onClick={() => setShowCreateAthlete(true)}
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                  <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+                </svg>
+                Add Athlete
+              </button>
             </div>
           </div>
 
           <p className="ts-dashSub">Realtime training metrics + AI-ready analysis.</p>
-        </div>
-
-        <div className="ts-dashActions">
-          <button className="ts-btn ts-btnGhost" onClick={() => navigate("/m/session")}>
-            New Session
-          </button>
-          <button
-            type="button"
-            className="ts-btn ts-btnSecondary ts-addAthleteBtn"
-            onClick={() => setShowCreateAthlete(true)}
-          >
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
-              <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            Add Athlete
-          </button>
         </div>
       </div>
 
@@ -5012,16 +5018,6 @@ export default function Dashboard() {
           opacity: 0.50;
           margin: 6px 0 0;
         }
-        .ts-dashActions {
-          display: flex;
-          flex-direction: column;
-          align-items: stretch;
-          gap: 8px;
-          flex-shrink: 0;
-          padding-top: 4px;
-          min-width: 130px;
-        }
-
         /* Buttons */
         .ts-btn {
           display: inline-flex;
@@ -5133,13 +5129,6 @@ export default function Dashboard() {
             gap: 12px;
             margin-bottom: 18px;
           }
-          .ts-dashActions {
-            width: 100%;
-          }
-          .ts-dashActions .ts-btn {
-            width: 100%;
-            justify-content: center;
-          }
           .ts-dashTitle {
             font-size: 22px;
           }
@@ -5194,9 +5183,20 @@ export default function Dashboard() {
           display:flex;
           gap:10px;
           flex-wrap:wrap;
+          border:1px solid rgba(255,255,255,0.20);
+          border-radius:999px;
+          padding:4px;
+          max-width:100%;
+        }
+        .ts-sectionTabs{
+          width:fit-content;
+        }
+        :root[data-theme="light"] .ts-tabs{
+          border-color:rgba(0,0,0,0.75);
         }
         .ts-tabBtn{
           appearance:none;
+          -webkit-appearance:none;
           border:1px solid rgba(255,255,255,0.12);
           background: rgba(255,255,255,0.04);
           color: inherit;
@@ -5206,6 +5206,9 @@ export default function Dashboard() {
           font: inherit;
           line-height: 1;
           transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+          -webkit-tap-highlight-color: transparent;
+          touch-action: manipulation;
+          min-width:0;
         }
         .ts-tabBtn:hover{
           background: rgba(255,255,255,0.07);
@@ -5223,6 +5226,109 @@ export default function Dashboard() {
         }
         .ts-tabBtn:active{
           transform: translateY(1px);
+        }
+
+        /* ── Light mode tab overrides ── */
+        :root[data-theme="light"] .ts-tabBtn {
+          border-color: rgba(10,10,20,0.28);
+          background: rgba(10,10,20,0.04);
+          color: rgba(10,10,20,0.80);
+        }
+        :root[data-theme="light"] .ts-tabBtn:hover {
+          border-color: rgba(10,10,20,0.45);
+          background: rgba(10,10,20,0.07);
+          color: rgba(10,10,20,0.95);
+        }
+        :root[data-theme="light"] .ts-tabBtn.isActive {
+          border-color: rgba(10,10,20,0.70);
+          background: rgba(10,10,20,0.07);
+          color: rgba(10,10,20,1);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.10);
+        }
+
+        /* Dashboard section tabs — mobile/iOS responsive 2-over-1 stack */
+        @media (max-width: 600px) {
+          .ts-tabsRow{
+            width:100%;
+            align-items:stretch;
+            gap:10px;
+          }
+
+          .ts-sectionTabs{
+            display:grid;
+            grid-template-columns:repeat(2, minmax(0, 1fr));
+            width:100%;
+            gap:6px;
+            border-radius:20px;
+            padding:5px;
+          }
+
+          .ts-sectionTabs .ts-tabBtn{
+            width:100%;
+            min-height:40px;
+            padding:10px 8px;
+            white-space:normal;
+            text-align:center;
+            line-height:1.15;
+            font-size:13px;
+          }
+
+          .ts-sectionTabs .ts-tabBtn:nth-child(3){
+            grid-column:1 / -1;
+          }
+
+          .ts-dashActions{
+            width:100%;
+            justify-content:stretch;
+            gap:8px;
+            border-radius:20px;
+          }
+
+          .ts-dashActions .ts-tabBtn{
+            flex:1 1 0;
+            min-height:40px;
+            display:inline-flex;
+            align-items:center;
+            justify-content:center;
+            white-space:nowrap;
+          }
+        }
+
+        @media (max-width: 380px) {
+          .ts-sectionTabs .ts-tabBtn{
+            font-size:12px;
+            padding-inline:6px;
+          }
+        }
+
+        @supports (-webkit-touch-callout: none) {
+          @media (max-width: 600px) {
+            .ts-sectionTabs .ts-tabBtn,
+            .ts-dashActions .ts-tabBtn{
+              -webkit-user-select:none;
+              user-select:none;
+            }
+          }
+        }
+
+        /* Action button — purple accent variant */
+        .ts-actionPrimary {
+          background: rgba(180,0,255,0.18) !important;
+          border-color: rgba(180,0,255,0.50) !important;
+          color: rgba(210,140,255,0.96) !important;
+        }
+        .ts-actionPrimary:hover {
+          background: rgba(180,0,255,0.28) !important;
+          border-color: rgba(180,0,255,0.70) !important;
+        }
+        :root[data-theme="light"] .ts-actionPrimary {
+          background: rgba(130,0,200,0.08) !important;
+          border-color: rgba(110,0,180,0.45) !important;
+          color: rgba(100,0,170,0.95) !important;
+        }
+        :root[data-theme="light"] .ts-actionPrimary:hover {
+          background: rgba(130,0,200,0.14) !important;
+          border-color: rgba(110,0,180,0.65) !important;
         }
 
         /* Avatar popover */
