@@ -58,6 +58,16 @@ const SESSION_MAX_MS    = 30_000; // hard cap — session auto-stops after 30 s
 const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
 const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 
+// ─── Multi-bag feature flag ──────────────────────────────────────────────────
+// MVP: connect a 2nd (or 3rd, …) ESP32 alongside the primary bag.
+// • Primary device flows through the existing single-device refs (connRef,
+//   framesRef, mode refs) — no behaviour change when the flag is off.
+// • Secondary bags live in `slotsRef` and have their own `SlotState` (frames,
+//   assembler, deviceInfo). START/STOP fans out to all of them; save uploads
+//   one Supabase row per slot.
+// Toggle: VITE_MULTIBAG=on   (default off — production sees today's UX)
+const MULTIBAG_ENABLED = ((import.meta as any).env?.VITE_MULTIBAG ?? "off") === "on";
+
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
 // Defined in a separate file to avoid a circular dependency with modeRolodex.tsx.
 export { MODES, MODE_META } from "../../lib/sessionModes";
@@ -86,6 +96,18 @@ function hitZone(row: number, col: number): ZoneTarget {
 
 function zonesMatch(a: ZoneTarget, b: ZoneTarget): boolean {
   return a.row === b.row && a.col === b.col;
+}
+
+// ─── Target mode — zone numbering (phone-keypad layout) ───────────────────────
+// Maps a ZoneTarget to its 1–9 grid number:
+//   1 2 3   (top:    left, center, right)
+//   4 5 6   (middle: left, center, right)
+//   7 8 9   (bottom: left, center, right)
+// Athletes hear the number aloud and see it on the bag grid.
+function zoneNumber(zone: ZoneTarget): number {
+  const rowIdx = zone.row === "top" ? 0 : zone.row === "middle" ? 1 : 2;
+  const colIdx = zone.col === "left" ? 0 : zone.col === "center" ? 1 : 2;
+  return rowIdx * 3 + colIdx + 1;
 }
 
 // ─── Wave 1 #1 — ArcTimer ────────────────────────────────────────────────────
@@ -652,8 +674,9 @@ function TargetOverlay({
   const ZONE_COLOR = "#00ff88";
   const ZONE_GLOW  = "rgba(0,255,136,0.55)";
 
-  const zoneLabel = (z: ZoneTarget) =>
-    `${z.row.charAt(0).toUpperCase() + z.row.slice(1)} ${z.col.charAt(0).toUpperCase() + z.col.slice(1)}`;
+  // Phone-keypad numbering: 1 2 3 / 4 5 6 / 7 8 9 (top-left → bottom-right).
+  // Athletes hear this number spoken and match it to the bag's number grid.
+  const zoneLabel = (z: ZoneTarget) => String(zoneNumber(z));
 
   // Waiting — pulsing ready indicator
   if (phase === "waiting") return (
@@ -684,21 +707,23 @@ function TargetOverlay({
       background: "rgba(0,0,0,0.70)", borderRadius: 16, pointerEvents: "none",
       animation: "tsFlashIn 0.15s ease-out",
     }}>
-      {/* Zone label */}
+      {/* Target number — big and bold so the athlete reads it instantly */}
       <div style={{
-        fontSize: 22, fontWeight: 900, color: ZONE_COLOR,
-        textShadow: `0 0 20px ${ZONE_COLOR}, 0 0 40px ${ZONE_GLOW}`,
-        letterSpacing: 2, textTransform: "uppercase", marginBottom: 14,
+        fontSize: 56, fontWeight: 900, color: ZONE_COLOR,
+        textShadow: `0 0 24px ${ZONE_COLOR}, 0 0 48px ${ZONE_GLOW}`,
+        lineHeight: 1, marginBottom: 14,
+        fontVariantNumeric: "tabular-nums",
         animation: "tsSignalPop 0.2s ease-out",
       }}>
         {zoneLabel(zone)}
       </div>
 
-      {/* 3×3 grid */}
+      {/* 3×3 grid — each cell shows its number; target cell is highlighted */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 52px)", gridTemplateRows: "repeat(3, 36px)", gap: 4 }}>
         {(["top", "middle", "bottom"] as ZoneRow[]).map(r =>
           (["left", "center", "right"] as ZoneCol[]).map(c => {
             const isTarget = zone.row === r && zone.col === c;
+            const cellNum  = zoneNumber({ row: r, col: c });
             return (
               <div key={`${r}-${c}`} style={{
                 borderRadius: 6,
@@ -706,11 +731,12 @@ function TargetOverlay({
                 background: isTarget ? `${ZONE_COLOR}30` : "rgba(255,255,255,0.04)",
                 boxShadow: isTarget ? `0 0 14px 2px ${ZONE_GLOW}` : "none",
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 8, fontWeight: 700, color: isTarget ? ZONE_COLOR : "rgba(255,255,255,0.25)",
-                letterSpacing: "0.04em", textTransform: "uppercase",
+                fontSize: isTarget ? 18 : 14, fontWeight: 800,
+                color: isTarget ? ZONE_COLOR : "rgba(255,255,255,0.40)",
+                fontVariantNumeric: "tabular-nums",
                 transition: "all 150ms",
               }}>
-                {isTarget ? "●" : ""}
+                {cellNum}
               </div>
             );
           })
@@ -1030,6 +1056,44 @@ class ChunkAssembler {
   }
 
   private reset() { this.total = null; this.parts = {}; }
+}
+
+// ─── Multi-bag slot model ────────────────────────────────────────────────────
+// One SlotState per *secondary* BLE-connected ESP32 (the primary device still
+// uses the original single-device refs — see connRef / framesRef / etc.).
+// MVP: secondary slots collect frames + upload independently. They don't yet
+// participate in the live mode UI (reaction RT display, target zones, etc.) —
+// that's Phase 3 from the plan doc and adds per-slot grids.
+type SlotId = string;   // = hello.id (e.g. "tsii-7c9a") — primary key for the slot
+
+type SlotState = {
+  id:           SlotId;
+  bleName:      string;
+  conn:         AdapterConnection | null;
+  assembler:    ChunkAssembler;            // per-slot — prevents cross-bag chunk interleaving
+  device:       DeviceInfo;                // populated on hello packet
+  status:       "connecting" | "connected" | "disconnected" | "error";
+  sessionId:    string;                    // assigned at session start (one row per slot)
+  frames:       BleFrame[];                // own buffer; uploaded as its own session
+  frameIndex:   number;                    // increments per accepted frame
+  startedAtMs:  number | null;             // set at startSession() broadcast
+  errorMessage: string | null;
+};
+
+function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): SlotState {
+  return {
+    id:           slotId,
+    bleName,
+    conn,
+    assembler:    new ChunkAssembler(),
+    device:       null,
+    status:       "connected",
+    sessionId:    "",        // populated at startSession
+    frames:       [],
+    frameIndex:   0,
+    startedAtMs:  null,
+    errorMessage: null,
+  };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -2199,6 +2263,15 @@ export default function Session() {
   // Updated synchronously in the hello handler before any data frames arrive.
   const deviceInfoRef = useRef<DeviceInfo>(null);
 
+  // ── Multi-bag slot map (MVP) ───────────────────────────────────────────────
+  // Holds *secondary* bags only — the primary device still uses the refs above.
+  // Mutated through slotsRef.current (no closure staleness); UI re-renders are
+  // triggered via setSlotsTick after every mutation that should be visible.
+  // Disabled / empty when MULTIBAG_ENABLED is false.
+  const slotsRef    = useRef<Map<SlotId, SlotState>>(new Map());
+  const [, setSlotsTick] = useState(0);
+  const bumpSlots   = useCallback(() => setSlotsTick(t => t + 1), []);
+
   useEffect(() => {
     if (!isNativeApp()) {
       const diag = getBluetoothDiagnostics();
@@ -2802,6 +2875,70 @@ export default function Session() {
     } // end for (batch dispatcher loop)
   }, []);
 
+  // ── BLE notify handler — SECONDARY slot (multi-bag) ──────────────────────────
+  // Called once per BLE notification on a secondary bag's connection. Lightweight
+  // compared to handleNotify above: secondary bags only accumulate frames for
+  // upload — they don't drive the live grid, ripples, ArcTimer, or mode stats.
+  // The slotId is captured by the closure at subscription time (see
+  // connectAdditionalBag below) and is an immutable string — never stale.
+  const handleSlotNotify = useCallback((slotId: SlotId, value: DataView) => {
+    const slot = slotsRef.current.get(slotId);
+    if (!slot) return;                                    // disconnected mid-frame — drop
+
+    const text = new TextDecoder().decode(value).trim();
+    slot.assembler.maybeTimeout();
+    const maybeJson = slot.assembler.push(text);
+    if (!maybeJson) return;
+
+    let obj: any;
+    try { obj = JSON.parse(maybeJson); } catch { return; }
+
+    // hello packet — derive device info, mirror the primary handler's logic
+    if (obj.type === "hello") {
+      const isModelIII = obj.hw === "III";
+      slot.device = {
+        id:           obj.id,
+        fw:           obj.fw,
+        hw:           obj.hw   ?? "II",
+        rows:         obj.rows,
+        cols:         obj.cols,
+        mode:         obj.mode ?? "single",
+        scanPeriodMs: isModelIII ? 8   : 37,
+        samplingHz:   isModelIII ? 120 : 25,
+      };
+      console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
+      bumpSlots();
+      return;
+    }
+
+    // Normalise both packet shapes — same logic as handleNotify
+    const isBatch = obj.type === "batch" && Array.isArray(obj.frames);
+    const rawFrames: Array<{ hits: RichHit[]; t: number }> = isBatch
+      ? (obj.frames as Array<any>).map(f => ({ hits: (f.hits ?? []) as RichHit[], t: (f.t ?? 0) as number }))
+      : [{ hits: (obj.hits ?? []) as RichHit[], t: (obj.t ?? 0) as number }];
+
+    if (!captureRef.current) return;                     // ignore frames outside a session
+
+    for (const { hits, t: frameT } of rawFrames) {
+      if (!hits.length) continue;
+      const idx = slot.frameIndex++;
+      slot.frames.push({
+        event_id:         `${slot.sessionId}_e${String(idx).padStart(5, "0")}`,
+        t_device_ms:      frameT,
+        epoch_ms:         Date.now(),
+        hits,
+        raw:              isBatch ? { t: frameT, hits } : obj,
+        reaction_time_ms: null,
+        target_zone:      null,
+        zone_correct:     null,
+        vol_window_idx:   null,
+        vol_hit_seq:      null,
+      });
+    }
+    // Throttle UI bumps: every 25 frames is enough for the status strip's counter
+    if (slot.frameIndex % 25 === 0) bumpSlots();
+  }, [bumpSlots]);
+
   // ── BLE connect / disconnect ──────────────────────────────────────────────────
   const [bleError,      setBleError]      = useState<string | null>(null);
   const [connectAttempt, setConnectAttempt] = useState(0);
@@ -2966,20 +3103,119 @@ export default function Session() {
     setBleStatus("disconnected");
   }, []);
 
+  // ── Multi-bag: connect an *additional* ESP32 alongside the primary ───────────
+  // Opens the same picker, but on success registers the device in slotsRef
+  // instead of touching connRef. Subscribes via a slotId-scoped closure so
+  // every notification routes to the correct slot's assembler + frame buffer.
+  const connectAdditionalBag = useCallback(async () => {
+    if (!MULTIBAG_ENABLED) return;
+    if (!bleSupported) return;
+    setBleError(null);
+    try {
+      let conn: AdapterConnection;
+      let bleName = "bag";
+
+      if (isNativeApp()) {
+        const picked = await openNativePicker();
+        if (!picked) return;       // user cancelled
+        bleName = picked.name ?? "bag";
+        conn = await connectToDeviceNative({
+          device: picked,
+          serviceUuid: NUS_SERVICE_UUID,
+          onDisconnect: () => {
+            // Find slot by conn identity (slotId is unknown until hello, but conn is the same object)
+            for (const s of slotsRef.current.values()) {
+              if (s.conn === conn) {
+                s.status = "disconnected";
+                s.conn = null;
+                bumpSlots();
+                break;
+              }
+            }
+          },
+        });
+      } else {
+        const { primary: webPrimary, legacy: webLegacy } = getBleNamePrefixes();
+        const onDisc = () => {
+          for (const s of slotsRef.current.values()) {
+            if (s.conn === conn) {
+              s.status = "disconnected";
+              s.conn = null;
+              bumpSlots();
+              break;
+            }
+          }
+        };
+        try {
+          conn = await connectToAdapter({ namePrefix: webPrimary, serviceUuid: NUS_SERVICE_UUID, onDisconnect: onDisc });
+        } catch (e: any) {
+          if (isUserCancel(e?.message ?? "")) throw e;
+          conn = await connectToAdapter({ namePrefix: webLegacy, serviceUuid: NUS_SERVICE_UUID, onDisconnect: onDisc });
+        }
+      }
+
+      // Use a provisional slotId until the hello packet arrives, then we'll
+      // remap to the real device.id. (Provisional id keeps the closure stable.)
+      const slotId: SlotId = `slot_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const slot = createSlot(slotId, bleName, conn);
+      slotsRef.current.set(slotId, slot);
+      bumpSlots();
+
+      const { TX } = getCharUuids();
+      await adapterStartNotifications(conn, TX, (val) => handleSlotNotify(slotId, val));
+      console.log(`[BLE/slot ${slotId}] connected to "${bleName}"`);
+    } catch (err: any) {
+      console.error("[BLE/slot] connect error:", err);
+      const msg = err?.message ?? "";
+      if (msg.includes("cancelled") || msg.includes("NotFoundError") || msg.includes("User cancelled") || msg.includes("chooser")) return;
+      setBleError("Could not connect additional bag. Make sure it's powered on and not already paired elsewhere.");
+    }
+  }, [bleSupported, handleSlotNotify, openNativePicker, bumpSlots]);
+
+  // ── Multi-bag: drop a single slot (manual disconnect / cleanup) ──────────────
+  const disconnectSlot = useCallback(async (slotId: SlotId) => {
+    const slot = slotsRef.current.get(slotId);
+    if (!slot) return;
+    slotsRef.current.delete(slotId);
+    bumpSlots();
+    if (slot.conn) {
+      try { await adapterDisconnect(slot.conn); } catch { /* already dead */ }
+    }
+  }, [bumpSlots]);
+
   const removeRipple = useCallback((id: number) => {
     setRipples(prev => prev.filter(r => r.id !== id));
   }, []);
 
   // ── BLE command sender ────────────────────────────────────────────────────────
   const sendCommand = useCallback(async (cmd: "start" | "stop") => {
-    const conn = connRef.current;
-    if (!conn) return;
     const { RX } = getCharUuids();
-    try {
-      await writeUtf8(conn, RX, JSON.stringify({ cmd }));
-      console.log(`[BLE] sent cmd=${cmd}`);
-    } catch (err) {
-      console.warn("[BLE] sendCommand failed:", err);
+    const payload = JSON.stringify({ cmd });
+
+    // ── Primary device ────────────────────────────────────────────────────
+    const conn = connRef.current;
+    if (conn) {
+      try {
+        await writeUtf8(conn, RX, payload);
+        console.log(`[BLE] sent cmd=${cmd}`);
+      } catch (err) {
+        console.warn("[BLE] sendCommand failed:", err);
+      }
+    }
+
+    // ── Secondary slots — fan out in parallel (no awaits between writes) ─
+    // Same skew-minimisation trick from the plan doc: parallel writes hit
+    // the BLE connection-interval floor (~7.5–15 ms) instead of stacking.
+    if (MULTIBAG_ENABLED && slotsRef.current.size > 0) {
+      const writes: Promise<unknown>[] = [];
+      for (const slot of slotsRef.current.values()) {
+        if (slot.status !== "connected" || !slot.conn) continue;
+        writes.push(writeUtf8(slot.conn, RX, payload).catch(err => {
+          console.warn(`[BLE/slot ${slot.id}] sendCommand failed:`, err);
+        }));
+      }
+      await Promise.allSettled(writes);
+      if (writes.length > 0) console.log(`[BLE] broadcast cmd=${cmd} to ${writes.length} slot(s)`);
     }
   }, []);
 
@@ -3115,6 +3351,20 @@ export default function Session() {
     startTimeRef.current = Date.now();
     captureRef.current   = true;
     setSessionActive(true);
+
+    // ── Multi-bag: assign a fresh sessionId + reset buffer for every slot ──
+    // Each slot uploads as its own Supabase session row (one athlete-less
+    // recording per bag — coach can attribute athletes post-hoc in MVP).
+    if (MULTIBAG_ENABLED && slotsRef.current.size > 0) {
+      for (const slot of slotsRef.current.values()) {
+        slot.sessionId   = genSessionId();
+        slot.frames      = [];
+        slot.frameIndex  = 0;
+        slot.startedAtMs = startTimeRef.current;
+      }
+      bumpSlots();
+    }
+
     await sendCommand("start");
 
         // Reset volume
@@ -3190,44 +3440,84 @@ export default function Session() {
   // ── Save to Supabase ──────────────────────────────────────────────────────────
   const saveSession = async () => {
     if (!supabase || !selectedAthlete || !userId || !programId) return;
-    if (framesRef.current.length === 0) return;
+    // Allow save if primary OR any secondary slot has frames
+    const primaryHasFrames = framesRef.current.length > 0;
+    const secondarySlotsWithFrames = MULTIBAG_ENABLED
+      ? [...slotsRef.current.values()].filter(s => s.frames.length > 0)
+      : [];
+    if (!primaryHasFrames && secondarySlotsWithFrames.length === 0) return;
 
     setSaveState("saving");
     setSaveError(null);
 
     try {
-      await uploadSession({
-        sessionId:   sessionIdRef.current,
-        programId,
-        athleteId:   selectedAthlete.id,
-        coreTeamId:  selectedAthlete.core_team_id ?? null,
-        createdBy:   userId,
-        frames:      framesRef.current,
-        startedAtMs: startTimeRef.current ?? Date.now(),
-        endedAtMs:   Date.now(),
-        mode:        sessionMode,
-        // Derive hardware metadata from the hello packet — never hardcoded.
-        // Falls back to Model II defaults when deviceInfo is unavailable.
-        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
-        samplingHz:   deviceInfo?.samplingHz   ?? 25,
-        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-        // reaction live stats
-        rxBestMs:    rxBestMs,
-        rxAvgMs:     rxAvgMs,
-        rxAttempts:  rxAttemptsRef.current,
-        // accuracy live stats
-        accHitsCount: accHitsRef.current,
-        accScoreSum:  accSumRef.current,
-        // target live stats
-        // All target counters read from refs — never stale at save time
-        tgtAttempts:     tgtAttemptsRef.current,
-        tgtCorrectHits:  tgtHitsRef.current,
-        tgtCorrectSumMs: tgtCorrectSumMs.current,
-        tgtBestMs:           tgtBestAllMsRef.current,
-        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
-        // physical device identity from hello packet
-        deviceId:    deviceInfo?.id,
-      });
+      // ── 1. Primary device ──────────────────────────────────────────────
+      if (primaryHasFrames) {
+        await uploadSession({
+          sessionId:   sessionIdRef.current,
+          programId,
+          athleteId:   selectedAthlete.id,
+          coreTeamId:  selectedAthlete.core_team_id ?? null,
+          createdBy:   userId,
+          frames:      framesRef.current,
+          startedAtMs: startTimeRef.current ?? Date.now(),
+          endedAtMs:   Date.now(),
+          mode:        sessionMode,
+          // Derive hardware metadata from the hello packet — never hardcoded.
+          // Falls back to Model II defaults when deviceInfo is unavailable.
+          deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+          samplingHz:   deviceInfo?.samplingHz   ?? 25,
+          scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+          // reaction live stats
+          rxBestMs:    rxBestMs,
+          rxAvgMs:     rxAvgMs,
+          rxAttempts:  rxAttemptsRef.current,
+          // accuracy live stats
+          accHitsCount: accHitsRef.current,
+          accScoreSum:  accSumRef.current,
+          // target live stats
+          // All target counters read from refs — never stale at save time
+          tgtAttempts:     tgtAttemptsRef.current,
+          tgtCorrectHits:  tgtHitsRef.current,
+          tgtCorrectSumMs: tgtCorrectSumMs.current,
+          tgtBestMs:           tgtBestAllMsRef.current,
+          tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
+          // physical device identity from hello packet
+          deviceId:    deviceInfo?.id,
+        });
+      }
+
+      // ── 2. Secondary slots — one Supabase row per slot ─────────────────
+      // MVP attribution: all slots share the primary's selected athlete.
+      // Per-bag athlete assignment ships in the device-manager-panel phase.
+      // Mode stats are not collected for secondary slots in MVP (Phase 3
+      // adds per-slot reaction/target/volume/accuracy mutations).
+      if (secondarySlotsWithFrames.length > 0) {
+        const endedAt = Date.now();
+        const slotResults = await Promise.allSettled(
+          secondarySlotsWithFrames.map(slot => uploadSession({
+            sessionId:   slot.sessionId,
+            programId,
+            athleteId:   selectedAthlete.id,                        // shared in MVP
+            coreTeamId:  selectedAthlete.core_team_id ?? null,
+            createdBy:   userId,
+            frames:      slot.frames,
+            startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
+            endedAtMs:   endedAt,
+            mode:        sessionMode,
+            deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
+            samplingHz:   slot.device?.samplingHz   ?? 25,
+            scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+            deviceId:    slot.device?.id,
+          }))
+        );
+        const failures = slotResults.filter(r => r.status === "rejected") as PromiseRejectedResult[];
+        if (failures.length > 0) {
+          console.warn(`[BLE/slots] ${failures.length}/${slotResults.length} slot uploads failed`,
+            failures.map(f => f.reason?.message ?? f.reason));
+          // Non-fatal: primary uploaded successfully (if it had frames). Surface in console for debugging.
+        }
+      }
       setSaveState("saved");
       // Advance queue: pop the athlete we just saved and select the next one.
       setQueue(q => {
@@ -3746,6 +4036,80 @@ export default function Session() {
                 )}
               </div>
 
+              {/* ── Multi-bag: secondary slots + "Add bag" button ─────────────── */}
+              {/* Only mounted when VITE_MULTIBAG=on. Primary device path stays untouched. */}
+              {MULTIBAG_ENABLED && bleStatus === "connected" && (() => {
+                const slots = [...slotsRef.current.values()];
+                return (
+                  <div style={{
+                    marginBottom: 14,
+                    padding: "10px 12px",
+                    borderRadius: 10,
+                    background: "rgba(94,231,255,0.04)",
+                    border: "1px solid rgba(94,231,255,0.20)",
+                  }}>
+                    <div style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      marginBottom: slots.length > 0 ? 8 : 0,
+                    }}>
+                      <div style={{
+                        fontSize: 10, fontWeight: 800, letterSpacing: "0.08em",
+                        textTransform: "uppercase", color: "#5ee7ff",
+                      }}>
+                        Multi-bag · {slots.length} extra
+                      </div>
+                      <button
+                        onClick={connectAdditionalBag}
+                        disabled={sessionActive}
+                        style={{
+                          padding: "3px 10px", borderRadius: 6,
+                          fontSize: 11, fontWeight: 700, cursor: sessionActive ? "not-allowed" : "pointer",
+                          background: sessionActive ? "rgba(94,231,255,0.10)" : "rgba(94,231,255,0.18)",
+                          border: "1px solid rgba(94,231,255,0.35)",
+                          color: "#5ee7ff",
+                          opacity: sessionActive ? 0.5 : 1,
+                        }}
+                      >
+                        + Add bag
+                      </button>
+                    </div>
+                    {slots.map(s => (
+                      <div key={s.id} style={{
+                        display: "flex", alignItems: "center", gap: 8,
+                        padding: "5px 0", fontSize: 11,
+                      }}>
+                        <div style={{
+                          width: 6, height: 6, borderRadius: "50%",
+                          background: s.status === "connected" ? "#00ff88"
+                                     : s.status === "disconnected" ? "#ff6060"
+                                     : "#ffcc00",
+                          boxShadow: s.status === "connected" ? "0 0 4px 1px rgba(0,255,136,0.5)" : "none",
+                        }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                            {s.device?.id ?? s.bleName}
+                          </div>
+                          <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace" }}>
+                            {s.device?.hw ? `${s.device.hw} · ` : ""}
+                            {s.frameIndex} frames
+                            {s.status !== "connected" ? ` · ${s.status}` : ""}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => disconnectSlot(s.id)}
+                          title="Disconnect"
+                          style={{
+                            background: "none", border: "none",
+                            color: "var(--muted)", cursor: "pointer",
+                            fontSize: 13, padding: "0 4px", lineHeight: 1,
+                          }}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {/* Mode selector — visible once connected, locked during active session */}
               {bleStatus === "connected" && (
                 <>
@@ -4193,6 +4557,73 @@ export default function Session() {
               </div>
             )}
 
+            {/* Target mode — 3×3 zone grid lines + 1–9 number labels
+                (always visible when mode is active so athletes can map the
+                spoken cue number to a physical region of the bag).
+                zIndex 8 so the labels float above the pre-start "Tap to
+                Start" backdrop (zIndex 7). Rendered before the cue overlays
+                below so an active TargetOverlay (also zIndex 8) cleanly
+                covers these large numbers during signal/result phases. */}
+            {sessionMode === "target" && (
+              <div style={{
+                position: "absolute", inset: 0, pointerEvents: "none", zIndex: 8,
+                padding: "28px 6px 6px", boxSizing: "border-box",
+              }}>
+                {/* Horizontal dividers at 1/3 and 2/3 */}
+                {[1, 2].map(i => (
+                  <div key={`h${i}`} style={{
+                    position: "absolute", left: 6, right: 6,
+                    top: `calc(28px + (100% - 34px) * ${i / 3})`,
+                    height: 1,
+                    background: "rgba(0,255,136,0.18)",
+                  }} />
+                ))}
+                {/* Vertical dividers at 1/3 and 2/3 */}
+                {[1, 2].map(i => (
+                  <div key={`v${i}`} style={{
+                    position: "absolute", top: 28, bottom: 6,
+                    left: `calc(6px + (100% - 12px) * ${i / 3})`,
+                    width: 1,
+                    background: "rgba(0,255,136,0.18)",
+                  }} />
+                ))}
+                {/* 1–9 number labels — one per zone, centered inside each
+                    1/3 × 1/3 section. Phone-keypad order: row 0 = 1/2/3, etc.
+                    `translate(-50%, -50%)` anchors the number on the cell's
+                    midpoint so the digit visually sits dead-center even as
+                    the bag resizes responsively. */}
+                {[0, 1, 2].map(rowIdx =>
+                  [0, 1, 2].map(colIdx => {
+                    const num = rowIdx * 3 + colIdx + 1;
+                    return (
+                      <div
+                        key={`n${num}`}
+                        style={{
+                          position: "absolute",
+                          // Vertical center of cell: padding-top (28px) +
+                          // (rowIdx + 0.5) thirds of usable height.
+                          top:  `calc(28px + (100% - 34px) * ${rowIdx + 0.5} / 3)`,
+                          // Horizontal center of cell: padding-left (6px) +
+                          // (colIdx + 0.5) thirds of usable width.
+                          left: `calc(6px + (100% - 12px) * ${colIdx + 0.5} / 3)`,
+                          transform: "translate(-50%, -50%)",
+                          fontSize: 36,
+                          fontWeight: 900,
+                          color: "rgba(0,255,136,0.45)",
+                          fontVariantNumeric: "tabular-nums",
+                          letterSpacing: "-0.04em",
+                          textShadow: "0 0 12px rgba(0,255,136,0.35)",
+                          lineHeight: 1,
+                        }}
+                      >
+                        {num}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
             {/* Reaction overlay */}
             {sessionMode === "reaction" && sessionActive && (
               <ReactionOverlay phase={rxPhase} reactionMs={rxTime} />
@@ -4214,33 +4645,6 @@ export default function Session() {
                 tgtAttempts={tgtAttempts}
                 tgtHits={tgtHits}
               />
-            )}
-
-            {/* Target mode — 3×3 zone grid lines (always visible when mode is active) */}
-            {sessionMode === "target" && (
-              <div style={{
-                position: "absolute", inset: 0, pointerEvents: "none", zIndex: 2,
-                padding: "28px 6px 6px", boxSizing: "border-box",
-              }}>
-                {/* Horizontal dividers at 1/3 and 2/3 */}
-                {[1, 2].map(i => (
-                  <div key={`h${i}`} style={{
-                    position: "absolute", left: 6, right: 6,
-                    top: `calc(28px + (100% - 34px) * ${i / 3})`,
-                    height: 1,
-                    background: "rgba(0,255,136,0.18)",
-                  }} />
-                ))}
-                {/* Vertical dividers at 1/3 and 2/3 */}
-                {[1, 2].map(i => (
-                  <div key={`v${i}`} style={{
-                    position: "absolute", top: 28, bottom: 6,
-                    left: `calc(6px + (100% - 12px) * ${i / 3})`,
-                    width: 1,
-                    background: "rgba(0,255,136,0.18)",
-                  }} />
-                ))}
-              </div>
             )}
 
             {/* Hit grid — fills the bag */}

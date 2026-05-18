@@ -1,0 +1,1498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>session.tsx — Multi-Bag Plan</title>
+<style>
+  :root {
+    --bg:         #0b0c0e;
+    --panel:      #15171b;
+    --panel-2:    #1c1f24;
+    --border:     #2a2e36;
+    --border-soft:#1f2228;
+    --text:       #e6e8ec;
+    --text-dim:   #9aa1ad;
+    --text-muted: #6b7280;
+    --accent:     #ff5ea8;   /* command pink */
+    --cyan:       #5ee7ff;   /* timestamps   */
+    --green:      #5eff9d;   /* OK / success */
+    --amber:      #ffc15e;   /* warnings     */
+    --violet:     #b388ff;   /* code keyword */
+    --red:        #ff6b6b;   /* errors       */
+    --mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 28px 80px;
+  }
+  header.page {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 18px;
+  }
+  header.page h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: -0.01em;
+  }
+  header.page .sub {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  /* Tabs */
+  .tabs {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 24px;
+  }
+  .tab {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 16px;
+    font-family: var(--sans);
+    font-size: 13px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .tab:hover { background: var(--panel-2); border-color: #3a3f4a; }
+  .tab.active {
+    background: #fff;
+    color: #000;
+    border-color: #fff;
+  }
+  .tabpanel { display: none; }
+  .tabpanel.active { display: block; animation: fadeIn 0.25s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  /* Section label */
+  .section-label {
+    text-transform: uppercase;
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    margin: 32px 0 12px;
+    font-weight: 500;
+  }
+  .section-label:first-child { margin-top: 0; }
+
+  /* Cards */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+  }
+  .card-row {
+    display: grid;
+    grid-template-columns: 110px 1fr auto;
+    gap: 16px;
+    align-items: start;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .card-row:last-child { border-bottom: none; }
+  .card-row .cmd { color: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 500; }
+  .card-row .desc { color: var(--text-dim); font-size: 13px; }
+  .card-row .desc code { color: var(--text); }
+  .card-row .when { color: var(--green); font-family: var(--mono); font-size: 11px; white-space: nowrap; }
+  .card-row .when.amber { color: var(--amber); }
+  .card-row .when.pink { color: var(--accent); }
+
+  /* Code blocks */
+  pre.code {
+    background: var(--panel-2);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    padding: 16px 18px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.65;
+    overflow-x: auto;
+    color: var(--text);
+    white-space: pre;
+  }
+  code { font-family: var(--mono); font-size: 12.5px; }
+  .k { color: var(--violet); }      /* keyword */
+  .s { color: var(--green); }       /* string */
+  .c { color: var(--text-muted); font-style: italic; } /* comment */
+  .n { color: var(--cyan); }        /* number / type */
+  .f { color: #ffd479; }            /* function */
+  .p { color: var(--accent); }      /* property/identifier highlight */
+
+  /* Sequence list */
+  .seq { list-style: none; padding: 0; margin: 0; }
+  .seq li {
+    padding: 8px 0 16px 28px;
+    position: relative;
+    border-left: 1px dashed transparent;
+  }
+  .seq li::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 12px;
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .seq li.amber::before { background: var(--amber); }
+  .seq li.pink::before  { background: var(--accent); }
+  .seq li.green::before { background: var(--green); }
+  .seq li.cyan::before  { background: var(--cyan); }
+  .seq li .title { font-weight: 500; margin-bottom: 4px; }
+  .seq li .body { color: var(--text-dim); font-size: 13px; }
+  .seq li .body code { color: var(--text); }
+
+  /* Callout */
+  .callout {
+    background: rgba(255, 193, 94, 0.06);
+    border: 1px solid rgba(255, 193, 94, 0.25);
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-top: 14px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .callout strong { color: var(--amber); display: block; margin-bottom: 4px; font-weight: 500; }
+  .callout.green  { background: rgba(94, 255, 157, 0.04); border-color: rgba(94, 255, 157, 0.22); }
+  .callout.green strong { color: var(--green); }
+  .callout.cyan   { background: rgba(94, 231, 255, 0.05); border-color: rgba(94, 231, 255, 0.22); }
+  .callout.cyan strong  { color: var(--cyan); }
+  .callout.pink   { background: rgba(255, 94, 168, 0.05); border-color: rgba(255, 94, 168, 0.22); }
+  .callout.pink strong  { color: var(--accent); }
+
+  /* Skew bars */
+  .bar-row { display: grid; grid-template-columns: 220px 1fr 60px; gap: 12px; align-items: center; padding: 8px 0; }
+  .bar-row .label { font-size: 13px; color: var(--text-dim); }
+  .bar-row .track { height: 8px; background: #0a0a0a; border-radius: 4px; overflow: hidden; }
+  .bar-row .fill { height: 100%; border-radius: 4px; }
+  .bar-row .val { text-align: right; font-family: var(--mono); font-size: 12px; color: var(--green); }
+  .bar-row.warn .val { color: var(--amber); }
+
+  /* Two-column diff */
+  .diff {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  .diff .col { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 14px 16px; }
+  .diff .col h4 { margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); font-weight: 500; }
+  .diff .col.old h4 { color: var(--red); }
+  .diff .col.new h4 { color: var(--green); }
+
+  /* Topology svg */
+  .topo-wrap { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 12px; padding: 20px; }
+
+  /* UI mockup */
+  .mock-frame {
+    background: linear-gradient(180deg, #0a0a0a 0%, #111 100%);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    max-width: 420px;
+    margin: 0 auto;
+  }
+  .mock-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: #161922; border-radius: 8px; margin-bottom: 8px; border: 1px solid var(--border-soft); }
+  .mock-row .left { display: flex; align-items: center; gap: 10px; }
+  .mock-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .mock-row .dot.on { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .mock-row .dot.off { background: var(--text-muted); }
+  .rssi { display: inline-flex; gap: 2px; align-items: flex-end; height: 12px; }
+  .rssi span { width: 3px; background: var(--text-muted); border-radius: 1px; }
+  .rssi span.on { background: var(--green); }
+
+  /* Grid layout mock */
+  .layout-grid {
+    display: grid;
+    gap: 6px;
+    background: #0a0a0a;
+    padding: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--border-soft);
+    aspect-ratio: 9/16;
+    max-width: 220px;
+  }
+  .layout-grid .cell {
+    background: linear-gradient(135deg, #1a2030, #161922);
+    border: 1px solid var(--border-soft);
+    border-radius: 5px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+
+  /* Live sim */
+  .sim-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .sim-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 12px;
+  }
+  .sim-btn:hover { background: #252932; }
+  .sim-btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .sim-btn.primary:hover { background: #ff7ab8; }
+  .sim-btn.danger { background: transparent; color: var(--red); border-color: var(--red); }
+  .sim-bags { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+  .sim-bag { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 10px; padding: 12px 14px; }
+  .sim-bag.connected { border-color: rgba(94, 255, 157, 0.35); }
+  .sim-bag h5 { margin: 0 0 4px; font-size: 13px; }
+  .sim-bag .meta { font-family: var(--mono); font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+  .sim-bag .stat { display: grid; grid-template-columns: 80px 1fr; gap: 6px; font-size: 11.5px; font-family: var(--mono); margin: 3px 0; }
+  .sim-bag .stat .k { color: var(--text-muted); font-style: normal; }
+  .sim-bag .stat .v { color: var(--cyan); }
+  .sim-bag .stat .v.green { color: var(--green); }
+  .sim-bag .stat .v.amber { color: var(--amber); }
+  .sim-bag .bag-actions { display: flex; gap: 6px; margin-top: 8px; }
+  .sim-log {
+    background: #050608;
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    height: 220px;
+    overflow-y: auto;
+    color: var(--text-dim);
+  }
+  .sim-log .ln { padding: 1px 0; white-space: pre; }
+  .sim-log .ln .ts { color: var(--text-muted); }
+  .sim-log .ln .sid { color: var(--accent); }
+  .sim-log .ln .ok { color: var(--green); }
+  .sim-log .ln .err { color: var(--red); }
+  .sim-log .ln .info { color: var(--cyan); }
+
+  /* Misc */
+  .kbd { font-family: var(--mono); font-size: 11px; background: #0a0a0a; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim); }
+  .phase-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: var(--mono); border: 1px solid var(--border); }
+  .phase-pill.p1 { background: rgba(94, 231, 255, 0.08); color: var(--cyan); border-color: rgba(94, 231, 255, 0.3); }
+  .phase-pill.p2 { background: rgba(179, 136, 255, 0.08); color: var(--violet); border-color: rgba(179, 136, 255, 0.3); }
+  .phase-pill.p3 { background: rgba(94, 255, 157, 0.08); color: var(--green); border-color: rgba(94, 255, 157, 0.3); }
+
+  .file-pill {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    background: var(--panel-2);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-soft);
+    color: var(--cyan);
+    white-space: nowrap;
+  }
+  .line-pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-left: 6px;
+  }
+  ul.clean { padding-left: 20px; margin: 6px 0; }
+  ul.clean li { padding: 3px 0; color: var(--text-dim); }
+  ul.clean li code { color: var(--text); }
+
+  /* Range input */
+  input[type="range"] { accent-color: var(--accent); }
+  select.sim-select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-family: var(--sans);
+    font-size: 12px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="page">
+  <h1>session.tsx — multi-bag plan</h1>
+  <span class="sub">phone → N × ESP32 · slot-scoped state · zero changes to uploadSession()</span>
+</header>
+
+<div class="tabs" id="tabs">
+  <button class="tab active" data-target="t1">BLE topology</button>
+  <button class="tab" data-target="t2">State migration</button>
+  <button class="tab" data-target="t3">Notify routing</button>
+  <button class="tab" data-target="t4">UI / UX</button>
+  <button class="tab" data-target="t5">Migration path</button>
+  <button class="tab" data-target="t6">Live sim</button>
+</div>
+
+<!-- ============================================================ -->
+<!-- TAB 1 — BLE TOPOLOGY                                          -->
+<!-- ============================================================ -->
+<section class="tabpanel active" id="t1">
+
+  <div class="section-label">Fan-out — one phone, three bags</div>
+
+  <div class="topo-wrap">
+    <svg viewBox="0 0 700 320" width="100%" style="display:block">
+      <defs>
+        <linearGradient id="link" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"  stop-color="#ff5ea8" stop-opacity="0.8"/>
+          <stop offset="100%" stop-color="#5ee7ff" stop-opacity="0.8"/>
+        </linearGradient>
+        <filter id="glow"><feGaussianBlur stdDeviation="2.5"/></filter>
+      </defs>
+
+      <!-- phone -->
+      <g transform="translate(80,110)">
+        <rect x="0" y="0" width="100" height="160" rx="14" ry="14" fill="#1c1f24" stroke="#3a3f4a" stroke-width="1.5"/>
+        <rect x="8" y="14" width="84" height="120" rx="4" fill="#0a0a0a"/>
+        <circle cx="50" cy="148" r="5" fill="#3a3f4a"/>
+        <text x="50" y="80" text-anchor="middle" fill="#5ee7ff" font-family="SF Mono, monospace" font-size="11">phone</text>
+        <text x="50" y="95" text-anchor="middle" fill="#9aa1ad" font-family="SF Mono, monospace" font-size="9">BLE central</text>
+        <text x="50" y="190" text-anchor="middle" fill="#e6e8ec" font-size="11">session.tsx</text>
+        <text x="50" y="205" text-anchor="middle" fill="#9aa1ad" font-size="10">router + state</text>
+      </g>
+
+      <!-- links -->
+      <path d="M 180 140 Q 320 70 460 70"  stroke="url(#link)" stroke-width="2" fill="none" filter="url(#glow)"/>
+      <path d="M 180 190 Q 320 190 460 190" stroke="url(#link)" stroke-width="2" fill="none" filter="url(#glow)"/>
+      <path d="M 180 240 Q 320 290 460 270" stroke="url(#link)" stroke-width="2" fill="none" filter="url(#glow)"/>
+
+      <!-- esp32s -->
+      <g transform="translate(460,40)">
+        <rect width="180" height="70" rx="10" fill="#15171b" stroke="#2a2e36"/>
+        <text x="14" y="22" fill="#ff5ea8" font-family="SF Mono, monospace" font-size="11">BAG-A · ESP32</text>
+        <text x="14" y="40" fill="#9aa1ad" font-family="SF Mono, monospace" font-size="10">id: tsii-7c9a · hw: II</text>
+        <text x="14" y="56" fill="#5eff9d" font-family="SF Mono, monospace" font-size="10">slot: slot_a · 25 Hz</text>
+      </g>
+      <g transform="translate(460,155)">
+        <rect width="180" height="70" rx="10" fill="#15171b" stroke="#2a2e36"/>
+        <text x="14" y="22" fill="#ff5ea8" font-family="SF Mono, monospace" font-size="11">BAG-B · ESP32</text>
+        <text x="14" y="40" fill="#9aa1ad" font-family="SF Mono, monospace" font-size="10">id: tsiii-2f01 · hw: III</text>
+        <text x="14" y="56" fill="#5eff9d" font-family="SF Mono, monospace" font-size="10">slot: slot_b · 120 Hz</text>
+      </g>
+      <g transform="translate(460,238)">
+        <rect width="180" height="70" rx="10" fill="#15171b" stroke="#2a2e36"/>
+        <text x="14" y="22" fill="#ff5ea8" font-family="SF Mono, monospace" font-size="11">BAG-C · ESP32</text>
+        <text x="14" y="40" fill="#9aa1ad" font-family="SF Mono, monospace" font-size="10">id: tsiii-9d43 · hw: III</text>
+        <text x="14" y="56" fill="#5eff9d" font-family="SF Mono, monospace" font-size="10">slot: slot_c · 120 Hz</text>
+      </g>
+
+      <!-- legend -->
+      <g transform="translate(40,30)">
+        <text fill="#9aa1ad" font-family="SF Mono, monospace" font-size="10">★ slotId is assigned by the phone — derived from</text>
+        <text y="14" fill="#9aa1ad" font-family="SF Mono, monospace" font-size="10">  the hello.id at connect time. Persistent within a session.</text>
+      </g>
+    </svg>
+  </div>
+
+  <div class="section-label">Three-bag BLE constraint analysis</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">connections</span>
+      <span class="desc">iOS allows ~7 simultaneous BLE centrals; Android typically 4–7 depending on chipset. Three bags is well within both. We never approach the cap — but we cap our own UI at 6 to leave headroom for the future heart-rate strap and the laser timing gate.</span>
+      <span class="when">3 / ~7</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">throughput</span>
+      <span class="desc">Model II (25 Hz, ~60 B/frame) = 1.5 KB/s per bag. Model III (120 Hz batch, ~600 B/packet @ 8 Hz) = ~5 KB/s per bag. 3 × Model III = 15 KB/s aggregate — well below the ~50 KB/s practical ceiling at conn interval 15 ms.</span>
+      <span class="when">15 KB/s</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">conn interval</span>
+      <span class="desc">Each link gets its own interval. The OS schedules connection events round-robin. With 3 links at 15 ms interval, each gets a 5 ms slot — adequate for current frame sizes. We don't need to negotiate intervals.</span>
+      <span class="when">15 ms</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">parallel writes</span>
+      <span class="desc">Phone → ESP32 writes (START, STOP, MODE) are independent per link. Firing three <code>writeUtf8()</code> calls without <code>await</code> in between hits the BLE stack as parallel queued ops — ~5–15 ms total spread instead of 3 × interval. Critical for sync.</span>
+      <span class="when amber">~10 ms skew</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">RSSI bookkeeping</span>
+      <span class="desc">Each connection has its own RSSI sample. UI shows per-bag bars so the coach can see one bag drifting before it disconnects. Native adapter exposes RSSI on the periodic scan; we poll at 1 Hz while connected.</span>
+      <span class="when">1 Hz</span>
+    </div>
+  </div>
+
+  <div class="section-label">Identifying A vs B vs C</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">primary key</span>
+      <span class="desc">The <code>obj.id</code> field on the hello packet (e.g. <code>tsii-7c9a</code>) is the <em>only</em> stable identifier — it survives reboots, name changes, and re-pairing. This is what we already write to <code>devices.id</code> in Supabase (see <code>handleNotify</code> @ <code>session.tsx:2066</code>). Use it as the slotId source of truth.</span>
+      <span class="when pink">hello.id</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">display label</span>
+      <span class="desc">BLE advertised name (<code>TS-7C9A</code> or <code>MPY-7C9A</code>) is what the coach sees in the picker and on each bag card. It can be renamed by the firmware, so never use it as a key. We already filter the picker by name prefix via <code>getBleNamePrefixes().all</code>.</span>
+      <span class="when cyan">BLE name</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">slotId</span>
+      <span class="desc">Phone-assigned. Either reuse <code>hello.id</code> verbatim (simplest) or generate <code>slot_a</code> / <code>slot_b</code> in order of connection. The latter survives a swapped bag in the same physical position; the former is portable across sessions. <strong>Recommendation: use <code>hello.id</code></strong> — one less mapping table to maintain.</span>
+      <span class="when green">= hello.id</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">athlete binding</span>
+      <span class="desc">Athlete-to-slot mapping is set by the coach in the device manager panel (Tab 4). Stored on the <code>SlotState.athleteId</code> field. Bags can be re-assigned between sessions without touching the slotId.</span>
+      <span class="when">user-set</span>
+    </div>
+  </div>
+
+  <div class="callout pink">
+    <strong>Why hello.id and not BLE name</strong>
+    The BLE-name approach was tempting because the user already sees it in the picker. But we already had a near-miss in production where a firmware update changed the name prefix from <code>TS-</code> to <code>MPY-</code> and broke device claiming. The <code>obj.id</code> field is generated from the ESP32's MAC and never changes — same value the <code>devices</code> table already uses as its primary key.
+  </div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- TAB 2 — STATE MIGRATION                                       -->
+<!-- ============================================================ -->
+<section class="tabpanel" id="t2">
+
+  <div class="section-label">The shape change in one line</div>
+
+  <div class="diff">
+    <div class="col old">
+      <h4>before — single device</h4>
+<pre class="code"><span class="k">const</span> connRef       = <span class="f">useRef</span>&lt;<span class="n">AdapterConnection</span> | <span class="k">null</span>&gt;(<span class="k">null</span>);
+<span class="k">const</span> assemblerRef  = <span class="f">useRef</span>(<span class="k">new</span> <span class="f">ChunkAssembler</span>());
+<span class="k">const</span> deviceInfoRef = <span class="f">useRef</span>&lt;<span class="n">DeviceInfo</span>&gt;(<span class="k">null</span>);
+
+<span class="c">// session-wide singletons</span>
+<span class="k">const</span> framesRef    = <span class="f">useRef</span>&lt;<span class="n">BleFrame</span>[]&gt;([]);
+<span class="k">const</span> captureRef   = <span class="f">useRef</span>(<span class="k">false</span>);
+<span class="k">const</span> startTimeRef = <span class="f">useRef</span>&lt;<span class="n">number</span> | <span class="k">null</span>&gt;(<span class="k">null</span>);
+<span class="k">const</span> sessionIdRef = <span class="f">useRef</span>(<span class="s">""</span>);
+
+<span class="c">// every mode ref is global — one per app</span>
+<span class="k">const</span> rxTimer     = <span class="f">useRef</span>(...);
+<span class="k">const</span> tgtTimer    = <span class="f">useRef</span>(...);
+<span class="k">const</span> volTimer    = <span class="f">useRef</span>(...);
+<span class="k">const</span> sessionModeRef = <span class="f">useRef</span>(...);</pre>
+    </div>
+    <div class="col new">
+      <h4>after — one slot per bag</h4>
+<pre class="code"><span class="k">const</span> slotsRef = <span class="f">useRef</span>&lt;<span class="n">Map</span>&lt;<span class="n">SlotId</span>, <span class="n">SlotState</span>&gt;&gt;(<span class="k">new</span> <span class="n">Map</span>());
+
+<span class="c">// session-wide things stay global</span>
+<span class="k">const</span> captureRef   = <span class="f">useRef</span>(<span class="k">false</span>);
+<span class="k">const</span> startTimeRef = <span class="f">useRef</span>&lt;<span class="n">number</span> | <span class="k">null</span>&gt;(<span class="k">null</span>);
+<span class="k">const</span> sessionIdRef = <span class="f">useRef</span>(<span class="s">""</span>);
+
+<span class="c">// everything else moves into SlotState</span>
+<span class="c">// — connection, assembler, deviceInfo</span>
+<span class="c">// — frame buffer, mode + mode refs</span>
+<span class="c">// — mode timers, pending stamps</span>
+<span class="c">// — athleteId, RSSI</span></pre>
+    </div>
+  </div>
+
+  <div class="section-label">The full SlotState type</div>
+
+<pre class="code"><span class="k">type</span> <span class="n">SlotId</span> = <span class="n">string</span>;  <span class="c">// = hello.id, e.g. "tsii-7c9a"</span>
+
+<span class="k">interface</span> <span class="n">SlotState</span> {
+  <span class="c">// ── identity ──────────────────────────────────────────────────────────</span>
+  id:           <span class="n">SlotId</span>;            <span class="c">// = hello.id, source of truth</span>
+  bleName:      <span class="n">string</span>;            <span class="c">// "TS-7C9A" — display only</span>
+  athleteId:    <span class="n">string</span> | <span class="k">null</span>;     <span class="c">// coach-assigned in device manager</span>
+  athleteName:  <span class="n">string</span> | <span class="k">null</span>;     <span class="c">// cached for header rendering</span>
+
+  <span class="c">// ── connection (was: connRef, assemblerRef, deviceInfoRef) ───────────</span>
+  conn:         <span class="n">AdapterConnection</span> | <span class="k">null</span>;
+  assembler:    <span class="n">ChunkAssembler</span>;    <span class="c">// per-slot — frames don't interleave</span>
+  device:       <span class="n">DeviceInfo</span> | <span class="k">null</span>; <span class="c">// hw, fw, scanPeriodMs, samplingHz</span>
+  rssi:         <span class="n">number</span> | <span class="k">null</span>;     <span class="c">// dBm, polled at 1 Hz</span>
+  status:       <span class="s">"connecting"</span> | <span class="s">"connected"</span> | <span class="s">"disconnected"</span> | <span class="s">"error"</span>;
+
+  <span class="c">// ── per-slot mode (was: sessionMode + sessionModeRef) ────────────────</span>
+  mode:         <span class="n">SessionMode</span>;        <span class="c">// "power" | "reaction" | ... — per-bag override</span>
+
+  <span class="c">// ── capture buffer (was: framesRef, frameIndex) ──────────────────────</span>
+  frames:       <span class="n">BleFrame</span>[];
+  frameIndex:   <span class="n">number</span>;
+
+  <span class="c">// ── mode timers (was: rxTimer, tgtTimer, volTimer, volTickTimer) ────</span>
+  timers: {
+    rx:       <span class="n">ReturnType</span>&lt;<span class="k">typeof</span> setTimeout&gt; | <span class="k">null</span>;
+    tgt:      <span class="n">ReturnType</span>&lt;<span class="k">typeof</span> setTimeout&gt; | <span class="k">null</span>;
+    vol:      <span class="n">ReturnType</span>&lt;<span class="k">typeof</span> setTimeout&gt; | <span class="k">null</span>;
+    volTick:  <span class="n">ReturnType</span>&lt;<span class="k">typeof</span> setInterval&gt; | <span class="k">null</span>;
+  };
+
+  <span class="c">// ── reaction (was: rxPhaseRef, rxSignalAt, rxSumMs, rxAttemptsRef) ──</span>
+  rx: { phase: <span class="n">string</span>; signalAt: <span class="n">number</span> | <span class="k">null</span>; sumMs: <span class="n">number</span>; attempts: <span class="n">number</span>; bestMs: <span class="n">number</span> | <span class="k">null</span>; };
+
+  <span class="c">// ── target (was: tgt* family @ session.tsx:1813-1824) ────────────────</span>
+  tgt: { phase: <span class="n">string</span>; zone: <span class="n">ZoneTarget</span> | <span class="k">null</span>; signalAt: <span class="n">number</span> | <span class="k">null</span>; sumMs: <span class="n">number</span>; correctSumMs: <span class="n">number</span>; attempts: <span class="n">number</span>; hits: <span class="n">number</span>; bestAllMs: <span class="n">number</span> | <span class="k">null</span>; bestCorrectMs: <span class="n">number</span> | <span class="k">null</span>; };
+
+  <span class="c">// ── volume (was: vol* family @ session.tsx:1787-1795) ────────────────</span>
+  vol: { phase: <span class="n">string</span>; signalAt: <span class="n">number</span> | <span class="k">null</span>; windowEndsAt: <span class="n">number</span> | <span class="k">null</span>; sum: <span class="n">number</span>; attempts: <span class="n">number</span>; hits: <span class="n">number</span>; windowIdx: <span class="n">number</span>; windowHitSeq: <span class="n">number</span>; };
+
+  <span class="c">// ── accuracy (was: accHitsRef, accSumRef) ────────────────────────────</span>
+  acc: { hits: <span class="n">number</span>; sum: <span class="n">number</span>; avg: <span class="n">number</span>; };
+
+  <span class="c">// ── per-frame stamps (was: pending*Ref family @ ~1851-1857) ──────────</span>
+  pending: { rxMs: <span class="n">number</span> | <span class="k">null</span>; tgtZone: <span class="n">ZoneTarget</span> | <span class="k">null</span>; tgtCorrect: <span class="n">boolean</span> | <span class="k">null</span>; volWindowIdx: <span class="n">number</span> | <span class="k">null</span>; volHitSeq: <span class="n">number</span> | <span class="k">null</span>; };
+}</pre>
+
+  <div class="section-label">The createSlot() initializer</div>
+
+<pre class="code"><span class="c">// Called from connectBle() after a successful hello packet arrives.</span>
+<span class="c">// The hello.id is the slotId — see session.tsx:2066 where it's already</span>
+<span class="c">// extracted for the devices table upsert.</span>
+<span class="k">function</span> <span class="f">createSlot</span>(hello: { id: <span class="n">string</span>; fw: <span class="n">string</span>; hw?: <span class="n">string</span>; mode?: <span class="n">string</span>; rows: <span class="n">number</span>; cols: <span class="n">number</span>; },
+                    bleName: <span class="n">string</span>,
+                    conn:    <span class="n">AdapterConnection</span>): <span class="n">SlotState</span> {
+  <span class="k">const</span> isModelIII = hello.hw === <span class="s">"III"</span>;
+  <span class="k">return</span> {
+    id:          hello.id,
+    bleName,
+    athleteId:   <span class="k">null</span>,
+    athleteName: <span class="k">null</span>,
+    conn,
+    assembler:   <span class="k">new</span> <span class="f">ChunkAssembler</span>(),
+    device: {
+      id:           hello.id,
+      fw:           hello.fw,
+      hw:           hello.hw ?? <span class="s">"II"</span>,
+      rows:         hello.rows,
+      cols:         hello.cols,
+      mode:         hello.mode ?? <span class="s">"single"</span>,
+      scanPeriodMs: isModelIII ? <span class="n">8</span>  : <span class="n">37</span>,
+      samplingHz:   isModelIII ? <span class="n">120</span> : <span class="n">25</span>,
+    },
+    rssi:        <span class="k">null</span>,
+    status:      <span class="s">"connected"</span>,
+    mode:        sessionModeGlobal,    <span class="c">// inherit from global picker; can be overridden per-bag</span>
+    frames:      [],
+    frameIndex:  <span class="n">0</span>,
+    timers:      { rx: <span class="k">null</span>, tgt: <span class="k">null</span>, vol: <span class="k">null</span>, volTick: <span class="k">null</span> },
+    rx:          { phase: <span class="s">"idle"</span>, signalAt: <span class="k">null</span>, sumMs: <span class="n">0</span>, attempts: <span class="n">0</span>, bestMs: <span class="k">null</span> },
+    tgt:         { phase: <span class="s">"idle"</span>, zone: <span class="k">null</span>, signalAt: <span class="k">null</span>, sumMs: <span class="n">0</span>, correctSumMs: <span class="n">0</span>,
+                   attempts: <span class="n">0</span>, hits: <span class="n">0</span>, bestAllMs: <span class="k">null</span>, bestCorrectMs: <span class="k">null</span> },
+    vol:         { phase: <span class="s">"idle"</span>, signalAt: <span class="k">null</span>, windowEndsAt: <span class="k">null</span>, sum: <span class="n">0</span>,
+                   attempts: <span class="n">0</span>, hits: <span class="n">0</span>, windowIdx: <span class="n">0</span>, windowHitSeq: <span class="n">0</span> },
+    acc:         { hits: <span class="n">0</span>, sum: <span class="n">0</span>, avg: <span class="n">0</span> },
+    pending:     { rxMs: <span class="k">null</span>, tgtZone: <span class="k">null</span>, tgtCorrect: <span class="k">null</span>, volWindowIdx: <span class="k">null</span>, volHitSeq: <span class="k">null</span> },
+  };
+}</pre>
+
+  <div class="section-label">Identifier-by-identifier mapping</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">connRef</span>
+      <span class="desc"><span class="line-pill">session.tsx:1706</span> One adapter connection → <code>slotsRef.current.get(slotId).conn</code>. All call sites (<code>adapterDisconnect(connRef.current)</code> at 2082, <code>connRef.current = conn</code> at 2428, <code>writeUtf8(connRef.current, ...)</code> at 2558/2565/2575) become slot-scoped.</span>
+      <span class="when pink">→ slot.conn</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">assemblerRef</span>
+      <span class="desc"><span class="line-pill">session.tsx:1707</span> Critical: ChunkAssembler holds partial JSON between BLE notifications. Cannot be shared — interleaved frames from two bags would corrupt the buffer. One assembler per slot, read inside <code>handleNotify</code> via the captured slotId.</span>
+      <span class="when pink">→ slot.assembler</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">deviceInfoRef</span>
+      <span class="desc"><span class="line-pill">session.tsx:1710</span> <code>DeviceInfo</code> is set in the hello handler (~2056) and read for hw/fw/scanPeriodMs. Per-slot already in spirit — just becomes <code>slot.device</code>.</span>
+      <span class="when pink">→ slot.device</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">framesRef · frameIndex</span>
+      <span class="desc"><span class="line-pill">session.tsx:1838-1839</span> Frame buffer pushed at 2260 and indexed at 2259. Per-slot buffer means <code>uploadSession()</code> at 2709 can run once per slot in <code>Promise.all()</code> with zero schema changes — each slot's <code>frames</code> array is already what <code>uploadSession.opts.frames</code> expects.</span>
+      <span class="when pink">→ slot.frames</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">sessionMode · sessionModeRef</span>
+      <span class="desc"><span class="line-pill">session.tsx:1757, 1846</span> Global mode picker stays as a React state for the top-level UI (default for new slots), but each <code>SlotState.mode</code> overrides it — coach can run Bag A in reaction and Bag B in volume in the same session. <code>sessionModeRef.current</code> reads become <code>slot.mode</code>.</span>
+      <span class="when pink">→ slot.mode</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">rx* · tgt* · vol* · acc*</span>
+      <span class="desc"><span class="line-pill">session.tsx:1775-1827</span> All 30+ per-mode refs collapse into 4 sub-objects on <code>SlotState</code>. The big mutation blocks at 2141 (reaction), 2168 (volume), 2194 (target), 2245 (accuracy) all read/write the same slot's namespace.</span>
+      <span class="when pink">→ slot.{rx,tgt,vol,acc}</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">pending*Ref</span>
+      <span class="desc"><span class="line-pill">session.tsx:1851-1857</span> Per-frame stamps consumed at 2274-2279 when pushing into <code>framesRef</code>. Since the consumer moves to per-slot, these go with it — no cross-slot stamp bleed.</span>
+      <span class="when pink">→ slot.pending</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">captureRef · startTimeRef · sessionIdRef</span>
+      <span class="desc"><span class="line-pill">session.tsx:1765-1842</span> These stay <strong>global</strong>. One session, one start time, one sessionId for the upload; coach taps "Start all" once and every slot's frames share the same time anchor. (Cross-bag RT comparison subtracts the per-slot clockDelta.)</span>
+      <span class="when green">stays global</span>
+    </div>
+  </div>
+
+  <div class="callout cyan">
+    <strong>Why a Map and not an object</strong>
+    <code>Map</code> preserves insertion order (so "first connected" → top of the panel works naturally), gives us O(1) <code>get/set/delete</code>, and iterates cleanly with <code>for (const [slotId, slot] of slotsRef.current)</code>. A plain object would technically work but loses iteration ergonomics and tempts you to use the slotId as a key without thinking about whether the key is safe (it is — but Map signals intent).
+  </div>
+
+  <div class="callout">
+    <strong>One subtlety: React state vs ref for the slot map</strong>
+    The mutable source of truth lives in <code>slotsRef.current</code> (ref pattern — same reason <code>captureRef</code> exists at 1842). For rendering, mirror it into a state map updated via <code>setSlots(new Map(slotsRef.current))</code> after any mutation that affects the UI. This is the same dual-write pattern already used for <code>volHitsRef</code> + <code>setVolHits</code> at 2183-2184.
+  </div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- TAB 3 — NOTIFY ROUTING                                        -->
+<!-- ============================================================ -->
+<section class="tabpanel" id="t3">
+
+  <div class="section-label">The key insight</div>
+
+  <div class="callout green">
+    <strong>One handleNotify per slot — slotId captured by closure, slot state read from ref</strong>
+    <code>adapterStartNotifications(conn, TX, (val) => handleNotify(slotId, val))</code> — the <code>slotId</code> is a <em>string primitive</em> closed over at subscription time. Strings are immutable, so the captured value can't go stale. Inside <code>handleNotify</code>, all mutable slot data is read fresh via <code>slotsRef.current.get(slotId)</code> — the same ref-pattern <code>handleNotify</code> already uses today for <code>captureRef.current</code> and <code>sessionModeRef.current</code> (see session.tsx:2031, memoised with <code>useCallback([])</code>).
+  </div>
+
+  <div class="section-label">Subscription site — connectBle()</div>
+
+<pre class="code"><span class="c">// Today @ session.tsx:2428-2431 — single-device path</span>
+connRef.current = conn;
+<span class="k">await</span> adapterStartNotifications(conn, TX, handleNotify);
+
+<span class="c">// After — per-slot subscription, slotId captured in the arrow</span>
+<span class="k">const</span> slotId = hello.id;
+<span class="k">const</span> slot   = createSlot(hello, bleName, conn);
+slotsRef.current.<span class="f">set</span>(slotId, slot);
+<span class="f">setSlots</span>(<span class="k">new</span> Map(slotsRef.current));   <span class="c">// fan-out to UI</span>
+
+<span class="k">await</span> adapterStartNotifications(
+  conn,
+  TX,
+  (val) =&gt; handleNotify(slotId, val)   <span class="c">// ◄ slotId frozen here, forever</span>
+);</pre>
+
+  <div class="section-label">handleNotify signature change</div>
+
+<pre class="code"><span class="c">// Today — reads everything from module-scoped refs</span>
+<span class="k">const</span> handleNotify = <span class="f">useCallback</span>((value: <span class="n">DataView</span>) =&gt; {
+  assemblerRef.current.maybeTimeout();
+  <span class="k">const</span> maybeJson = assemblerRef.current.push(text);
+  <span class="c">// ... all mutations target the same global refs ...</span>
+}, []);
+
+<span class="c">// After — slotId from closure, slot from ref</span>
+<span class="k">const</span> handleNotify = <span class="f">useCallback</span>((slotId: <span class="n">SlotId</span>, value: <span class="n">DataView</span>) =&gt; {
+  <span class="k">const</span> slot = slotsRef.current.<span class="f">get</span>(slotId);
+  <span class="k">if</span> (!slot) <span class="k">return</span>;                  <span class="c">// disconnected mid-flight; drop frame</span>
+
+  <span class="k">const</span> text = <span class="k">new</span> <span class="f">TextDecoder</span>().<span class="f">decode</span>(value).trim();
+  slot.assembler.<span class="f">maybeTimeout</span>();
+  <span class="k">const</span> maybeJson = slot.assembler.<span class="f">push</span>(text);
+  <span class="k">if</span> (!maybeJson) <span class="k">return</span>;
+
+  <span class="k">let</span> obj: <span class="k">any</span>;
+  <span class="k">try</span> { obj = <span class="n">JSON</span>.<span class="f">parse</span>(maybeJson); } <span class="k">catch</span> { <span class="k">return</span>; }
+
+  <span class="k">if</span> (obj.type === <span class="s">"hello"</span>) {
+    <span class="c">// hello arrives after createSlot, so update device info in place</span>
+    slot.device = { /* ... */ };
+    <span class="k">return</span>;
+  }
+
+  <span class="c">// ── all the per-mode logic at 2141 / 2168 / 2194 / 2245 ──</span>
+  <span class="c">// becomes slot.rx / slot.tgt / slot.vol / slot.acc</span>
+  <span class="k">if</span> (captureRef.current &amp;&amp; slot.mode === <span class="s">"reaction"</span>) {
+    <span class="c">// was: rxPhaseRef.current → slot.rx.phase</span>
+    <span class="c">// was: rxSignalAt.current → slot.rx.signalAt</span>
+    <span class="c">// was: rxSumMs.current    → slot.rx.sumMs</span>
+  }
+}, []);  <span class="c">// stays empty — slotsRef + captureRef are refs, never stale</span></pre>
+
+  <div class="section-label">Why the closure is safe</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">slotId</span>
+      <span class="desc"><strong>String primitive, captured at subscribe time.</strong> JS strings are immutable — <code>slotId</code> inside the arrow body always equals the value at the time <code>adapterStartNotifications</code> was called. No state, no ref, nothing to go stale. This is the central trick of the whole refactor.</span>
+      <span class="when green">immutable</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">slotsRef.current.get(slotId)</span>
+      <span class="desc"><strong>Fresh read every frame.</strong> <code>slotsRef</code> is the same kind of ref as <code>captureRef</code> — React doesn't re-create it across renders, so the contents are always current. The slot itself is a mutable object; mutating its fields mutates what every future <code>.get()</code> returns.</span>
+      <span class="when green">always current</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">captureRef · startTimeRef · sessionIdRef</span>
+      <span class="desc"><strong>Stays exactly as today.</strong> These are session-global and already follow the ref pattern. <code>handleNotify</code> reads them at 2141/2245/2258 the same way it always has.</span>
+      <span class="when cyan">unchanged</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">disconnect mid-frame</span>
+      <span class="desc"><strong>Self-healing.</strong> If the slot was removed from the Map between when the BLE notification fired and when we processed it, <code>slot</code> is <code>undefined</code> and we early-return. No crashes, no orphan state.</span>
+      <span class="when green">safe</span>
+    </div>
+  </div>
+
+  <div class="section-label">Broadcast vs targeted commands</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">broadcast</span>
+      <span class="desc"><strong>START_SYNC, STOP_SYNC, OTA "ota_begin"</strong> — iterate <code>slotsRef.current.values()</code>, fire <code>writeUtf8(slot.conn, payload)</code> with no <code>await</code> between writes, then <code>Promise.allSettled()</code> to confirm delivery. Same skew-minimisation trick as the sync-mechanics doc: parallel BLE writes hit the connection-interval floor (~7.5–15 ms) instead of stacking sequentially.</span>
+      <span class="when pink">all slots</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">targeted</span>
+      <span class="desc"><strong>Per-bag MODE change, individual STOP, RSSI poll, OTA "ota_data" chunks</strong> — <code>const slot = slotsRef.current.get(slotId); await writeUtf8(slot.conn, payload)</code>. Single write, awaited normally.</span>
+      <span class="when cyan">one slot</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">conditional</span>
+      <span class="desc"><strong>Save sheet</strong> — coach can toggle which bags to save. Filter <code>slotsRef.current.values()</code> by the toggle state, then <code>Promise.all(filtered.map(uploadSession))</code>. One Supabase session row per bag (athlete-attributed).</span>
+      <span class="when amber">subset</span>
+    </div>
+  </div>
+
+<pre class="code"><span class="c">// Broadcast helper — matches the sync-mechanics pattern</span>
+<span class="k">async function</span> <span class="f">broadcastToAllSlots</span>(payload: <span class="n">string</span>): <span class="n">Promise</span>&lt;<span class="k">void</span>&gt; {
+  <span class="k">const</span> writes: <span class="n">Promise</span>&lt;<span class="k">void</span>&gt;[] = [];
+  <span class="k">for</span> (<span class="k">const</span> slot <span class="k">of</span> slotsRef.current.<span class="f">values</span>()) {
+    <span class="k">if</span> (slot.status !== <span class="s">"connected"</span>) <span class="k">continue</span>;
+    writes.<span class="f">push</span>(<span class="f">writeUtf8</span>(slot.conn!, RX, payload));   <span class="c">// no await ← key</span>
+  }
+  <span class="k">await</span> <span class="n">Promise</span>.<span class="f">allSettled</span>(writes);
+}
+
+<span class="c">// Targeted helper</span>
+<span class="k">async function</span> <span class="f">sendToSlot</span>(slotId: <span class="n">SlotId</span>, payload: <span class="n">string</span>): <span class="n">Promise</span>&lt;<span class="k">void</span>&gt; {
+  <span class="k">const</span> slot = slotsRef.current.<span class="f">get</span>(slotId);
+  <span class="k">if</span> (!slot?.conn) <span class="k">return</span>;
+  <span class="k">await</span> <span class="f">writeUtf8</span>(slot.conn, RX, payload);
+}</pre>
+
+  <div class="section-label">The tricky bit — per-slot mode timers</div>
+
+  <div class="callout">
+    <strong>Three separate setTimeout chains, three separate clears</strong>
+    Today's cleanup at <code>session.tsx:2023-2026</code> clears one set of timers when <code>sessionActive</code> flips false:
+    <code>clearTimeout(rxTimer.current)</code>, <code>clearTimeout(tgtTimer.current)</code>, etc. With per-bag modes, each slot can have its own active timer chain — Bag A counting down to a reaction signal while Bag B is mid-target-result.
+  </div>
+
+<pre class="code"><span class="c">// Replacement for the cleanup useEffect at 2020-2027</span>
+useEffect(() =&gt; {
+  <span class="k">if</span> (sessionActive) <span class="k">return</span>;
+  <span class="k">for</span> (<span class="k">const</span> slot <span class="k">of</span> slotsRef.current.<span class="f">values</span>()) {
+    <span class="k">if</span> (slot.timers.rx)      <span class="f">clearTimeout</span>(slot.timers.rx);
+    <span class="k">if</span> (slot.timers.tgt)     <span class="f">clearTimeout</span>(slot.timers.tgt);
+    <span class="k">if</span> (slot.timers.vol)     <span class="f">clearTimeout</span>(slot.timers.vol);
+    <span class="k">if</span> (slot.timers.volTick) <span class="f">clearInterval</span>(slot.timers.volTick);
+    slot.timers = { rx: <span class="k">null</span>, tgt: <span class="k">null</span>, vol: <span class="k">null</span>, volTick: <span class="k">null</span> };
+  }
+}, [sessionActive]);
+
+<span class="c">// And a helper for disconnect — same shape, just one slot</span>
+<span class="k">function</span> <span class="f">clearSlotTimers</span>(slotId: <span class="n">SlotId</span>) {
+  <span class="k">const</span> slot = slotsRef.current.<span class="f">get</span>(slotId);
+  <span class="k">if</span> (!slot) <span class="k">return</span>;
+  <span class="k">if</span> (slot.timers.rx)      <span class="f">clearTimeout</span>(slot.timers.rx);
+  <span class="k">if</span> (slot.timers.tgt)     <span class="f">clearTimeout</span>(slot.timers.tgt);
+  <span class="k">if</span> (slot.timers.vol)     <span class="f">clearTimeout</span>(slot.timers.vol);
+  <span class="k">if</span> (slot.timers.volTick) <span class="f">clearInterval</span>(slot.timers.volTick);
+  slot.timers = { rx: <span class="k">null</span>, tgt: <span class="k">null</span>, vol: <span class="k">null</span>, volTick: <span class="k">null</span> };
+}</pre>
+
+  <div class="callout pink">
+    <strong>Frame-handler closures inside the mode blocks</strong>
+    Today's <code>setTimeout(() => scheduleNextTarget(), 2400)</code> at line 2236 schedules a callback that mutates the same global refs. After the migration, each <code>scheduleNextTarget</code> call needs a slotId — easiest is to make it a function on the closure: <code>const scheduleNextTarget = (slotId) => { ... }</code> at module level, called as <code>setTimeout(() => scheduleNextTarget(slotId), 2400)</code>. The slotId binds the right slot's <code>tgt</code> sub-object even if the user disconnects and reconnects mid-session.
+  </div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- TAB 4 — UI / UX                                               -->
+<!-- ============================================================ -->
+<section class="tabpanel" id="t4">
+
+  <div class="section-label">Device manager panel — collapsible, sits above the grid</div>
+
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start;">
+    <div>
+      <div class="mock-frame">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding: 6px 8px 12px; border-bottom: 1px solid var(--border-soft); margin-bottom: 10px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size: 13px; font-weight: 500;">Bags</span>
+            <span style="font-family: var(--mono); font-size: 11px; color: var(--green);">3 / 6 connected</span>
+          </div>
+          <button class="sim-btn" style="font-size: 11px; padding: 3px 8px;">▾</button>
+        </div>
+
+        <div class="mock-row">
+          <div class="left">
+            <span class="dot on"></span>
+            <div>
+              <div style="font-size: 12.5px; font-weight: 500;">Bag A · TS-7C9A</div>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">athlete: Marcus T. · reaction</div>
+            </div>
+          </div>
+          <span class="rssi" title="−58 dBm">
+            <span class="on" style="height:4px"></span><span class="on" style="height:6px"></span><span class="on" style="height:8px"></span><span class="on" style="height:10px"></span><span style="height:12px"></span>
+          </span>
+        </div>
+
+        <div class="mock-row">
+          <div class="left">
+            <span class="dot on"></span>
+            <div>
+              <div style="font-size: 12.5px; font-weight: 500;">Bag B · MPY-2F01</div>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">athlete: Priya K. · volume</div>
+            </div>
+          </div>
+          <span class="rssi" title="−71 dBm">
+            <span class="on" style="height:4px"></span><span class="on" style="height:6px"></span><span class="on" style="height:8px"></span><span style="height:10px"></span><span style="height:12px"></span>
+          </span>
+        </div>
+
+        <div class="mock-row">
+          <div class="left">
+            <span class="dot on"></span>
+            <div>
+              <div style="font-size: 12.5px; font-weight: 500;">Bag C · MPY-9D43</div>
+              <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">athlete: Jordan W. · target</div>
+            </div>
+          </div>
+          <span class="rssi" title="−63 dBm">
+            <span class="on" style="height:4px"></span><span class="on" style="height:6px"></span><span class="on" style="height:8px"></span><span class="on" style="height:10px"></span><span style="height:12px"></span>
+          </span>
+        </div>
+
+        <button class="sim-btn" style="width: 100%; margin-top: 6px; padding: 8px;">+ Add bag</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="card-row" style="grid-template-columns: 1fr; gap: 4px; padding: 4px 0;">
+        <div class="cmd">collapsed by default</div>
+        <div class="desc">When ≥1 bag is connected, the header collapses to a single chip: <code>3 bags · all green</code>. Coach taps to expand. Always-visible footprint = ~36 px.</div>
+      </div>
+      <div class="card-row" style="grid-template-columns: 1fr; gap: 4px; padding: 4px 0;">
+        <div class="cmd">RSSI bars</div>
+        <div class="desc">5-bar scale, recomputed every 1 s. Yellow at &lt; −80 dBm, red at &lt; −90. Hover for raw dBm + last-frame timestamp.</div>
+      </div>
+      <div class="card-row" style="grid-template-columns: 1fr; gap: 4px; padding: 4px 0;">
+        <div class="cmd">per-row tap</div>
+        <div class="desc">Expands an inline drawer with: athlete picker (replaces the bag's binding), mode picker (overrides global mode), force-disconnect button, and the per-slot stats from <code>SlotState.{rx,vol,acc,tgt}</code>.</div>
+      </div>
+      <div class="card-row" style="grid-template-columns: 1fr; gap: 4px; padding: 4px 0;">
+        <div class="cmd">dot color</div>
+        <div class="desc">Green = connected. Pulsing amber = connecting/handshake. Red = disconnected (kept for 5 s before fade-out so the coach notices).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-label">Grid layout — adapts to bag count</div>
+
+  <div style="display:grid; grid-template-columns: repeat(4, 1fr); gap: 14px;">
+    <div>
+      <div class="layout-grid" style="grid-template: '1' / '1';">
+        <div class="cell">1 bag</div>
+      </div>
+      <div style="text-align:center; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);">1 → full</div>
+    </div>
+    <div>
+      <div class="layout-grid" style="grid-template: '1 2' / '1 1';">
+        <div class="cell">A</div><div class="cell">B</div>
+      </div>
+      <div style="text-align:center; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);">2 → side-by-side</div>
+    </div>
+    <div>
+      <div class="layout-grid" style="grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;">
+        <div class="cell">A</div><div class="cell">B</div>
+        <div class="cell">C</div><div class="cell">D</div>
+      </div>
+      <div style="text-align:center; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);">3–4 → 2 × 2</div>
+    </div>
+    <div>
+      <div class="layout-grid" style="grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 4px;">
+        <div class="cell" style="font-size:9px;">A</div><div class="cell" style="font-size:9px;">B</div><div class="cell" style="font-size:9px;">C</div>
+        <div class="cell" style="font-size:9px;">D</div><div class="cell" style="font-size:9px;">E</div><div class="cell" style="opacity:.4; font-size:9px;">←→</div>
+      </div>
+      <div style="text-align:center; margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);">5+ → carousel</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 18px;">
+    <div class="card-row">
+      <span class="cmd">1 bag</span>
+      <span class="desc">Single fullscreen grid — identical to today's UI. No layout change for solo athletes.</span>
+      <span class="when green">no regression</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">2 bags</span>
+      <span class="desc">Two vertical halves on portrait, two horizontal halves on landscape tablets. Each half has its own ArcTimer, mode chip, and stat strip.</span>
+      <span class="when cyan">~50% area each</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">3–4 bags</span>
+      <span class="desc">2 × 2 grid. The 3-bag case leaves one empty cell with the "+ Add bag" prompt. Cells shrink the column labels but keep ripples + feed.</span>
+      <span class="when cyan">25% area each</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">5+ bags</span>
+      <span class="desc">Horizontal carousel with 4 visible. Swipe or arrow keys to scroll. The off-screen bags still capture in the background — the carousel is render-only.</span>
+      <span class="when amber">render-only off-screen</span>
+    </div>
+  </div>
+
+  <div class="section-label">Global vs per-bag controls</div>
+
+  <div class="diff">
+    <div class="col">
+      <h4 style="color: var(--cyan);">global — top bar</h4>
+      <ul class="clean">
+        <li><strong>Start all / Stop all</strong> — broadcasts START_SYNC / STOP_SYNC.</li>
+        <li><strong>Session mode picker</strong> — sets the default for newly connected slots. Doesn't override active slots.</li>
+        <li><strong>Session timer</strong> — single global <code>elapsedMs</code>, fed by the existing <code>startTimeRef</code>.</li>
+        <li><strong>Save sheet</strong> — opens the per-bag confirmation panel.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <h4 style="color: var(--accent);">per-bag — inside each card</h4>
+      <ul class="clean">
+        <li><strong>Mode chip</strong> — taps open a per-slot mode picker. Sends a targeted MODE command.</li>
+        <li><strong>Athlete picker</strong> — assigns or swaps the athlete bound to this slot.</li>
+        <li><strong>Force disconnect</strong> — drops just this slot, leaves others running.</li>
+        <li><strong>Per-bag stats</strong> — RT, hits, peak mV, accuracy — pulled from this slot's <code>SlotState</code>.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="section-label">Save confirmation sheet</div>
+
+  <div class="mock-frame" style="max-width: 480px;">
+    <div style="padding: 8px 8px 12px; border-bottom: 1px solid var(--border-soft); margin-bottom: 12px;">
+      <div style="font-size: 14px; font-weight: 500;">Save session</div>
+      <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">3 bags ran. Choose which to upload.</div>
+    </div>
+
+    <div class="mock-row">
+      <div class="left">
+        <input type="checkbox" checked style="accent-color: var(--green);">
+        <div>
+          <div style="font-size: 12.5px;">Marcus T. — reaction</div>
+          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">Bag A · 47 frames · best 312 ms</div>
+        </div>
+      </div>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--green);">ready</span>
+    </div>
+
+    <div class="mock-row">
+      <div class="left">
+        <input type="checkbox" checked style="accent-color: var(--green);">
+        <div>
+          <div style="font-size: 12.5px;">Priya K. — volume</div>
+          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">Bag B · 312 frames · 5 windows</div>
+        </div>
+      </div>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--green);">ready</span>
+    </div>
+
+    <div class="mock-row">
+      <div class="left">
+        <input type="checkbox" style="accent-color: var(--green);">
+        <div>
+          <div style="font-size: 12.5px;">Jordan W. — target</div>
+          <div style="font-size: 11px; color: var(--text-muted); font-family: var(--mono);">Bag C · 18 frames · 4/9 correct</div>
+        </div>
+      </div>
+      <span style="font-family: var(--mono); font-size: 11px; color: var(--amber);">low quality</span>
+    </div>
+
+    <button class="sim-btn primary" style="width: 100%; margin-top: 10px;">Upload 2 sessions</button>
+  </div>
+
+  <div class="callout cyan" style="margin-top: 16px;">
+    <strong>Each toggle = one uploadSession() call</strong>
+    Filter <code>slotsRef.current.values()</code> by the checkbox state, then <code>Promise.all(filtered.map(slot => uploadSession({ sessionId: genSessionId(slot.id), athleteId: slot.athleteId, frames: slot.frames, ... })))</code>. Each Supabase row is fully independent — different sessionId, different athlete, different mode if needed. The current <code>uploadSession()</code> at <code>session.tsx:900</code> takes <em>exactly</em> these args already. <strong>No schema change required.</strong>
+  </div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- TAB 5 — MIGRATION PATH                                        -->
+<!-- ============================================================ -->
+<section class="tabpanel" id="t5">
+
+  <div class="section-label">Three phases, behind a flag, behind a single ref change</div>
+
+  <div class="callout green">
+    <strong>Strategy: ship the data model first, the UI last</strong>
+    Phase 1 introduces <code>SlotState</code> and <code>slotsRef</code> alongside the existing single-device refs. <code>handleNotify</code> grows a slotId parameter but the only slotId in flight is <code>"primary"</code>. Phase 2 routes all writes/reads through the slot map but UI stays single-bag. Phase 3 turns on multi-connect in the picker. Each phase ships independently; rollback is a feature-flag toggle.
+  </div>
+
+  <div class="section-label">Phase 1 — introduce SlotState (no behaviour change)</div>
+
+  <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 10px;">
+    <span class="phase-pill p1">Phase 1</span>
+    <span style="color: var(--text-dim); font-size: 12.5px;">~400 LOC, single PR, mergeable to main, no user-facing change.</span>
+  </div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">create</span>
+      <span class="desc"><span class="file-pill">src/lib/slot.ts</span> — exports <code>SlotState</code> type, <code>createSlot()</code> factory, helper functions <code>broadcastToAllSlots()</code> and <code>sendToSlot()</code>.</span>
+      <span class="when green">+1 file</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc"><span class="file-pill">src/pages/session.tsx</span> — add <code>slotsRef</code> next to <code>connRef</code> at <span class="line-pill">~1706</span>. Modify <code>connectBle()</code> to also push a <code>createSlot()</code> into the map under slotId <code>"primary"</code>. Update <code>handleNotify</code> signature to accept a slotId; at the call site (~2431) pass <code>"primary"</code>. All existing global refs continue to be the source of truth — the slot is shadow-written for parity testing.</span>
+      <span class="when amber">~150 LOC</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">test</span>
+      <span class="desc">Add a dev-only assertion that <code>slotsRef.current.get("primary").frames.length === framesRef.current.length</code> after every <code>handleNotify</code>. Catches drift before Phase 2 cuts over.</span>
+      <span class="when cyan">parity guard</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">ship</span>
+      <span class="desc">Merge behind no flag — it's a no-op in production. Run a real session end-to-end on staging, verify the parity assertion never fires, and that <code>uploadSession()</code> still writes the expected row.</span>
+      <span class="when green">silent</span>
+    </div>
+  </div>
+
+  <div class="section-label">Phase 2 — cut over the read path</div>
+
+  <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 10px;">
+    <span class="phase-pill p2">Phase 2</span>
+    <span style="color: var(--text-dim); font-size: 12.5px;">~600 LOC. UI still shows one bag, but every read inside handleNotify goes through the slot.</span>
+  </div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc"><span class="file-pill">session.tsx</span> handleNotify body — replace <code>assemblerRef.current</code> with <code>slot.assembler</code>, <code>framesRef.current</code> with <code>slot.frames</code>, all mode refs with <code>slot.{rx,vol,acc,tgt}</code>. Lines <span class="line-pill">2034-2280</span>.</span>
+      <span class="when amber">core change</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc">Mode-timer cleanup at <span class="line-pill">2020-2027</span> — replace the global clears with the <code>clearSlotTimers()</code> loop from Tab 3.</span>
+      <span class="when amber">timers</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc">Start handler at <span class="line-pill">~2625</span> and stop/save at <span class="line-pill">~2681-2718</span> — use <code>broadcastToAllSlots()</code> for START_SYNC/STOP_SYNC. Save loop becomes <code>Promise.all(slots.map(uploadSession))</code> with the toggle filter.</span>
+      <span class="when amber">control plane</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">delete</span>
+      <span class="desc">Once parity assertion has been clean for a few sessions, remove the legacy single refs: <code>connRef</code>, <code>assemblerRef</code>, <code>deviceInfoRef</code>, <code>framesRef</code>, all <code>rx*</code>/<code>vol*</code>/<code>acc*</code>/<code>tgt*</code>/<code>pending*</code> refs. Net LOC goes down.</span>
+      <span class="when green">cleanup</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">flag</span>
+      <span class="desc">Behind <code>NEXT_PUBLIC_MULTIBAG=on</code>. UI still single-bag (picker caps at 1). Easy rollback.</span>
+      <span class="when cyan">env flag</span>
+    </div>
+  </div>
+
+  <div class="section-label">Phase 3 — turn on multi-connect</div>
+
+  <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 10px;">
+    <span class="phase-pill p3">Phase 3</span>
+    <span style="color: var(--text-dim); font-size: 12.5px;">~700 LOC, mostly UI. The data model is already in place.</span>
+  </div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc"><span class="file-pill">session.tsx</span> picker — allow multi-select up to 6. After each successful connect, push a new slot and re-render the grid layout. The picker stays open until the coach taps "Done" or the cap is hit.</span>
+      <span class="when amber">picker UX</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">create</span>
+      <span class="desc"><span class="file-pill">src/components/session/DeviceManagerPanel.tsx</span> — the collapsible top bar from Tab 4 (RSSI bars, per-bag rows, expand drawer).</span>
+      <span class="when green">+1 component</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">create</span>
+      <span class="desc"><span class="file-pill">src/components/session/SlotCard.tsx</span> — the per-bag grid card with ArcTimer, mode chip, athlete pill, ripples, feed. Today's single-grid JSX gets extracted here and parameterized on slotId.</span>
+      <span class="when green">+1 component</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">create</span>
+      <span class="desc"><span class="file-pill">src/components/session/SaveSheet.tsx</span> — the per-bag toggle confirmation from Tab 4.</span>
+      <span class="when green">+1 component</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">edit</span>
+      <span class="desc"><span class="file-pill">session.tsx</span> root render — replace the single grid block with the grid-layout switch (1 / 2 / 2×2 / carousel) iterating <code>slotsRef.current.values()</code> and rendering a <code>&lt;SlotCard slotId={slot.id} /&gt;</code> per bag.</span>
+      <span class="when amber">render tree</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">flag flip</span>
+      <span class="desc">Switch <code>NEXT_PUBLIC_MULTIBAG</code> on. Roll out to staging programs first, then production. Single-bag flow is the default UX — multi-bag activates only when the coach connects a second device.</span>
+      <span class="when green">flip</span>
+    </div>
+  </div>
+
+  <div class="callout pink">
+    <strong>The Option-A callout — uploadSession() needs zero changes</strong>
+    Today's signature at <span class="line-pill">session.tsx:900</span> is <em>already</em> per-session:
+    one <code>sessionId</code>, one <code>athleteId</code>, one <code>frames</code> array, one <code>startedAtMs</code>. The whole point of the multi-bag refactor is that each <code>SlotState</code> carries exactly these fields. So Phase 2's save path is literally:
+    <pre class="code" style="margin-top:8px;"><span class="k">await</span> <span class="n">Promise</span>.<span class="f">all</span>(
+  [...slotsRef.current.<span class="f">values</span>()]
+    .<span class="f">filter</span>(s =&gt; saveSheetToggles[s.id])
+    .<span class="f">map</span>(s =&gt; <span class="f">uploadSession</span>({
+      sessionId:   <span class="f">genSessionId</span>(s.id),
+      programId:   programIdRef.current!,
+      athleteId:   s.athleteId!,
+      coreTeamId:  coreTeamIdRef.current,
+      createdBy:   user.id,
+      frames:      s.frames,
+      startedAtMs: startTimeRef.current!,
+      endedAtMs:   <span class="n">Date</span>.<span class="f">now</span>(),
+      mode:        s.mode,
+      deviceId:    s.device?.id,
+      <span class="c">// + the per-mode stats from s.{rx,vol,acc,tgt}</span>
+    }))
+);</pre>
+    Every Supabase row independent. Multi-athlete sessions become natural. Schema unchanged.
+  </div>
+
+  <div class="section-label">Files to touch — at a glance</div>
+
+  <div class="card">
+    <div class="card-row">
+      <span class="cmd">P1</span>
+      <span class="desc"><span class="file-pill">src/lib/slot.ts</span> · <span class="file-pill">src/pages/session.tsx</span> (additive)</span>
+      <span class="when cyan">~400 LOC</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">P2</span>
+      <span class="desc"><span class="file-pill">src/pages/session.tsx</span> (cut over reads) · <span class="file-pill">.env.local</span> (flag)</span>
+      <span class="when cyan">~600 LOC</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">P3</span>
+      <span class="desc"><span class="file-pill">DeviceManagerPanel.tsx</span> · <span class="file-pill">SlotCard.tsx</span> · <span class="file-pill">SaveSheet.tsx</span> · <span class="file-pill">session.tsx</span> (render tree, picker)</span>
+      <span class="when cyan">~700 LOC</span>
+    </div>
+    <div class="card-row">
+      <span class="cmd">untouched</span>
+      <span class="desc"><span class="file-pill">uploadSession()</span> · <span class="file-pill">ChunkAssembler</span> · <span class="file-pill">ble adapter</span> · <span class="file-pill">devices table</span> · <span class="file-pill">sessions table</span> · <span class="file-pill">events table</span></span>
+      <span class="when green">0 LOC</span>
+    </div>
+  </div>
+
+</section>
+
+<!-- ============================================================ -->
+<!-- TAB 6 — LIVE SIM                                              -->
+<!-- ============================================================ -->
+<section class="tabpanel" id="t6">
+
+  <div class="section-label">Connect bags, inject frames, watch the router</div>
+
+  <div class="callout cyan">
+    <strong>What this proves</strong>
+    Each "bag" subscribes via <code>simStartNotifications(conn, (val) =&gt; handleNotify(slotId, val))</code> — the same closure pattern from Tab 3. The log below shows every routed frame with its slotId; mutations are written into the slot map; the per-slot panels read from that same map. <em>No frame ever ends up in the wrong slot, even at 120 Hz × 3 bags.</em>
+  </div>
+
+  <div class="sim-controls">
+    <button class="sim-btn primary" id="sim-add">+ Connect bag</button>
+    <button class="sim-btn" id="sim-stream">▶ Stream all</button>
+    <button class="sim-btn" id="sim-stream-stop" style="display:none;">⏸ Stop streaming</button>
+    <button class="sim-btn danger" id="sim-clear">Clear all</button>
+    <span style="display:flex; align-items:center; gap: 6px; margin-left: auto;">
+      <label style="font-size: 12px; color: var(--text-dim);">Rate</label>
+      <input type="range" id="sim-rate" min="1" max="120" value="30" style="width: 130px;">
+      <span id="sim-rate-val" style="font-family: var(--mono); font-size: 11px; color: var(--cyan); width: 50px;">30 Hz</span>
+    </span>
+  </div>
+
+  <div class="sim-bags" id="sim-bags"></div>
+
+  <div class="section-label">Router log</div>
+
+  <div class="sim-log" id="sim-log"></div>
+
+  <div class="callout green" style="margin-top: 14px;">
+    <strong>Read the log</strong>
+    Each line is a frame after it's been routed. <code>slot=...</code> is the slotId the frame got routed to. The right-hand columns show what mutated inside that slot's state — frame index, total frames, current mode. Cross-bag isolation = every frame's slot matches its source. Inject a stream from all bags simultaneously to see the interleaving without state bleed.
+  </div>
+
+</section>
+
+</div><!-- /wrap -->
+
+<script>
+  // Tab switching
+  document.getElementById('tabs').addEventListener('click', (e) => {
+    const t = e.target.closest('.tab');
+    if (!t) return;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === t));
+    document.querySelectorAll('.tabpanel').forEach(p => p.classList.toggle('active', p.id === t.dataset.target));
+  });
+
+  // =================================================================
+  // LIVE SIM — the same closure + ref pattern from Tab 3
+  // =================================================================
+  (function () {
+    const NAME_PREFIXES = ['TS', 'MPY'];
+    const HW_OPTIONS = ['II', 'III'];
+    const MODES = ['power', 'reaction', 'volume', 'target', 'accuracy'];
+    const ATHLETES = ['Marcus T.', 'Priya K.', 'Jordan W.', 'Sasha L.', 'Diego R.', 'Mira S.'];
+
+    // ===== the slot map — mirrors slotsRef.current.set/get/delete =====
+    const slotsRef = new Map();   // SlotId -> SlotState
+
+    // ===== UI refs =====
+    const $bags  = document.getElementById('sim-bags');
+    const $log   = document.getElementById('sim-log');
+    const $rate  = document.getElementById('sim-rate');
+    const $rateV = document.getElementById('sim-rate-val');
+    const $stream     = document.getElementById('sim-stream');
+    const $streamStop = document.getElementById('sim-stream-stop');
+
+    let streamHandle = null;
+    let nextSeq = 1;
+    let logCount = 0;
+
+    $rate.addEventListener('input', () => { $rateV.textContent = $rate.value + ' Hz'; });
+
+    // ===== Mock BLE id generator — mimics the hello.id format =====
+    function makeHelloId(hw) {
+      const hex = () => Math.floor(Math.random() * 16).toString(16);
+      const tag = (hw === 'III' ? 'tsiii' : 'tsii');
+      return tag + '-' + hex() + hex() + hex() + hex();
+    }
+    function makeBleName(hw, helloId) {
+      const prefix = hw === 'III' ? 'MPY' : 'TS';
+      return prefix + '-' + helloId.slice(-4).toUpperCase();
+    }
+
+    // ===== createSlot — Tab 2 in code form =====
+    function createSlot(helloId, bleName, hw) {
+      return {
+        id: helloId,
+        bleName,
+        athleteId: ATHLETES[Math.floor(Math.random() * ATHLETES.length)],
+        conn: { id: 'mock-conn-' + helloId },  // stand-in for AdapterConnection
+        device: { hw, samplingHz: hw === 'III' ? 120 : 25 },
+        rssi: -55 - Math.floor(Math.random() * 30),
+        status: 'connected',
+        mode: MODES[Math.floor(Math.random() * MODES.length)],
+        frames: [],
+        frameIndex: 0,
+        timers: { rx: null, tgt: null, vol: null, volTick: null },
+        rx:  { phase: 'idle', signalAt: null, sumMs: 0, attempts: 0, bestMs: null },
+        tgt: { phase: 'idle', zone: null, signalAt: null, sumMs: 0, correctSumMs: 0, attempts: 0, hits: 0, bestAllMs: null, bestCorrectMs: null },
+        vol: { phase: 'idle', signalAt: null, windowEndsAt: null, sum: 0, attempts: 0, hits: 0, windowIdx: 0, windowHitSeq: 0 },
+        acc: { hits: 0, sum: 0, avg: 0 },
+        pending: { rxMs: null, tgtZone: null, tgtCorrect: null, volWindowIdx: null, volHitSeq: null },
+      };
+    }
+
+    // ===== handleNotify — slotId from closure, slot from ref =====
+    // Mirrors Tab 3's signature exactly.
+    function handleNotify(slotId, value) {
+      const slot = slotsRef.get(slotId);
+      if (!slot) {
+        log('drop', '<span class="err">DROP</span>     slot=<span class="sid">' + slotId + '</span> reason=not-in-map (disconnected mid-frame)');
+        return;
+      }
+      // value here is { type:"frame", t, hits } — pretend it came over BLE
+      slot.frameIndex += 1;
+      slot.frames.push(value);
+      // simulate mode-specific accumulation
+      if (slot.mode === 'reaction') slot.rx.attempts += 1;
+      if (slot.mode === 'volume')   slot.vol.hits += value.hits;
+      if (slot.mode === 'accuracy') slot.acc.hits += value.hits;
+
+      const seq = '#' + String(value.seq).padStart(4, '0');
+      log('frame',
+        '<span class="ok">OK</span>       slot=<span class="sid">' + slotId + '</span>' +
+        ' seq=' + seq +
+        ' hits=' + value.hits +
+        ' t_dev=' + value.t + 'ms' +
+        '   <span class="info">slot.frameIndex=' + slot.frameIndex + ' mode=' + slot.mode + '</span>'
+      );
+      renderBags();
+    }
+
+    // ===== Subscribe — the closure pattern from Tab 3 =====
+    function simStartNotifications(conn, onFrame) {
+      // In real code this calls adapterStartNotifications(conn, TX, cb).
+      // Here, we attach the callback to the connection for the injector to call.
+      conn._cb = onFrame;
+    }
+
+    function addBag() {
+      if (slotsRef.size >= 6) {
+        log('cap', '<span class="err">CAP</span>      cannot add more bags (max 6)');
+        return;
+      }
+      const hw = HW_OPTIONS[Math.floor(Math.random() * HW_OPTIONS.length)];
+      const helloId = makeHelloId(hw);
+      const bleName = makeBleName(hw, helloId);
+      // 1. open mock connection
+      const conn = { id: 'mock-conn-' + helloId };
+      // 2. build slot from hello packet
+      const slot = createSlot(helloId, bleName, hw);
+      slot.conn = conn;
+      slotsRef.set(helloId, slot);
+      // 3. subscribe — slotId is closed over here, immutable string forever
+      const slotId = helloId;
+      simStartNotifications(conn, (val) => handleNotify(slotId, val));
+
+      log('conn', '<span class="info">CONNECT</span>  slot=<span class="sid">' + helloId + '</span> name=' + bleName + ' hw=' + hw + ' athlete=\'' + slot.athleteId + '\'');
+      renderBags();
+    }
+
+    function dropBag(slotId) {
+      const slot = slotsRef.get(slotId);
+      if (!slot) return;
+      // clearSlotTimers analog
+      Object.values(slot.timers).forEach(t => t && clearTimeout(t));
+      slotsRef.delete(slotId);
+      log('disc', '<span class="err">DISCONN</span>  slot=<span class="sid">' + slotId + '</span> frames-captured=' + slot.frameIndex);
+      renderBags();
+    }
+
+    function injectFrameInto(slotId) {
+      const slot = slotsRef.get(slotId);
+      if (!slot || !slot.conn || !slot.conn._cb) return;
+      const frame = {
+        type: 'frame',
+        seq:  nextSeq++,
+        t:    Math.round(performance.now()),
+        hits: 1 + Math.floor(Math.random() * 4),
+      };
+      // *** This is the moment of routing ***
+      // The callback was created with slotId captured by closure.
+      slot.conn._cb(frame);
+    }
+
+    function injectFromAll() {
+      for (const slotId of slotsRef.keys()) injectFrameInto(slotId);
+    }
+
+    function setMode(slotId, mode) {
+      const slot = slotsRef.get(slotId);
+      if (!slot) return;
+      slot.mode = mode;
+      log('mode', '<span class="info">MODE</span>     slot=<span class="sid">' + slotId + '</span> → ' + mode);
+      renderBags();
+    }
+
+    function startStreaming() {
+      if (streamHandle) return;
+      $stream.style.display = 'none';
+      $streamStop.style.display = '';
+      const tick = () => {
+        injectFromAll();
+        const hz = parseInt($rate.value, 10);
+        streamHandle = setTimeout(tick, 1000 / hz);
+      };
+      tick();
+    }
+    function stopStreaming() {
+      if (streamHandle) clearTimeout(streamHandle);
+      streamHandle = null;
+      $stream.style.display = '';
+      $streamStop.style.display = 'none';
+    }
+
+    function clearAll() {
+      stopStreaming();
+      for (const id of [...slotsRef.keys()]) dropBag(id);
+      $log.innerHTML = '';
+      logCount = 0;
+      nextSeq = 1;
+      log('reset', '<span class="info">RESET</span>    all slots cleared');
+    }
+
+    function log(kind, html) {
+      logCount += 1;
+      const ts = new Date().toISOString().slice(11, 23);
+      const line = document.createElement('div');
+      line.className = 'ln';
+      line.innerHTML = '<span class="ts">' + ts + '</span>  ' + html;
+      $log.appendChild(line);
+      $log.scrollTop = $log.scrollHeight;
+      // keep last ~200 lines
+      while ($log.childElementCount > 200) $log.removeChild($log.firstChild);
+    }
+
+    function renderBags() {
+      const bags = [...slotsRef.values()];
+      if (bags.length === 0) {
+        $bags.innerHTML = '<div style="grid-column: 1 / -1; padding: 20px; text-align:center; color: var(--text-muted); font-size: 12.5px;">No bags connected. Tap <strong>+ Connect bag</strong> to add one.</div>';
+        return;
+      }
+      $bags.innerHTML = bags.map(s => `
+        <div class="sim-bag connected">
+          <h5>${s.bleName}</h5>
+          <div class="meta">slot=${s.id} · hw=${s.device.hw} · rssi=${s.rssi}dBm</div>
+          <div class="stat"><span class="k">athlete</span><span class="v">${s.athleteId}</span></div>
+          <div class="stat"><span class="k">mode</span><span class="v amber">${s.mode}</span></div>
+          <div class="stat"><span class="k">frames</span><span class="v green">${s.frameIndex}</span></div>
+          <div class="stat"><span class="k">rx.atts</span><span class="v">${s.rx.attempts}</span></div>
+          <div class="stat"><span class="k">vol.hits</span><span class="v">${s.vol.hits}</span></div>
+          <div class="bag-actions">
+            <button class="sim-btn" data-act="inject" data-id="${s.id}">+1 frame</button>
+            <select class="sim-select" data-act="mode" data-id="${s.id}">
+              ${MODES.map(m => `<option ${m === s.mode ? 'selected' : ''}>${m}</option>`).join('')}
+            </select>
+            <button class="sim-btn danger" data-act="drop" data-id="${s.id}">×</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Event delegation for the bag actions
+    $bags.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const id = btn.dataset.id;
+      if (btn.dataset.act === 'inject') injectFrameInto(id);
+      if (btn.dataset.act === 'drop')   dropBag(id);
+    });
+    $bags.addEventListener('change', (e) => {
+      const sel = e.target.closest('select[data-act="mode"]');
+      if (!sel) return;
+      setMode(sel.dataset.id, sel.value);
+    });
+
+    document.getElementById('sim-add').addEventListener('click', addBag);
+    document.getElementById('sim-stream').addEventListener('click', startStreaming);
+    document.getElementById('sim-stream-stop').addEventListener('click', stopStreaming);
+    document.getElementById('sim-clear').addEventListener('click', clearAll);
+
+    // boot with two bags so the panel isn't empty on first view
+    renderBags();
+    log('ready', '<span class="info">READY</span>    sim initialised — slotsRef.size=0');
+    addBag();
+    addBag();
+  })();
+</script>
+
+</body>
+</html>

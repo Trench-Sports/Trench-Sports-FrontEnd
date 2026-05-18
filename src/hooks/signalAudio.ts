@@ -19,6 +19,14 @@ export type ZoneRow = "top" | "middle" | "bottom";
 export type ZoneCol = "left" | "center" | "right";
 export type ZoneTarget = { row: ZoneRow; col: ZoneCol };
 
+// Phone-keypad numbering — top-left = 1, bottom-right = 9.
+// Kept in sync with zoneNumber() in src/pages/session.tsx.
+export function zoneToNumber(zone: ZoneTarget): number {
+  const rowIdx = zone.row === "top" ? 0 : zone.row === "middle" ? 1 : 2;
+  const colIdx = zone.col === "left" ? 0 : zone.col === "center" ? 1 : 2;
+  return rowIdx * 3 + colIdx + 1;
+}
+
 function playTone(opts: {
   frequency: number;
   endFrequency?: number;
@@ -113,6 +121,8 @@ export function useSignalAudio() {
           ? [
               { text: "Go!",    rate: 1.5, pitch: 1.4 },
               { text: "Early!", rate: 1.3, pitch: 0.8 },
+              // Pre-warm a digit so the first target-mode number cue plays without lag.
+              { text: "5",      rate: 1.15, pitch: 1.1 },
             ]
           : [{ text: " ", rate: 1.0, pitch: 1.0 }]; // web just needs gesture unlock
 
@@ -267,18 +277,21 @@ export function useSignalAudio() {
     }
   }
 
-  // ─── Zone cue — plays the alert tone then speaks the zone label ──────────────
+  // ─── Zone cue — plays the alert tone then speaks the zone number ────────────
+  // The bag overlays the 3×3 grid with numbers 1–9 (phone-keypad layout) so the
+  // athlete can match the spoken number to a grid cell at a glance.
   function playZoneCue(zone: ZoneTarget): void {
     if (!("speechSynthesis" in window)) return;
 
+    const label = String(zoneToNumber(zone));
+
     if (platform.isNative) {
       // On native, speechSynthesis is the only reliable audio path.
-      // Speak the zone label directly — no pre-beep needed since the voice
+      // Speak the zone number directly — no pre-beep needed since the voice
       // itself is the alert. A leading "Go" utterance would be cancelled by
-      // the zone label's cancel() call 180ms later before it finishes.
+      // the number's cancel() call 180ms later before it finishes.
       try {
         window.speechSynthesis.cancel();
-        const label = `${zone.row} ${zone.col}`;
         const utt   = new SpeechSynthesisUtterance(label);
         utt.rate    = 1.15;
         utt.pitch   = 1.1;
@@ -290,12 +303,11 @@ export function useSignalAudio() {
       return;
     }
 
-    // Web path: fire the tone first, then speak the zone label after the beep.
+    // Web path: fire the tone first, then speak the zone number after the beep.
     playSignal("reaction");
     setTimeout(() => {
       try {
         window.speechSynthesis.cancel();
-        const label = `${zone.row} ${zone.col}`;
         const utt   = new SpeechSynthesisUtterance(label);
         utt.rate    = 1.15;   // slightly faster — punchy, not robotic
         utt.pitch   = 1.1;    // slightly higher — easier to hear over gym noise

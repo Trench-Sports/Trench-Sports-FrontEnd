@@ -172,6 +172,34 @@ export function ModeRolodex({
     prevSaveComplete.current = saveComplete;
   }, [saveComplete, sessionActive]);
 
+  // ── Post-stop bounce peek ─────────────────────────────────────────────────
+  // When the user presses Stop on an active session we surface a viewport-
+  // fixed bouncing CTA ("Tap to change mode") at the bottom of the screen.
+  // Tapping it expands the rolodex to its full height. The peek is cleared
+  // the moment the user engages (open=true) or starts a new session.
+  const [justStopped, setJustStopped] = useState(false);
+  const prevSessionActiveRef = useRef(false);
+  useEffect(() => {
+    // Rising edge of "session stopped" (was active, now not). We don't fire
+    // this on initial mount because prevSessionActiveRef starts false.
+    if (!sessionActive && prevSessionActiveRef.current) {
+      setJustStopped(true);
+    }
+    // Clear when a new session starts so the peek doesn't re-appear mid-run.
+    if (sessionActive) {
+      setJustStopped(false);
+    }
+    prevSessionActiveRef.current = sessionActive;
+  }, [sessionActive]);
+
+  // Engaging the rolodex (either via this peek or the existing handle/save
+  // auto-recall) dismisses the peek state.
+  useEffect(() => {
+    if (open) setJustStopped(false);
+  }, [open]);
+
+  const showBouncePeek = justStopped && !open;
+
   // Keep scroll position in sync when session.tsx changes mode externally
   // (e.g. via the existing bag swipe gesture or keyboard shortcut)
   useEffect(() => {
@@ -280,7 +308,16 @@ export function ModeRolodex({
   // ── Render values ──────────────────────────────────────────────────────────
   const PANEL_H   = 240;
   const PEEK      = 36;          // px of panel visible when closed (handle only)
-  const baseY     = open ? 0 : PANEL_H - PEEK;
+  // During the post-stop bounce-peek state we fully tuck the panel below
+  // the viewport (PANEL_H + 24 instead of PANEL_H - PEEK) so the bouncing
+  // pill is the only affordance on screen. Tapping the pill flips `open`
+  // to true → baseY becomes 0 → the existing 480ms transform transition
+  // slides the rolodex up to its full height in one smooth motion.
+  const baseY     = open
+    ? 0
+    : showBouncePeek
+      ? PANEL_H + 24
+      : PANEL_H - PEEK;
   const totalY    = baseY + panelDrag;
   const springing = panelDrag === 0;
 
@@ -515,9 +552,43 @@ export function ModeRolodex({
     </div>
   );
 
-  // Portal into the swipe deck's session panel so the rolodex inherits its
-  // transform (slides off during swipes) and its width.
-  return createPortal(rolodex, portalHost);
+  // Viewport-fixed bouncing CTA shown only after Stop is pressed and only
+  // while the rolodex is collapsed. Portaled to document.body so it
+  // escapes the swipe deck's transformed ancestor (transformed ancestors
+  // turn `position: fixed` into "fixed relative to that ancestor", which
+  // would defeat the whole point of pinning this to the viewport).
+  const bouncePeek = showBouncePeek ? (
+    <div
+      className="ts-modePeek"
+      role="button"
+      aria-label="Tap to change mode"
+      // Pointer-only handlers: prevent any propagation to the underlying
+      // swipe deck (which would otherwise see this as the start of a
+      // horizontal swipe) and explicitly drive both touch + click paths.
+      onPointerDown={(e) => e.stopPropagation()}
+      onPointerMove={(e) => e.stopPropagation()}
+      onPointerUp={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        setOpen(true);
+      }}
+      style={{ zIndex: zIndex + 10 }}
+    >
+      <span className="ts-modePeek__chev" aria-hidden="true" />
+      Tap to change mode
+    </div>
+  ) : null;
+
+  return (
+    <>
+      {/* Portal into the swipe deck's session panel so the rolodex inherits
+          its transform (slides off during swipes) and its width. */}
+      {createPortal(rolodex, portalHost)}
+      {/* Portal the post-stop peek to document.body so it stays pinned to
+          the viewport regardless of any ancestor transforms. */}
+      {bouncePeek && createPortal(bouncePeek, document.body)}
+    </>
+  );
 }
 
 export default ModeRolodex;
