@@ -1,5 +1,5 @@
 // src/pages/dashboard.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import ProfileHeader, { Profile } from "../components/profileHeader";
 import CreateAthleteModal from "../components/createAthlete";
@@ -188,6 +188,16 @@ export default function Dashboard() {
   const [athletesLoading, setAthletesLoading] = useState(false);
   const [athletesError, setAthletesError] = useState("");
   const [athleteFilter, setAthleteFilter] = useState("");
+  const athleteListRef = useRef<HTMLDivElement>(null);
+  const [athleteListFade, setAthleteListFade] = useState<{ top: boolean; bottom: boolean }>({ top: false, bottom: true });
+
+  const handleAthleteListScroll = () => {
+    const el = athleteListRef.current;
+    if (!el) return;
+    const top = el.scrollTop > 8;
+    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 8;
+    setAthleteListFade({ top, bottom });
+  };
 
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
@@ -232,6 +242,18 @@ export default function Dashboard() {
   const [athleteProgressMap, setAthleteProgressMap] = useState<Map<string, AthleteProgress>>(new Map());
   const [athleteProgressLoading, setAthleteProgressLoading] = useState(false);
 
+  // ---------- Per-mode analytics (powering the mode pills) ----------
+  // Each sub-key only appears when the athlete has > 5 sessions of that mode.
+  type ModeTrend = "up" | "stable" | "down";
+  type AthleteModeStats = {
+    power?:    { sessions: number; avgIndex: number; peakIndex: number; trend: ModeTrend; delta: number };
+    reaction?: { sessions: number; avgMs:    number; bestMs:    number; trend: ModeTrend; delta: number };
+    accuracy?: { sessions: number; avgPct:   number;                    trend: ModeTrend; delta: number };
+    volume?:   { sessions: number; maxEvents: number; avgEvents: number };
+    target?:   { sessions: number; avgPct:   number;                    trend: ModeTrend; delta: number };
+  };
+  const [athleteModeStatsMap, setAthleteModeStatsMap] = useState<Map<string, AthleteModeStats>>(new Map());
+
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
 
@@ -239,10 +261,11 @@ export default function Dashboard() {
 
     (async () => {
       try {
-        // Fetch all sessions across all three modes in one round-trip
+        // Fetch all sessions across all modes in one round-trip.
+        // num_events powers the volume pill (max hits in a single session).
         let progressQuery = supabase!
           .from("session_summaries")
-          .select("athlete_id, date_of_record, mode, quality, peak_force_stats")
+          .select("athlete_id, date_of_record, mode, quality, peak_force_stats, num_events")
           .eq("program_id", programId!)
           .not("athlete_id", "is", null)
           .order("date_of_record", { ascending: true });
@@ -257,7 +280,14 @@ export default function Dashboard() {
         if (!data) return;
 
         // Group by athlete → mode → vals[]
-        type ModeVals = { strength: number[]; accuracy: number[]; reaction: number[]; targetAccuracy: number[]; targetReaction: number[] };
+        type ModeVals = {
+          strength: number[];
+          accuracy: number[];
+          reaction: number[];
+          targetAccuracy: number[];
+          targetReaction: number[];
+          volumeEvents: number[]; // per-session hit counts (volume mode pills)
+        };
         const byAthlete = new Map<string, ModeVals>();
 
         for (const row of data as any[]) {
@@ -265,7 +295,7 @@ export default function Dashboard() {
           const mode = (row.mode ?? "power").toLowerCase();
           if (!id) continue;
 
-          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [], targetAccuracy: [], targetReaction: [] });
+          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [], targetAccuracy: [], targetReaction: [], volumeEvents: [] });
           const entry = byAthlete.get(id)!;
 
           if (mode === "power") {
@@ -289,6 +319,9 @@ export default function Dashboard() {
             // avg_reaction_ms_correct is the meaningful benchmark; fall back to all-attempts avg
             const rt = row.quality?.avg_reaction_ms_correct ?? row.quality?.avg_reaction_ms_all ?? null;
             if (rt != null) entry.targetReaction.push(Math.round(rt));
+          } else if (mode === "volume") {
+            const events = row.num_events;
+            if (typeof events === "number" && events > 0) entry.volumeEvents.push(events);
           }
         }
 
@@ -324,6 +357,62 @@ export default function Dashboard() {
         }
 
         setAthleteProgressMap(progressMap);
+
+        // ── Per-mode pill stats ─────────────────────────────────────────────
+        // For each mode the athlete has *more than 5* sessions of, compute the
+        // headline metric the pill will surface (and a directional trend
+        // where it makes sense).
+        const trendOf = (vals: number[], lowerIsBetter: boolean): { trend: ModeTrend; delta: number } => {
+          if (vals.length < 2) return { trend: "stable", delta: 0 };
+          const half  = Math.max(1, Math.floor(vals.length / 2));
+          const early = vals.slice(0, half).reduce((s, v) => s + v, 0) / half;
+          const late  = vals.slice(-half).reduce((s, v) => s + v, 0) / half;
+          // Positive delta always means improvement, regardless of metric direction.
+          const delta     = lowerIsBetter ? Math.round(early - late) : Math.round(late - early);
+          const threshold = Math.max(1, Math.round(Math.abs(early) * 0.03));
+          const trend: ModeTrend = delta > threshold ? "up" : delta < -threshold ? "down" : "stable";
+          return { trend, delta };
+        };
+
+        const modeStatsMap = new Map<string, AthleteModeStats>();
+        for (const [athleteId, modes] of byAthlete) {
+          const stats: AthleteModeStats = {};
+
+          if (modes.strength.length > 5) {
+            const peak = Math.max(...modes.strength);
+            const avg  = Math.round(modes.strength.reduce((s, v) => s + v, 0) / modes.strength.length);
+            const { trend, delta } = trendOf(modes.strength, false);
+            stats.power = { sessions: modes.strength.length, avgIndex: avg, peakIndex: peak, trend, delta };
+          }
+
+          if (modes.reaction.length > 5) {
+            const avg  = Math.round(modes.reaction.reduce((s, v) => s + v, 0) / modes.reaction.length);
+            const best = Math.round(Math.min(...modes.reaction));
+            const { trend, delta } = trendOf(modes.reaction, true);
+            stats.reaction = { sessions: modes.reaction.length, avgMs: avg, bestMs: best, trend, delta };
+          }
+
+          if (modes.accuracy.length > 5) {
+            const avg = Math.round((modes.accuracy.reduce((s, v) => s + v, 0) / modes.accuracy.length) * 10) / 10;
+            const { trend, delta } = trendOf(modes.accuracy, false);
+            stats.accuracy = { sessions: modes.accuracy.length, avgPct: avg, trend, delta };
+          }
+
+          if (modes.volumeEvents.length > 5) {
+            const max = Math.max(...modes.volumeEvents);
+            const avg = Math.round(modes.volumeEvents.reduce((s, v) => s + v, 0) / modes.volumeEvents.length);
+            stats.volume = { sessions: modes.volumeEvents.length, maxEvents: max, avgEvents: avg };
+          }
+
+          if (modes.targetAccuracy.length > 5) {
+            const avg = Math.round((modes.targetAccuracy.reduce((s, v) => s + v, 0) / modes.targetAccuracy.length) * 10) / 10;
+            const { trend, delta } = trendOf(modes.targetAccuracy, false);
+            stats.target = { sessions: modes.targetAccuracy.length, avgPct: avg, trend, delta };
+          }
+
+          if (Object.keys(stats).length > 0) modeStatsMap.set(athleteId, stats);
+        }
+        setAthleteModeStatsMap(modeStatsMap);
       } finally {
         setAthleteProgressLoading(false);
       }
@@ -1874,6 +1963,25 @@ export default function Dashboard() {
   const [sessionPage, setSessionPage] = useState(0);
   const SESSION_PAGE_SIZE = 10;
 
+  // Jump from any leaderboard row to the Recent Sessions tab,
+  // pre-filtered to that athlete. The tab wrapper has a keyed
+  // fade/slide animation that runs automatically on tab change.
+  const goToSessionsForAthlete = useCallback((name: string) => {
+    const clean = (name ?? "").trim();
+    if (!clean) return;
+    setSessionAthleteFilter(clean);
+    setSessionModeFilter("all");
+    setSessionPage(0);
+    setActiveTab("recent");
+    // Defer scroll until after the tab content mounts so we don't
+    // jump before the new panel is laid out.
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
+  }, []);
+
   // Athletes who appear in recentSessions (for the athlete filter dropdown)
   const sessionAthletes = useMemo(() => {
     const seen = new Map<string, string>();
@@ -2491,7 +2599,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* TAB CONTENT */}
+      {/* TAB CONTENT — keyed wrapper so a tab switch replays the
+           fade/slide-in animation defined in .ts-tabContent. */}
+      <div key={activeTab} className="ts-tabContent">
       {activeTab === "recent" ? (
         <>
           {/* MAIN GRID */}
@@ -5194,7 +5304,21 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Power sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
                 </div>)
                 : strengthRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => goToSessionsForAthlete(row.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goToSessionsForAthlete(row.name);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -5227,7 +5351,21 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Reaction sessions to start tracking response times. Rankings show avg and best reaction ms per athlete.</div>
                 </div>)
                 : reactionRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => goToSessionsForAthlete(row.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goToSessionsForAthlete(row.name);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -5246,7 +5384,21 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Volume sessions to track hit counts and output quality per athlete.</div>
                 </div>)
                 : volumeInsightRows.slice(0, 5).map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => goToSessionsForAthlete(row.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goToSessionsForAthlete(row.name);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -5272,7 +5424,21 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Target sessions to rank athletes by zone accuracy and correct-zone reaction time.</div>
                 </div>)
                 : targetInsightRows.slice(0, 5).map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => goToSessionsForAthlete(row.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goToSessionsForAthlete(row.name);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -5312,7 +5478,21 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Accuracy sessions to track placement scores and avg offset. Each session logs accuracy % automatically.</div>
                 </div>)
                 : accuracyRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => goToSessionsForAthlete(row.name)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goToSessionsForAthlete(row.name);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -5633,7 +5813,7 @@ export default function Dashboard() {
         ); // end normal populated return
       })() : (
         <div className="ts-dashGrid ts-dashMain">
-          <div className="ts-card ts-span2">
+          <div className="ts-card ts-span2" style={{ display: "flex", flexDirection: "column", height: 600 }}>
             <div className="ts-cardTop">
               <div className="ts-cardTitle">Individual Athletes</div>
               <div className="ts-cardMeta">{athletes.length} athlete{athletes.length !== 1 ? "s" : ""}</div>
@@ -5667,7 +5847,7 @@ export default function Dashboard() {
             )}
 
             {!athletesLoading && !athletesError && athletes.length > 0 && (
-              <>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
                 {/* Filter bar */}
                 <div className="ts-athleteFilterBar">
                   <svg className="ts-athleteFilterIcon" width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -5707,7 +5887,8 @@ export default function Dashboard() {
                   }
 
                   return (
-                    <div className="ts-athleteList">
+                    <div className="ts-athleteListWrap" data-fade-top={athleteListFade.top} data-fade-bottom={athleteListFade.bottom}>
+                    <div className="ts-athleteList" ref={athleteListRef} onScroll={handleAthleteListScroll}>
                       {filtered
                         // Sort: improving first, then stable, then declining, then no data
                         .slice()
@@ -5788,6 +5969,88 @@ export default function Dashboard() {
                                   <span className="ts-pillLabel">WT</span>{a.weight}
                                 </span>
                               )}
+                              {/* Per-mode analytics pills — only modes with > 5 sessions appear */}
+                              {(() => {
+                                const stats = athleteModeStatsMap.get(a.id);
+                                if (!stats) return null;
+                                const trendArrow = (t: ModeTrend) => t === "up" ? "▲" : t === "down" ? "▼" : "→";
+                                const pills: React.ReactNode[] = [];
+
+                                if (stats.power) {
+                                  const { peakIndex, trend, delta, sessions } = stats.power;
+                                  pills.push(
+                                    <span
+                                      key="power"
+                                      className={`ts-athletePill ts-modePill ts-modePill--power ts-modePill--${trend}`}
+                                      title={`Power · ${sessions} sessions · peak SI ${peakIndex}/1000 · trend ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta} pts)`}
+                                    >
+                                      <span className="ts-pillLabel">💥 SI</span>{peakIndex}
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.reaction) {
+                                  const { avgMs, trend, delta, sessions } = stats.reaction;
+                                  pills.push(
+                                    <span
+                                      key="reaction"
+                                      className={`ts-athletePill ts-modePill ts-modePill--reaction ts-modePill--${trend}`}
+                                      title={`Reaction · ${sessions} sessions · avg ${avgMs}ms · ${trend === "up" ? "faster" : trend === "down" ? "slower" : "stable"} by ${Math.abs(delta)}ms`}
+                                    >
+                                      <span className="ts-pillLabel">⚡ RT</span>{avgMs}<span style={{ opacity: 0.5, marginLeft: 2 }}>ms</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}ms</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.accuracy) {
+                                  const { avgPct, trend, delta, sessions } = stats.accuracy;
+                                  pills.push(
+                                    <span
+                                      key="accuracy"
+                                      className={`ts-athletePill ts-modePill ts-modePill--accuracy ts-modePill--${trend}`}
+                                      title={`Accuracy · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
+                                    >
+                                      <span className="ts-pillLabel">🎯 ACC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.volume) {
+                                  const { maxEvents, avgEvents, sessions } = stats.volume;
+                                  pills.push(
+                                    <span
+                                      key="volume"
+                                      className="ts-athletePill ts-modePill ts-modePill--volume"
+                                      title={`Volume · ${sessions} sessions · max ${maxEvents} events/session · avg ${avgEvents}`}
+                                    >
+                                      <span className="ts-pillLabel">🥊 MAX</span>{maxEvents}
+                                    </span>
+                                  );
+                                }
+                                if (stats.target) {
+                                  const { avgPct, trend, delta, sessions } = stats.target;
+                                  pills.push(
+                                    <span
+                                      key="target"
+                                      className={`ts-athletePill ts-modePill ts-modePill--target ts-modePill--${trend}`}
+                                      title={`Target precision · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
+                                    >
+                                      <span className="ts-pillLabel">🏹 PREC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+
+                                return pills;
+                              })()}
                             </div>
 
                             {/* Progress badge */}
@@ -5835,9 +6098,10 @@ export default function Dashboard() {
                         );
                       })}
                     </div>
+                    </div>
                   );
                 })()}
-              </>
+              </div>
             )}
           </div>
 
@@ -5931,6 +6195,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      </div>
 
       {/* Tiny scoped styles so we don't disturb your existing design system */}
       <style>{`
@@ -6033,6 +6298,20 @@ export default function Dashboard() {
         }
         .ts-span2 {
           grid-column: span 2;
+        }
+
+        /* Tab-switch animation — the wrapper is keyed by activeTab so React
+           remounts this div on every tab change, replaying the keyframe. */
+        @keyframes ts-tabFadeIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        .ts-tabContent {
+          animation: ts-tabFadeIn 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+          will-change: opacity, transform;
+        }
+        @media (prefers-reduced-motion: reduce){
+          .ts-tabContent { animation: none; }
         }
 
         /* Card */
@@ -6332,6 +6611,42 @@ export default function Dashboard() {
           font-size:12px;
           opacity:0.75;
         }
+        /* Clickable athlete rows — drills into Recent Sessions filtered by athlete */
+        .ts-leaderRowClickable{
+          cursor: pointer;
+          transition: background 160ms ease,
+                      border-color 160ms ease,
+                      transform 160ms ease,
+                      box-shadow 160ms ease;
+        }
+        .ts-leaderRowClickable:hover{
+          background: rgba(180,0,255,0.07);
+          border-color: rgba(180,0,255,0.32);
+          transform: translateY(-1px);
+          box-shadow: 0 6px 18px rgba(0,0,0,0.22);
+        }
+        .ts-leaderRowClickable:active{
+          transform: translateY(0);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+        }
+        .ts-leaderRowClickable:focus-visible{
+          outline: none;
+          border-color: rgba(180,0,255,0.55);
+          box-shadow: 0 0 0 3px rgba(180,0,255,0.25);
+        }
+        :root[data-theme="light"] .ts-leaderRowClickable:hover{
+          background: rgba(180,0,255,0.06);
+          border-color: rgba(180,0,255,0.30);
+          box-shadow: 0 6px 18px rgba(20,20,40,0.10);
+        }
+        @media (prefers-reduced-motion: reduce){
+          .ts-leaderRowClickable,
+          .ts-leaderRowClickable:hover,
+          .ts-leaderRowClickable:active{
+            transition: none;
+            transform: none;
+          }
+        }
         @media (max-width: 880px){
           .ts-leaderRow{
             grid-template-columns: 40px 1.6fr 1fr 1fr;
@@ -6459,11 +6774,65 @@ export default function Dashboard() {
           transition:opacity 120ms ease;
         }
         .ts-athleteFilterClear:hover{ opacity:0.80; }
+        .ts-athleteListWrap{
+          position:relative;
+          flex:1;
+          min-height:0;
+          display:flex;
+          flex-direction:column;
+        }
+        /* Top fade overlay */
+        .ts-athleteListWrap::before,
+        .ts-athleteListWrap::after{
+          content:"";
+          position:absolute;
+          left:0;
+          right:8px; /* leave room for scrollbar */
+          height:48px;
+          pointer-events:none;
+          z-index:2;
+          transition:opacity 200ms ease;
+        }
+        .ts-athleteListWrap::before{
+          top:0;
+          background:linear-gradient(to bottom, rgb(14,14,22) 0%, transparent 100%);
+          opacity:0;
+        }
+        .ts-athleteListWrap::after{
+          bottom:0;
+          background:linear-gradient(to top, rgb(14,14,22) 0%, transparent 100%);
+          opacity:0;
+        }
+        .ts-athleteListWrap[data-fade-top="true"]::before{ opacity:1; }
+        .ts-athleteListWrap[data-fade-bottom="true"]::after{ opacity:1; }
+        :root[data-theme="light"] .ts-athleteListWrap::before{
+          background:linear-gradient(to bottom, rgb(245,245,250) 0%, transparent 100%);
+        }
+        :root[data-theme="light"] .ts-athleteListWrap::after{
+          background:linear-gradient(to top, rgb(245,245,250) 0%, transparent 100%);
+        }
         .ts-athleteList{
           display:flex;
           flex-direction:column;
           gap:8px;
           margin-top:10px;
+          overflow-y:auto;
+          flex:1;
+          min-height:0;
+          padding-right:4px;
+        }
+        .ts-athleteList::-webkit-scrollbar{
+          width:4px;
+        }
+        .ts-athleteList::-webkit-scrollbar-track{
+          background:transparent;
+        }
+        .ts-athleteList::-webkit-scrollbar-thumb{
+          background:rgba(128,128,128,0.25);
+          border-radius:999px;
+        }
+        .ts-athleteList::-webkit-scrollbar-thumb:hover{
+          background:rgba(128,128,128,0.45);
         }
         .ts-athleteRow{
           display:flex;
@@ -6564,6 +6933,108 @@ export default function Dashboard() {
           letter-spacing:0.06em;
           opacity:0.50;
           text-transform:uppercase;
+        }
+
+        /* ── Per-mode analytics pills ────────────────────────────────
+           Each pill has a mode accent (border + bg + label color) and an
+           optional trend overlay (green = improving, red = declining). */
+        .ts-athletePills{
+          flex-wrap:wrap;
+          row-gap:6px;
+          justify-content:flex-end;
+          max-width:60%;
+        }
+        @media (max-width: 880px){
+          .ts-athletePills{ max-width:70%; }
+        }
+        .ts-modePill{
+          font-variant-numeric:tabular-nums;
+          font-weight:600;
+          opacity:1;
+        }
+        .ts-modePill .ts-pillLabel{
+          opacity:0.95;
+        }
+        .ts-modePillDelta{
+          margin-left:6px;
+          padding-left:6px;
+          font-size:10px;
+          font-weight:800;
+          letter-spacing:0.02em;
+          border-left:1px solid rgba(255,255,255,0.18);
+          opacity:0.95;
+        }
+        :root[data-theme="light"] .ts-modePillDelta{
+          border-left-color:rgba(20,20,40,0.18);
+        }
+
+        /* Mode accents (dark) */
+        .ts-modePill--power{
+          background:rgba(180,0,255,0.12);
+          border-color:rgba(180,0,255,0.35);
+          color:rgba(220,160,255,0.96);
+        }
+        .ts-modePill--reaction{
+          background:rgba(255,200,0,0.12);
+          border-color:rgba(255,200,0,0.38);
+          color:rgba(255,220,90,0.96);
+        }
+        .ts-modePill--accuracy{
+          background:rgba(0,220,255,0.10);
+          border-color:rgba(0,220,255,0.35);
+          color:rgba(90,220,255,0.96);
+        }
+        .ts-modePill--volume{
+          background:rgba(255,106,0,0.12);
+          border-color:rgba(255,106,0,0.38);
+          color:rgba(255,170,90,0.96);
+        }
+        .ts-modePill--target{
+          background:rgba(0,255,136,0.10);
+          border-color:rgba(0,255,136,0.34);
+          color:rgba(90,255,170,0.96);
+        }
+
+        /* Mode accents (light) — softer, darker text for legibility */
+        :root[data-theme="light"] .ts-modePill--power{
+          background:rgba(180,0,255,0.08);
+          border-color:rgba(180,0,255,0.30);
+          color:rgba(120,0,200,0.95);
+        }
+        :root[data-theme="light"] .ts-modePill--reaction{
+          background:rgba(200,140,0,0.10);
+          border-color:rgba(200,140,0,0.35);
+          color:rgba(150,100,0,0.95);
+        }
+        :root[data-theme="light"] .ts-modePill--accuracy{
+          background:rgba(0,160,200,0.08);
+          border-color:rgba(0,160,200,0.30);
+          color:rgba(0,110,160,0.95);
+        }
+        :root[data-theme="light"] .ts-modePill--volume{
+          background:rgba(220,90,0,0.08);
+          border-color:rgba(220,90,0,0.34);
+          color:rgba(170,70,0,0.95);
+        }
+        :root[data-theme="light"] .ts-modePill--target{
+          background:rgba(0,170,90,0.08);
+          border-color:rgba(0,170,90,0.32);
+          color:rgba(0,130,70,0.95);
+        }
+
+        /* Trend overlays — recolor the delta chunk only.
+           These compose on top of the base mode accent. */
+        .ts-modePill--up .ts-modePillDelta{
+          color:rgba(80,220,160,0.98);
+        }
+        .ts-modePill--down .ts-modePillDelta{
+          color:rgba(255,110,90,0.98);
+        }
+        :root[data-theme="light"] .ts-modePill--up .ts-modePillDelta{
+          color:rgba(15,130,80,0.95);
+        }
+        :root[data-theme="light"] .ts-modePill--down .ts-modePillDelta{
+          color:rgba(180,50,30,0.95);
         }
         .ts-athleteEmpty{
           margin-top:16px;

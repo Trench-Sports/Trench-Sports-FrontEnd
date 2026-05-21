@@ -114,3 +114,19 @@ export async function writeUtf8(conn: AdapterConnection, characteristicUuid: str
   if (conn.kind === "native") return writeUtf8Native(conn, uuid, text);
   return writeUtf8Web(conn, uuid, text);
 }
+
+// ─── Multi-bag helper ────────────────────────────────────────────────────────
+// Returns the stable per-app device identifier for either adapter flavor so
+// the multi-bag plumbing in session.tsx can build an "already connected"
+// exclude list without sniffing the AdapterConnection union directly.
+//
+// Native (iOS / Android): the Capacitor plugin's deviceId — stable across
+//   app launches on iOS (per-app UUID), the MAC on Android.
+// Web: the BluetoothDevice.id (browser-assigned, stable per origin).
+//
+// Returns null when called with null (callers may pass connRef.current).
+export function getConnectionDeviceId(conn: AdapterConnection | null): string | null {
+  if (!conn) return null;
+  if (conn.kind === "native") return conn.deviceId;
+  return conn.device?.id ?? null;
+}

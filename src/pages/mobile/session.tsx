@@ -4,6 +4,8 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
 import { initTheme } from "../../lib/themeManager";
+import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
+import SessionSettingsModal from "../../components/sessionSettings";
 import { useSignalAudio } from "../../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
 import {
@@ -14,6 +16,7 @@ import {
   getBleConfig,
   isNativeApp,
   getBluetoothDiagnostics,
+  getConnectionDeviceId,
   type AdapterConnection,
 } from "../../bluetooth/adapter";
 import {
@@ -1151,9 +1154,21 @@ function hexAlpha(fraction: number) {
  *   • iei_prev_ms   — wall-clock gap since previous event
  *   • angle_deg     — direction of hit centroid from grid center (0° = right, CCW+)
  *   • quality.strength_index (0–1000):
- *       speed component  (40%) — normalised IEI: fast cadence scores higher
- *       voltage component (60%) — normalised peak mv: harder hits score higher
- *       formula: (speedNorm × 0.4 + voltNorm × 0.6) × 1000  [voltNorm = mv / 3300]
+ *       Rate of force application — how fast the user reached peak voltage.
+ *       rate           = peakMv / max(riseTimeMs, scanPeriodMs)             [mV/ms]
+ *       MAX_RATE       = 3300 mV / (1000 / 120) ms  ≈ 396 mV/ms             [SI 1000 ceiling]
+ *       baseSi         = clamp(rate / MAX_RATE, 0, 1) × 1000
+ *       deload         = exp(-timeSincePeakMs / SI_DELOAD_TAU_MS)
+ *       SI             = round(baseSi × deload)
+ *
+ *       The MAX_RATE ceiling is intentionally tied to Model III's 120 Hz scan period:
+ *         • Model III (8.33 ms scan)  → can resolve up to 396 mV/ms → full 1000 reachable
+ *         • Model II  (37 ms  scan)   → physically capped at 3300/37 ≈ 89 mV/ms → SI ≲ 225
+ *       Slower hardware can't see fast impacts, so it can't score them — by design.
+ *
+ *       Deload ramp: once a cell hits v_peak, subsequent frames in the same sustained
+ *       contact carry a growing timeSincePeak, so SI decays exponentially with a half-life
+ *       of SI_DELOAD_TAU_MS × ln(2) ≈ 69 ms. Holding past the impact does not keep scoring.
  */
 
 // ── helpers (module-level, no closure deps) ──────────────────────────────────
@@ -1178,18 +1193,78 @@ function eventAngleDeg(hits: RichHit[]): number | null {
   return +angleDeg.toFixed(1);
 }
 
-function strengthIndex(iei: number | null, peakMv: number): number {
-  // Speed: IEI ≤ 100ms = maximum (rapid bursts), IEI ≥ 2000ms = zero (resting pace)
-  const MIN_IEI = 100;
-  const MAX_IEI = 2000;
-  const speedNorm = iei == null
-    ? 0.5  // first event of session — neutral speed
-    : Math.max(0, Math.min(1, 1 - (iei - MIN_IEI) / (MAX_IEI - MIN_IEI)));
+// SI scaling constants — exported for live-display callers and unit-level checks.
+// MAX_SENSOR_MV          : ADC ceiling — 3.3 V rail in millivolts
+// SI_MAX_RATE_MV_PER_MS  : human/hardware ceiling — 3300 mV applied in one Model III
+//                          scan cycle (1000/120 ≈ 8.33 ms) → ~396 mV/ms → SI 1000.
+//                          Pinning this to Model III's resolution is what makes the
+//                          faster adapter able to score the full range; Model II's
+//                          37 ms floor naturally caps it around SI 225.
+// SI_DELOAD_TAU_MS       : exponential time constant for post-peak deload.
+//                          Half-life = TAU × ln(2) ≈ 69 ms. After ~300 ms the SI
+//                          for a sustained contact has fallen below 5% of its peak.
+const MAX_SENSOR_MV         = 3300;
+const SI_MAX_RATE_MV_PER_MS = MAX_SENSOR_MV / (1000 / 120);   // ≈ 396 mV/ms
+const SI_DELOAD_TAU_MS      = 100;
 
-  // Voltage: 3300 mv = 3.3V = full sensor range → full score
-  const voltNorm = Math.max(0, Math.min(1, peakMv / 3300));
+/**
+ * Rate-based Strength Index — see uploadSession JSDoc for the formal definition.
+ *
+ * @param peakMv          v_peak_mv for the event (highest voltage observed for the
+ *                        dominant cell in this frame).
+ * @param riseTimeMs      time from event onset to t_peak. 0 = single-frame impact;
+ *                        will be floored to scanPeriodMs since the adapter cannot
+ *                        physically resolve a faster rise.
+ * @param scanPeriodMs    adapter scan period (8 ms Model III, 37 ms Model II).
+ *                        Acts as the rise-time floor.
+ * @param timeSincePeakMs ms elapsed since t_peak for THIS frame. Drives the
+ *                        exponential deload — pass 0 for single-frame events and
+ *                        for live-display computations on a freshly updated peak.
+ */
+function strengthIndex(
+  peakMv:           number,
+  riseTimeMs:       number,
+  scanPeriodMs:     number,
+  timeSincePeakMs:  number = 0,
+): number {
+  if (peakMv <= 0) return 0;
 
-  return Math.round((speedNorm * 0.4 + voltNorm * 0.6) * 1000);
+  const effectiveRiseMs = Math.max(riseTimeMs, scanPeriodMs);
+  const rate            = peakMv / effectiveRiseMs;                // mV / ms
+  const baseSi          = Math.max(0, Math.min(1, rate / SI_MAX_RATE_MV_PER_MS)) * 1000;
+  const deload          = Math.exp(-Math.max(0, timeSincePeakMs) / SI_DELOAD_TAU_MS);
+
+  return Math.round(baseSi * deload);
+}
+
+/**
+ * Extract per-frame timing used by both the stored-event path and the
+ * volume-mode IEI-free SI samples. Returns the dominant cell's peak voltage
+ * plus the rise/decay window for this frame. Decay time IS "time since peak"
+ * for the current scan and drives the SI deload exponential directly.
+ */
+function eventTimingFromFrame(f: BleFrame): {
+  peakMv:      number;
+  tStart:      number;
+  tEnd:        number;
+  riseTimeMs:  number;
+  decayTimeMs: number;
+} {
+  if (!f.hits.length) {
+    return { peakMv: 0, tStart: f.t_device_ms, tEnd: f.t_device_ms, riseTimeMs: 0, decayTimeMs: 0 };
+  }
+  const tStart  = Math.min(...f.hits.map(h => h[3]));
+  const tEnd    = Math.max(f.t_device_ms, tStart);
+  const peakHit = f.hits.reduce((best, h) => h[5] > best[5] ? h : best, f.hits[0]);
+  const peakMv  = peakHit[5];
+  const tPeak   = Math.max(peakHit[4], tStart);   // clamp ≥ onset (defends against 1ms skew)
+  return {
+    peakMv,
+    tStart,
+    tEnd,
+    riseTimeMs:  Math.max(0, tPeak - tStart),
+    decayTimeMs: Math.max(0, tEnd  - tPeak),
+  };
 }
 
 function impulseIndex(si: number, cellCount: number): number {
@@ -1291,83 +1366,67 @@ async function uploadSession(opts: {
   if (frames.length === 0) return;
 
   // ── 2. events — enriched ──────────────────────────────────────────────────
-  // Pre-compute per-event derived values in one pass
+  // Pre-compute per-event derived values in one pass. eventTimingFromFrame
+  // gives us tStart/tEnd/riseTime/decayTime — reused below in eventRows.
   type EventDerived = {
-    iei:       number | null;   // ms since previous event (wall-clock)
-    angle:     number | null;   // degrees from grid center
-    si:        number;          // strength index 0–1000
-    ii:        number;          // impulse index 0–1000
-    accuracy:  number | null;   // accuracy score 0–100 (accuracy mode only)
-    cellCount: number;          // total cells contacted this event
-    peakMv:    number;
+    iei:         number | null;   // ms since previous event (wall-clock)
+    angle:       number | null;   // degrees from grid center
+    si:          number;          // strength index 0–1000 (rate-based, with deload)
+    ii:          number;          // impulse index 0–1000
+    accuracy:    number | null;   // accuracy score 0–100 (accuracy mode only)
+    cellCount:   number;          // total cells contacted this event
+    peakMv:      number;
+    tStart:      number;          // event onset (ESP32 uptime ms)
+    tEnd:        number;          // frame timestamp, clamped ≥ tStart
+    riseTimeMs:  number;          // tPeak − tStart
+    decayTimeMs: number;          // tEnd  − tPeak  (== timeSincePeak for this frame)
   };
 
   const derived: EventDerived[] = frames.map((f, i) => {
     const iei       = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
-    // Use v_peak_mv (index 5) — the highest voltage this cell recorded while active.
-    // This is always >= the current-frame mv, which may be on the decay slope.
-    const peakMv    = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
     const cellCount = f.hits.length;
-    const si        = strengthIndex(iei, peakMv);
+    const t         = eventTimingFromFrame(f);
+    // Rate-based SI: faster adapter sees faster impacts → higher achievable score.
+    // Sustained contacts deload exponentially via decayTime (== time-since-peak).
+    const si = strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
     return {
       iei,
-      angle:    eventAngleDeg(f.hits),
+      angle:       eventAngleDeg(f.hits),
       si,
-      ii:       impulseIndex(si, cellCount),
-      accuracy: mode === "accuracy" ? accuracyScore(f.hits) : null,
+      ii:          impulseIndex(si, cellCount),
+      accuracy:    mode === "accuracy" ? accuracyScore(f.hits) : null,
       cellCount,
-      peakMv,
+      peakMv:      t.peakMv,
+      tStart:      t.tStart,
+      tEnd:        t.tEnd,
+      riseTimeMs:  t.riseTimeMs,
+      decayTimeMs: t.decayTimeMs,
     };
   });
 
   const eventRows = frames.map((f, i) => {
-    const richHits = f.hits;
-
-    // t_start = earliest onset across all cells in this event
-    // (cells in the same frame can have different t_first values if they
-    //  became active on different prior scans)
-    const tStart = richHits.length
-      ? Math.min(...richHits.map(h => h[3]))
-      : f.t_device_ms;
-
-    // t_end = the current frame timestamp — clamped to be >= tStart to guard
-    // against the 1ms clock skew that can make t_device_ms arrive 1ms before
-    // a cell's t_first (fixed in firmware but defensive here too).
-    const tEnd = Math.max(f.t_device_ms, tStart);
+    const d = derived[i];
 
     // duration = full contact window from first cell onset to last active scan.
-    // Single-frame events (all cells new, t_start == t_end) get a floor of
-    // scanPeriodMs — the contact lasted at most one scan cycle (8 ms on Model III,
-    // 37 ms on Model II).
-    const rawDuration = tEnd - tStart;
+    // Single-frame events (tStart == tEnd) get a floor of scanPeriodMs —
+    // the contact lasted at most one scan cycle (8 ms on Model III, 37 ms on
+    // Model II). Decay time below is a lower bound — the true end-of-decay
+    // is one frame after the cell vanishes below threshold.
+    const rawDuration = d.tEnd - d.tStart;
     const duration    = rawDuration > 0 ? rawDuration : scanPeriodMs;
-
-    // Rise time: from the event onset to when the loudest cell peaked.
-    // We use v_peak_mv (index 5) to find the dominant cell, then read
-    // its t_peak_ms (index 4).
-    const peakHit = richHits.reduce(
-      (best, h) => h[5] > best[5] ? h : best,
-      richHits[0]
-    );
-    const riseTime  = Math.max(0, peakHit[4] - tStart);   // t_peak − t_start
-
-    // Decay time: lower-bound from peak to last active frame.
-    // The true end-of-decay is one frame after the cell vanishes below threshold
-    // (~37 ms underestimate at 27 Hz) — close enough for biomechanical analysis.
-    const decayTime = Math.max(0, tEnd - peakHit[4]);     // t_end − t_peak
 
     return {
       event_id:        f.event_id,
       session_id:      sessionId,
-      t_start_ms:      tStart,
-      t_end_ms:        tEnd,
+      t_start_ms:      d.tStart,
+      t_end_ms:        d.tEnd,
       duration_ms:     duration,
-      rise_time_ms:    riseTime,
-      decay_time_ms:   decayTime,
-      iei_prev_ms:     derived[i].iei,
-      angle_deg:       derived[i].angle,
-      strength_index:  { value: derived[i].si },
-      impulse_index:   derived[i].ii,
+      rise_time_ms:    d.riseTimeMs,
+      decay_time_ms:   d.decayTimeMs,
+      iei_prev_ms:     d.iei,
+      angle_deg:       d.angle,
+      strength_index:  { value: d.si },
+      impulse_index:   d.ii,
       // accuracy{} — stored in existing jsonb column, used by two modes:
       //   accuracy → { score }                               centroid 0–100
       //   target   → { target_zone, zone_hit, zone_correct } zone attempt record
@@ -1566,10 +1625,11 @@ async function uploadSession(opts: {
       .map(([idx, wFrames]) => {
         // Sort by sequence so intra-window slope is meaningful
         const sorted = [...wFrames].sort((a, b) => (a.vol_hit_seq ?? 0) - (b.vol_hit_seq ?? 0));
-        // IEI-free SI — pure force component, no cadence bias within a burst window
+        // Rate-based SI — same formula as the stored per-event SI, evaluated
+        // per hit with the frame's own rise/decay window. No cadence component.
         const siPerHit = sorted.map(f => {
-          const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
-          return strengthIndex(null, peakMv);
+          const t = eventTimingFromFrame(f);
+          return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
         });
         // IEI between consecutive hits in this window (wall-clock ms)
         const ieiWithin = sorted.slice(1).map((f, i) => f.epoch_ms - sorted[i].epoch_ms);
@@ -1635,8 +1695,8 @@ async function uploadSession(opts: {
     const allHitSiValues = frames
       .filter(f => f.vol_window_idx !== null)
       .map(f => {
-        const peakMv = f.hits.reduce((m, h) => Math.max(m, h[5]), 0);
-        return strengthIndex(null, peakMv);
+        const t = eventTimingFromFrame(f);
+        return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
       });
 
     return {
@@ -1975,6 +2035,20 @@ export default function Session() {
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
   }, []);
+
+  // ── User-tunable session settings (timer / default metric / auto-save) ───────
+  // Persisted in localStorage and shared with the desktop page via the same
+  // useSessionSettings hook + same-tab broadcast event, so changing a value in
+  // either layout takes effect immediately in both.
+  const [sessionSettings] = useSessionSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const sessionMaxMs  = sessionSettings.timerMs;
+  const sessionWarnMs = warnMsFor(sessionSettings.timerMs);
+  // Ref mirror so callbacks (stopSession, the timer interval) read the latest
+  // value without re-binding their effect deps.
+  const autoSaveRef = useRef(sessionSettings.autoSave);
+  useEffect(() => { autoSaveRef.current = sessionSettings.autoSave; },
+    [sessionSettings.autoSave]);
 
   // ── Auth / profile ──────────────────────────────────────────────────────────
   const [userId,    setUserId]    = useState<string | null>(null);
@@ -2390,6 +2464,14 @@ export default function Session() {
   const [grid,    setGrid]    = useState<GridState>(new Map());
   const [now,     setNow]     = useState(Date.now());
   const [peakMv,  setPeakMv]  = useState(0);
+  // Live SI deload — tracks the most recent peak mv that beat the running
+  // exponential decay, plus the perf.now() timestamp when it was set. The SI
+  // tile reads these refs each render; siTick (50ms interval while a session
+  // is active) drives the re-renders so the ramp visibly decays even when
+  // no new BLE frames arrive.
+  const liveSiPeakMvRef = useRef(0);
+  const liveSiAtMsRef   = useRef(0);
+  const [siTick, setSiTick] = useState(0);
   const [ripples, setRipples] = useState<Array<{ id: number; x: number | string; y: number | string; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
@@ -2555,6 +2637,15 @@ export default function Session() {
     return () => clearInterval(id);
   }, []);
 
+  // Live SI deload tick — bumps siTick every 50ms while a session is active so
+  // the SI tile re-renders and the exponential decay is visible even when the
+  // BLE stream is quiet. Idle when not in a session to avoid wasted renders.
+  useEffect(() => {
+    if (!sessionActive) return;
+    const id = setInterval(() => setSiTick(t => t + 1), 50);
+    return () => clearInterval(id);
+  }, [sessionActive]);
+
   // Timer — also drives the 30 s hard cap and the 5 s warning cue
   useEffect(() => {
     if (!sessionActive) return;
@@ -2562,22 +2653,22 @@ export default function Session() {
       const elapsed = Date.now() - (startTimeRef.current ?? Date.now());
       setElapsedMs(elapsed);
 
-      // 5-second warning (fires once at 25 s)
-      if (elapsed >= SESSION_WARN_MS && !sessionWarningFired.current) {
+      // Warning cue — fires once 5 s before the cap (scales with timer setting)
+      if (elapsed >= sessionWarnMs && !sessionWarningFired.current) {
         sessionWarningFired.current = true;
         setSessionWarning(true);
         playVolumeEnd(); // descending 3-tone on web, "Stop!" on native
       }
 
-      // Hard cap — auto-stop at 30 s
-      if (elapsed >= SESSION_MAX_MS) {
+      // Hard cap — auto-stop at the user-selected duration (30 / 45 / 60 s)
+      if (elapsed >= sessionMaxMs) {
         clearInterval(id);
         stopSession();
       }
     }, 250);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionActive]);
+  }, [sessionActive, sessionMaxMs, sessionWarnMs]);
 
   // Session cleanup when deactivated
   useEffect(() => {
@@ -2870,7 +2961,21 @@ export default function Session() {
     }));
     setFeed(prev => [...newItems, ...prev].slice(0, 60));
 
-    setPeakMv(prev => Math.max(prev, ...hits.map(h => h[5])));  // h[5] = v_peak_mv
+    const batchMaxMv = Math.max(...hits.map(h => h[5]));        // h[5] = v_peak_mv
+    setPeakMv(prev => Math.max(prev, batchMaxMv));               // all-time session peak (V tile)
+
+    // Live SI peak — beats the currently-decayed value? Then it's a new impact
+    // worth scoring (handles a softer second hit that still feels fresh because
+    // the previous peak has mostly decayed away).
+    {
+      const nowPerf = performance.now();
+      const elapsed = nowPerf - liveSiAtMsRef.current;
+      const decayed = liveSiPeakMvRef.current * Math.exp(-elapsed / SI_DELOAD_TAU_MS);
+      if (batchMaxMv > decayed) {
+        liveSiPeakMvRef.current = batchMaxMv;
+        liveSiAtMsRef.current   = nowPerf;
+      }
+    }
 
     } // end for (batch dispatcher loop)
   }, []);
@@ -2951,7 +3056,12 @@ export default function Session() {
   const pickerResolveRef = useRef<((d: ScannedDevice | null) => void) | null>(null);
 
   // Opens the in-app picker for native: starts a scan, resolves when user picks
-  const openNativePicker = useCallback((): Promise<ScannedDevice | null> => {
+  // The picker can be opened for either the primary connect (no excludes) or
+  // the multi-bag "+ Add bag" flow (excludes the primary + every active slot).
+  // Passing already-connected deviceIds keeps the same physical bag from being
+  // picked twice — iOS Core Bluetooth would otherwise silently re-use the
+  // existing connection and the second hello packet would never arrive.
+  const openNativePicker = useCallback((opts?: { excludeDeviceIds?: string[] }): Promise<ScannedDevice | null> => {
     return new Promise(resolve => {
       pickerResolveRef.current = resolve;
       setPickerDevices([]);
@@ -2963,6 +3073,7 @@ export default function Session() {
         // Limit results to known bag prefixes (TS = new, MPY = returning).
         // Both are read from .env so a single constant stays in sync.
         namePrefixes: getBleNamePrefixes().all,
+        excludeDeviceIds: opts?.excludeDeviceIds,
         onUpdate: devices => setPickerDevices(devices),
       }).finally(() => setPickerScanning(false));
     });
@@ -3115,9 +3226,28 @@ export default function Session() {
       let conn: AdapterConnection;
       let bleName = "bag";
 
+      // Build the "already connected" exclude list so the picker can't surface
+      // the primary bag or any active slot. Without this, iOS would happily
+      // accept a duplicate connect to the same physical device and we'd end up
+      // with two slot entries pointing at the same BLE link.
+      const excludeDeviceIds: string[] = [];
+      const primaryId = getConnectionDeviceId(connRef.current);
+      if (primaryId) excludeDeviceIds.push(primaryId);
+      for (const s of slotsRef.current.values()) {
+        const sid = getConnectionDeviceId(s.conn);
+        if (sid) excludeDeviceIds.push(sid);
+      }
+
       if (isNativeApp()) {
-        const picked = await openNativePicker();
+        const picked = await openNativePicker({ excludeDeviceIds });
         if (!picked) return;       // user cancelled
+        // Defensive: even with the filter, the user could in theory pick a
+        // device just before the slot map gets updated. Re-check at connect
+        // time to avoid a silent double-connect.
+        if (excludeDeviceIds.some(id => id.toLowerCase() === picked.deviceId.toLowerCase())) {
+          setBleError("That bag is already connected.");
+          return;
+        }
         bleName = picked.name ?? "bag";
         conn = await connectToDeviceNative({
           device: picked,
@@ -3343,6 +3473,8 @@ export default function Session() {
     setFeed([]);
     setRipples([]);
     setPeakMv(0);
+    liveSiPeakMvRef.current = 0;
+    liveSiAtMsRef.current   = 0;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
@@ -3435,6 +3567,16 @@ export default function Session() {
     setSessionActive(false);
     closeAudio();
     await sendCommand("stop");
+
+    // Auto-save — fires only when the user has opted in via the settings
+    // modal. Defaults to off so the manual Save / Discard buttons remain the
+    // production flow for warm-up reps that shouldn't be recorded. We read
+    // through autoSaveRef so this closure doesn't restale on toggle.
+    if (autoSaveRef.current) {
+      // Defer to the next tick so any setState calls above flush first, then
+      // saveSession sees the final framesRef snapshot.
+      setTimeout(() => { void saveSession(); }, 0);
+    }
   };
 
   // ── Save to Supabase ──────────────────────────────────────────────────────────
@@ -3541,13 +3683,22 @@ export default function Session() {
     setFeed([]);
     setGrid(new Map());
     setPeakMv(0);
+    liveSiPeakMvRef.current = 0;
+    liveSiAtMsRef.current   = 0;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
   };
 
   // ── Feed / stats display metric toggle ───────────────────────────────────────
-  const [feedMetric, setFeedMetric] = useState<"v" | "si">("v");
+  // Default metric is sourced from sessionSettings. We also sync via effect so
+  // changing the default in the modal updates the live stats panel
+  // immediately. The per-session V/SI toggle still works locally; it just
+  // gets re-aligned the next time the user changes the default in settings.
+  const [feedMetric, setFeedMetric] = useState<"v" | "si">(() => sessionSettings.defaultMetric);
+  useEffect(() => {
+    setFeedMetric(sessionSettings.defaultMetric);
+  }, [sessionSettings.defaultMetric]);
   // MiniStatStrip: which counter is featured in the left pill — hits or
   // total BLE events. Click the pill to flip it.
   const [topMetric, setTopMetric] = useState<"hits" | "events">("hits");
@@ -3582,6 +3733,21 @@ export default function Session() {
   // ── Pre-compute mode-specific stats for the stats panel ──────────────────────
   type StatItem = { label: string; value: string; sub?: string; color?: string };
   const tgtAccPct = tgtAttempts > 0 ? Math.round((tgtHits / tgtAttempts) * 100) : null;
+
+  // Live SI with deload — driven by the siTick interval so it re-renders even
+  // between BLE frames. Uses scanPeriod as the rise-time floor (we don't track
+  // per-impact rise live), so a fresh peak shows full SI; subsequent renders
+  // multiply by exp(-elapsed / SI_DELOAD_TAU_MS) until the next impact resets it.
+  void siTick;  // anchor — the interval bumps this state purely to trigger a re-render
+  const liveScanMs = deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
+  const liveSi = liveSiPeakMvRef.current > 0
+    ? strengthIndex(
+        liveSiPeakMvRef.current,
+        liveScanMs,
+        liveScanMs,
+        performance.now() - liveSiAtMsRef.current,
+      )
+    : 0;
   const statsItems: StatItem[] = sessionMode === "reaction"
     ? [
         { label: "Time",     value: formatTime(elapsedMs) },
@@ -3596,8 +3762,11 @@ export default function Session() {
         { label: "Events",   value: String(sessionActive ? frameCount : framesRef.current.length) },
         { label: "Accuracy", value: avgAccuracy != null ? String(avgAccuracy) : "—", sub: avgAccuracy != null ? "%" : "",
           color: avgAccuracy != null ? (avgAccuracy >= 70 ? "#00ff88" : avgAccuracy >= 45 ? "#00dcff" : "#ffcc00") : undefined },
-        { label: "Peak",     value: peakMv ? (feedMetric === "si" ? String(strengthIndex(null, peakMv)) : (peakMv / 1000).toFixed(3)) : "—",
-          sub: peakMv ? (feedMetric === "si" ? "SI" : "V") : "", color: feedMetric === "si" ? "#b400ff" : undefined },
+        { label: "Peak",     value: feedMetric === "si"
+            ? (liveSi ? String(liveSi) : "—")
+            : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
+          sub: feedMetric === "si" ? (liveSi ? "SI" : "") : (peakMv ? "V" : ""),
+          color: feedMetric === "si" ? "#b400ff" : undefined },
       ]
     : sessionMode === "target"
     ? [
@@ -3612,8 +3781,11 @@ export default function Session() {
         { label: "Time",   value: formatTime(elapsedMs) },
         { label: "Events", value: String(sessionActive ? frameCount : framesRef.current.length), color: MODE_META.power.color },
         { label: "Hits",   value: String(feed.length) },
-        { label: "Peak",   value: peakMv ? (feedMetric === "si" ? String(strengthIndex(null, peakMv)) : (peakMv / 1000).toFixed(3)) : "—",
-          sub: peakMv ? (feedMetric === "si" ? "SI" : "V") : "", color: feedMetric === "si" ? "#b400ff" : MODE_META.power.color },
+        { label: "Peak",   value: feedMetric === "si"
+            ? (liveSi ? String(liveSi) : "—")
+            : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
+          sub: feedMetric === "si" ? (liveSi ? "SI" : "") : (peakMv ? "V" : ""),
+          color: feedMetric === "si" ? "#b400ff" : MODE_META.power.color },
       ];
 
   // ── Onboarding flow step ─────────────────────────────────────────────────────
@@ -3693,13 +3865,46 @@ export default function Session() {
               strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </button>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 900, letterSpacing: 0.1 }}>New Session</h1>
           <p style={{ margin: "2px 0 0", fontSize: 13, color: "var(--muted)" }}>
             Select an athlete, connect the bag, and record impacts live.
           </p>
         </div>
+        {/* Hamburger settings trigger — opens the SessionSettingsModal.
+            Disabled while a session is in flight so timer changes can't
+            mid-flight reshape the cap underneath the running interval. */}
+        <button
+          type="button"
+          aria-label="Session settings"
+          aria-haspopup="dialog"
+          disabled={sessionActive}
+          onClick={() => setSettingsOpen(true)}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            width: 38, height: 38, borderRadius: 10, padding: 0,
+            border: "1px solid rgba(255,255,255,0.10)",
+            background: "rgba(255,255,255,0.04)",
+            color: "var(--text)",
+            cursor: sessionActive ? "not-allowed" : "pointer",
+            opacity: sessionActive ? 0.5 : 1,
+            flexShrink: 0,
+            transition: "background 140ms ease, border-color 140ms ease",
+          }}
+        >
+          <svg style={{ width: 34, height: 34, display: "block", flexShrink: 0 }} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M3 6h18"  stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            <path d="M3 12h18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            <path d="M3 18h18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+          </svg>
+        </button>
       </div>
+
+      {/* ── Session Settings modal ─────────────────────────────────────────── */}
+      <SessionSettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+      />
 
       {/* ── 3-col layout ────────────────────────────────────────────────────── */}
       {/* Wave 2 #4 — `focused` collapses the sidebars by overriding the grid.
@@ -4323,13 +4528,15 @@ export default function Session() {
               const modeColor = MODE_META[sessionMode].color;
               const isHits   = topMetric === "hits";
               const topValue = isHits ? String(feed.length) : String(frameCount);
-              const peakValue =
-                peakMv
-                  ? (feedMetric === "si"
-                      ? String(strengthIndex(null, peakMv))
-                      : (peakMv / 1000).toFixed(2))
-                  : "—";
-              const peakSub  = peakMv ? (feedMetric === "si" ? "SI" : "V") : "";
+              // SI tile shows the live rate-based SI with deload; V tile keeps
+              // the all-time session peak (peakMv) since "peak voltage" is a
+              // monotonically growing diagnostic, not a coachable score.
+              const peakValue = feedMetric === "si"
+                ? (liveSi ? String(liveSi) : "—")
+                : (peakMv ? (peakMv / 1000).toFixed(2) : "—");
+              const peakSub = feedMetric === "si"
+                ? (liveSi ? "SI" : "")
+                : (peakMv ? "V" : "");
               const peakColor = feedMetric === "si" ? "#b400ff" : modeColor;
 
               const pillBase: React.CSSProperties = {
@@ -4454,8 +4661,9 @@ export default function Session() {
                 height: 40,
               }}>
                 {/* Wave 1 #1 — ArcTimer replaces the legacy "{X}s left" text banner.
-                    Runs the full 30s; color shifts amber at 25s, red at 28s. */}
-                <ArcTimer elapsedMs={elapsedMs} size={40} />
+                    Cap + warn thresholds are sourced from sessionSettings so
+                    the arc rescales with the user-selected 30/45/60 s timer. */}
+                <ArcTimer elapsedMs={elapsedMs} maxMs={sessionMaxMs} warnMs={sessionWarnMs} size={40} />
                 <button
                   onClick={stopSession}
                   style={{

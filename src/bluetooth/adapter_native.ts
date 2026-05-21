@@ -94,22 +94,37 @@ export async function scanForDevices(opts: {
   // Devices whose name falls back to their deviceId are always excluded when
   // a filter is active (they have no meaningful advertised name).
   namePrefixes?: string[];
+  // Multi-bag: skip devices that are already connected to this app.
+  // The caller passes the deviceIds of the primary connection + every active
+  // slot.conn so the picker can't surface a bag the user has already paired.
+  // Matched case-insensitively against scan.deviceId.
+  excludeDeviceIds?: string[];
   onUpdate: (devices: ScannedDevice[]) => void;
 }): Promise<ScannedDevice[]> {
   await ensureInit();
 
-  const { durationMs = 5000, namePrefixes, onUpdate } = opts;
+  const { durationMs = 5000, namePrefixes, excludeDeviceIds, onUpdate } = opts;
 
   // Normalise prefixes once so the hot callback path is cheap
   const prefixes = namePrefixes?.map(p => p.toLowerCase()) ?? [];
   const hasFilter = prefixes.length > 0;
 
+  // Pre-normalise excludes to a Set for O(1) lookup in the hot path.
+  const excludes = new Set<string>(
+    (excludeDeviceIds ?? [])
+      .filter((id): id is string => typeof id === "string" && id.length > 0)
+      .map(id => id.toLowerCase())
+  );
+
   function matchesFilter(name: string, id: string): boolean {
-    if (!hasFilter) return true;
-    // Exclude devices that never advertised a real name
-    if (name === id) return false;
-    const lower = name.toLowerCase();
-    return prefixes.some(p => lower.startsWith(p));
+    if (hasFilter) {
+      // Exclude devices that never advertised a real name
+      if (name === id) return false;
+      const lower = name.toLowerCase();
+      if (!prefixes.some(p => lower.startsWith(p))) return false;
+    }
+    if (excludes.size > 0 && excludes.has(id.toLowerCase())) return false;
+    return true;
   }
 
   const seen = new Map<string, ScannedDevice>();

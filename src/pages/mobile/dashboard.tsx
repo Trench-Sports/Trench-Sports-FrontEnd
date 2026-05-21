@@ -305,6 +305,18 @@ export default function Dashboard() {
   const [athleteProgressMap, setAthleteProgressMap] = useState<Map<string, AthleteProgress>>(new Map());
   const [athleteProgressLoading, setAthleteProgressLoading] = useState(false);
 
+  // ---------- Per-mode analytics (powering the mode pills) ----------
+  // Each sub-key only appears when the athlete has > 5 sessions of that mode.
+  type ModeTrend = "up" | "stable" | "down";
+  type AthleteModeStats = {
+    power?:    { sessions: number; avgIndex: number; peakIndex: number; trend: ModeTrend; delta: number };
+    reaction?: { sessions: number; avgMs:    number; bestMs:    number; trend: ModeTrend; delta: number };
+    accuracy?: { sessions: number; avgPct:   number;                    trend: ModeTrend; delta: number };
+    volume?:   { sessions: number; maxEvents: number; avgEvents: number };
+    target?:   { sessions: number; avgPct:   number;                    trend: ModeTrend; delta: number };
+  };
+  const [athleteModeStatsMap, setAthleteModeStatsMap] = useState<Map<string, AthleteModeStats>>(new Map());
+
   useEffect(() => {
     if (activeTab !== "athletes" || !programId || !userRole || !supabase) return;
 
@@ -312,10 +324,11 @@ export default function Dashboard() {
 
     (async () => {
       try {
-        // Fetch all sessions across all three modes in one round-trip
+        // Fetch all sessions across all modes in one round-trip.
+        // num_events powers the volume pill (max hits in a single session).
         let progressQuery = supabase!
           .from("session_summaries")
-          .select("athlete_id, date_of_record, mode, quality, peak_force_stats")
+          .select("athlete_id, date_of_record, mode, quality, peak_force_stats, num_events")
           .eq("program_id", programId!)
           .not("athlete_id", "is", null)
           .order("date_of_record", { ascending: true });
@@ -330,7 +343,14 @@ export default function Dashboard() {
         if (!data) return;
 
         // Group by athlete → mode → vals[]
-        type ModeVals = { strength: number[]; accuracy: number[]; reaction: number[]; targetAccuracy: number[]; targetReaction: number[] };
+        type ModeVals = {
+          strength: number[];
+          accuracy: number[];
+          reaction: number[];
+          targetAccuracy: number[];
+          targetReaction: number[];
+          volumeEvents: number[]; // per-session hit counts (volume mode pills)
+        };
         const byAthlete = new Map<string, ModeVals>();
 
         for (const row of data as any[]) {
@@ -338,7 +358,7 @@ export default function Dashboard() {
           const mode = (row.mode ?? "power").toLowerCase();
           if (!id) continue;
 
-          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [], targetAccuracy: [], targetReaction: [] });
+          if (!byAthlete.has(id)) byAthlete.set(id, { strength: [], accuracy: [], reaction: [], targetAccuracy: [], targetReaction: [], volumeEvents: [] });
           const entry = byAthlete.get(id)!;
 
           if (mode === "power") {
@@ -362,6 +382,9 @@ export default function Dashboard() {
             // avg_reaction_ms_correct is the meaningful benchmark; fall back to all-attempts avg
             const rt = row.quality?.avg_reaction_ms_correct ?? row.quality?.avg_reaction_ms_all ?? null;
             if (rt != null) entry.targetReaction.push(Math.round(rt));
+          } else if (mode === "volume") {
+            const events = row.num_events;
+            if (typeof events === "number" && events > 0) entry.volumeEvents.push(events);
           }
         }
 
@@ -397,6 +420,62 @@ export default function Dashboard() {
         }
 
         setAthleteProgressMap(progressMap);
+
+        // ── Per-mode pill stats ─────────────────────────────────────────────
+        // For each mode the athlete has *more than 5* sessions of, compute the
+        // headline metric the pill will surface (and a directional trend
+        // where it makes sense).
+        const trendOf = (vals: number[], lowerIsBetter: boolean): { trend: ModeTrend; delta: number } => {
+          if (vals.length < 2) return { trend: "stable", delta: 0 };
+          const half  = Math.max(1, Math.floor(vals.length / 2));
+          const early = vals.slice(0, half).reduce((s, v) => s + v, 0) / half;
+          const late  = vals.slice(-half).reduce((s, v) => s + v, 0) / half;
+          // Positive delta always means improvement, regardless of metric direction.
+          const delta     = lowerIsBetter ? Math.round(early - late) : Math.round(late - early);
+          const threshold = Math.max(1, Math.round(Math.abs(early) * 0.03));
+          const trend: ModeTrend = delta > threshold ? "up" : delta < -threshold ? "down" : "stable";
+          return { trend, delta };
+        };
+
+        const modeStatsMap = new Map<string, AthleteModeStats>();
+        for (const [athleteId, modes] of byAthlete) {
+          const stats: AthleteModeStats = {};
+
+          if (modes.strength.length > 5) {
+            const peak = Math.max(...modes.strength);
+            const avg  = Math.round(modes.strength.reduce((s, v) => s + v, 0) / modes.strength.length);
+            const { trend, delta } = trendOf(modes.strength, false);
+            stats.power = { sessions: modes.strength.length, avgIndex: avg, peakIndex: peak, trend, delta };
+          }
+
+          if (modes.reaction.length > 5) {
+            const avg  = Math.round(modes.reaction.reduce((s, v) => s + v, 0) / modes.reaction.length);
+            const best = Math.round(Math.min(...modes.reaction));
+            const { trend, delta } = trendOf(modes.reaction, true);
+            stats.reaction = { sessions: modes.reaction.length, avgMs: avg, bestMs: best, trend, delta };
+          }
+
+          if (modes.accuracy.length > 5) {
+            const avg = Math.round((modes.accuracy.reduce((s, v) => s + v, 0) / modes.accuracy.length) * 10) / 10;
+            const { trend, delta } = trendOf(modes.accuracy, false);
+            stats.accuracy = { sessions: modes.accuracy.length, avgPct: avg, trend, delta };
+          }
+
+          if (modes.volumeEvents.length > 5) {
+            const max = Math.max(...modes.volumeEvents);
+            const avg = Math.round(modes.volumeEvents.reduce((s, v) => s + v, 0) / modes.volumeEvents.length);
+            stats.volume = { sessions: modes.volumeEvents.length, maxEvents: max, avgEvents: avg };
+          }
+
+          if (modes.targetAccuracy.length > 5) {
+            const avg = Math.round((modes.targetAccuracy.reduce((s, v) => s + v, 0) / modes.targetAccuracy.length) * 10) / 10;
+            const { trend, delta } = trendOf(modes.targetAccuracy, false);
+            stats.target = { sessions: modes.targetAccuracy.length, avgPct: avg, trend, delta };
+          }
+
+          if (Object.keys(stats).length > 0) modeStatsMap.set(athleteId, stats);
+        }
+        setAthleteModeStatsMap(modeStatsMap);
       } finally {
         setAthleteProgressLoading(false);
       }
@@ -2011,6 +2090,23 @@ export default function Dashboard() {
   const [sessionPage, setSessionPage] = useState(0);
   const SESSION_PAGE_SIZE = 10;
 
+  // Jump from any leaderboard row to the Recent Sessions tab,
+  // pre-filtered to that athlete. The tab wrapper has a keyed
+  // fade/slide animation that runs automatically on tab change.
+  const goToSessionsForAthlete = useCallback((name: string) => {
+    const clean = (name ?? "").trim();
+    if (!clean) return;
+    setSessionAthleteFilter(clean);
+    setSessionModeFilter("all");
+    setSessionPage(0);
+    setActiveTab("recent");
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      });
+    }
+  }, []);
+
   // Athletes who appear in recentSessions (for the athlete filter dropdown)
   const sessionAthletes = useMemo(() => {
     const seen = new Map<string, string>();
@@ -2058,6 +2154,19 @@ export default function Dashboard() {
     }
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [athletes]);
+
+  // Athletes deduplicated across all leaderboard rows — powers the insights-tab athlete pills
+  const insightsAthletes = useMemo(() => {
+    const map = new Map<string, string>(); // athleteId → name
+    for (const r of strengthRows)      map.set(r.athleteId, r.name);
+    for (const r of reactionRows)      map.set(r.athleteId, r.name);
+    for (const r of accuracyRows)      map.set(r.athleteId, r.name);
+    for (const r of volumeInsightRows) map.set(r.athleteId, r.name);
+    for (const r of targetInsightRows) map.set(r.athleteId, r.name);
+    return Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [strengthRows, reactionRows, accuracyRows, volumeInsightRows, targetInsightRows]);
 
   // Fetch all sessions for the selected athlete whenever analysisAthleteId changes
   useEffect(() => {
@@ -2750,7 +2859,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* TAB CONTENT */}
+      {/* TAB CONTENT — keyed wrapper so a tab switch replays the
+           fade/slide-in animation defined in .ts-tabContent. */}
+      <div key={activeTab} className="ts-tabContent">
       {activeTab === "recent" ? (
         <>
           {/* MAIN GRID */}
@@ -4124,6 +4235,93 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* ── ATHLETE PILLS — tap to jump to In-Depth Analysis ── */}
+          {insightsAthletes.length > 0 && (
+            <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.40 }}>
+                Quick Select
+              </span>
+              <div style={{
+                display: "flex",
+                gap: 7,
+                overflowX: "auto",
+                paddingBottom: 4,
+                scrollbarWidth: "none",
+                WebkitOverflowScrolling: "touch" as any,
+              }}>
+                {/* "All" clears the selection */}
+                <button
+                  type="button"
+                  onClick={() => { setAnalysisAthleteId(null); setAnalysisAthleteName("—"); }}
+                  style={{
+                    flexShrink: 0,
+                    padding: "8px 16px",
+                    borderRadius: 999,
+                    border: !analysisAthleteId
+                      ? (isDark ? "1px solid rgba(180,0,255,0.55)" : "1px solid rgba(20,20,40,0.28)")
+                      : `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
+                    background: !analysisAthleteId
+                      ? (isDark ? "rgba(180,0,255,0.18)" : "rgba(20,20,40,0.09)")
+                      : "transparent",
+                    color: !analysisAthleteId
+                      ? (isDark ? "rgba(210,140,255,0.95)" : "rgba(20,20,40,0.88)")
+                      : (isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)"),
+                    font: "inherit",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    cursor: "pointer",
+                    transition: "all 130ms ease",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  All Athletes
+                </button>
+
+                {insightsAthletes.map(a => {
+                  const isSelected = analysisAthleteId === a.id;
+                  // Show "First L." format to keep pills compact
+                  const parts = a.name.trim().split(" ");
+                  const display = parts.length > 1
+                    ? `${parts[0]} ${parts[parts.length - 1].charAt(0)}.`
+                    : parts[0];
+                  return (
+                    <button
+                      key={a.id}
+                      type="button"
+                      onClick={() => {
+                        setAnalysisAthleteId(a.id);
+                        setAnalysisAthleteName(a.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }}
+                      style={{
+                        flexShrink: 0,
+                        padding: "8px 16px",
+                        borderRadius: 999,
+                        border: isSelected
+                          ? "1px solid rgba(180,0,255,0.55)"
+                          : `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
+                        background: isSelected
+                          ? "rgba(180,0,255,0.18)"
+                          : (isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)"),
+                        color: isSelected
+                          ? "rgba(210,140,255,0.95)"
+                          : (isDark ? "rgba(255,255,255,0.70)" : "rgba(20,20,40,0.70)"),
+                        font: "inherit",
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: "pointer",
+                        transition: "all 130ms ease",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {display}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* ── ATHLETE SECTION HEADER ── */}
           <div className="ts-span2" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingBottom: 4 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.45 }}>Athletes</div>
@@ -4220,7 +4418,27 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Power sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
                 </div>)
                 : strengthRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => {
+                      setAnalysisAthleteId(row.athleteId);
+                      setAnalysisAthleteName(row.name);
+                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -4253,7 +4471,27 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Reaction sessions to start tracking response times. Rankings show avg and best reaction ms per athlete.</div>
                 </div>)
                 : reactionRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => {
+                      setAnalysisAthleteId(row.athleteId);
+                      setAnalysisAthleteName(row.name);
+                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -4272,7 +4510,27 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Volume sessions to track hit counts and output quality per athlete.</div>
                 </div>)
                 : volumeInsightRows.slice(0, 5).map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => {
+                      setAnalysisAthleteId(row.athleteId);
+                      setAnalysisAthleteName(row.name);
+                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -4298,7 +4556,27 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Target sessions to rank athletes by zone accuracy and correct-zone reaction time.</div>
                 </div>)
                 : targetInsightRows.slice(0, 5).map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => {
+                      setAnalysisAthleteId(row.athleteId);
+                      setAnalysisAthleteName(row.name);
+                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -4338,7 +4616,27 @@ export default function Dashboard() {
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Accuracy sessions to track placement scores and avg offset. Each session logs accuracy % automatically.</div>
                 </div>)
                 : accuracyRows.map((row, idx) => (
-                  <div key={row.athleteId} className="ts-leaderRow" role="row">
+                  <div
+                    key={row.athleteId}
+                    className="ts-leaderRow ts-leaderRowClickable"
+                    role="row"
+                    tabIndex={0}
+                    aria-label={`View sessions for ${row.name}`}
+                    title={`View sessions for ${row.name}`}
+                    onClick={() => {
+                      setAnalysisAthleteId(row.athleteId);
+                      setAnalysisAthleteName(row.name);
+                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }
+                    }}
+                  >
                     <div className="ts-leaderCell rank" role="cell">{idx + 1}</div>
                     <div className="ts-leaderCell name" role="cell">
                       <div className="ts-leaderName">{row.name}</div>
@@ -4411,7 +4709,26 @@ export default function Dashboard() {
                   const toVal   = isForm ? `${row.to}°`   : `${row.to}${unit}`;
                   const dirLabel= isForm ? (isPositive ? "↗ more neutral" : "↘ more biased") : (isPositive ? "▲" : "▼");
                   return (
-                    <div key={row.athleteId} className="ts-mostRow">
+                    <div
+                      key={row.athleteId}
+                      className="ts-mostRow ts-leaderRowClickable"
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`View analysis for ${row.name}`}
+                      onClick={() => {
+                        setAnalysisAthleteId(row.athleteId);
+                        setAnalysisAthleteName(row.name);
+                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setAnalysisAthleteId(row.athleteId);
+                          setAnalysisAthleteName(row.name);
+                          setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        }
+                      }}
+                    >
                       <div className="ts-leaderCell rank" style={{ fontSize: 13, fontWeight: 800, opacity: 0.4, minWidth: 24 }}>{idx + 1}</div>
                       <div className="ts-miLabel" style={{ minWidth: 0, flex: 1 }}>
                         <div className="ts-miTitle" style={{ fontSize: 13 }}>{row.name}</div>
@@ -4833,6 +5150,88 @@ export default function Dashboard() {
                                   <span className="ts-pillLabel">WT</span>{a.weight}
                                 </span>
                               )}
+                              {/* Per-mode analytics pills — only modes with > 5 sessions appear */}
+                              {(() => {
+                                const stats = athleteModeStatsMap.get(a.id);
+                                if (!stats) return null;
+                                const trendArrow = (t: ModeTrend) => t === "up" ? "▲" : t === "down" ? "▼" : "→";
+                                const pills: React.ReactNode[] = [];
+
+                                if (stats.power) {
+                                  const { peakIndex, trend, delta, sessions } = stats.power;
+                                  pills.push(
+                                    <span
+                                      key="power"
+                                      className={`ts-athletePill ts-modePill ts-modePill--power ts-modePill--${trend}`}
+                                      title={`Power · ${sessions} sessions · peak SI ${peakIndex}/1000 · trend ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta} pts)`}
+                                    >
+                                      <span className="ts-pillLabel">💥 SI</span>{peakIndex}
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.reaction) {
+                                  const { avgMs, trend, delta, sessions } = stats.reaction;
+                                  pills.push(
+                                    <span
+                                      key="reaction"
+                                      className={`ts-athletePill ts-modePill ts-modePill--reaction ts-modePill--${trend}`}
+                                      title={`Reaction · ${sessions} sessions · avg ${avgMs}ms · ${trend === "up" ? "faster" : trend === "down" ? "slower" : "stable"} by ${Math.abs(delta)}ms`}
+                                    >
+                                      <span className="ts-pillLabel">⚡ RT</span>{avgMs}<span style={{ opacity: 0.5, marginLeft: 2 }}>ms</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}ms</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.accuracy) {
+                                  const { avgPct, trend, delta, sessions } = stats.accuracy;
+                                  pills.push(
+                                    <span
+                                      key="accuracy"
+                                      className={`ts-athletePill ts-modePill ts-modePill--accuracy ts-modePill--${trend}`}
+                                      title={`Accuracy · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
+                                    >
+                                      <span className="ts-pillLabel">🎯 ACC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+                                if (stats.volume) {
+                                  const { maxEvents, avgEvents, sessions } = stats.volume;
+                                  pills.push(
+                                    <span
+                                      key="volume"
+                                      className="ts-athletePill ts-modePill ts-modePill--volume"
+                                      title={`Volume · ${sessions} sessions · max ${maxEvents} events/session · avg ${avgEvents}`}
+                                    >
+                                      <span className="ts-pillLabel">🥊 MAX</span>{maxEvents}
+                                    </span>
+                                  );
+                                }
+                                if (stats.target) {
+                                  const { avgPct, trend, delta, sessions } = stats.target;
+                                  pills.push(
+                                    <span
+                                      key="target"
+                                      className={`ts-athletePill ts-modePill ts-modePill--target ts-modePill--${trend}`}
+                                      title={`Target precision · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
+                                    >
+                                      <span className="ts-pillLabel">🏹 PREC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      {trend !== "stable" && (
+                                        <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
+                                      )}
+                                    </span>
+                                  );
+                                }
+
+                                return pills;
+                              })()}
                             </div>
 
                             {/* Progress badge */}
@@ -4976,6 +5375,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      </div>
 
       {/* Tiny scoped styles so we don't disturb your existing design system */}
       <style>{`
