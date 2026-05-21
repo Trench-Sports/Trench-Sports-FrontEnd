@@ -2155,19 +2155,6 @@ export default function Dashboard() {
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [athletes]);
 
-  // Athletes deduplicated across all leaderboard rows — powers the insights-tab athlete pills
-  const insightsAthletes = useMemo(() => {
-    const map = new Map<string, string>(); // athleteId → name
-    for (const r of strengthRows)      map.set(r.athleteId, r.name);
-    for (const r of reactionRows)      map.set(r.athleteId, r.name);
-    for (const r of accuracyRows)      map.set(r.athleteId, r.name);
-    for (const r of volumeInsightRows) map.set(r.athleteId, r.name);
-    for (const r of targetInsightRows) map.set(r.athleteId, r.name);
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [strengthRows, reactionRows, accuracyRows, volumeInsightRows, targetInsightRows]);
-
   // Fetch all sessions for the selected athlete whenever analysisAthleteId changes
   useEffect(() => {
     if (!analysisAthleteId || !programId || !supabase) return;
@@ -4235,93 +4222,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* ── ATHLETE PILLS — tap to jump to In-Depth Analysis ── */}
-          {insightsAthletes.length > 0 && (
-            <div style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.40 }}>
-                Quick Select
-              </span>
-              <div style={{
-                display: "flex",
-                gap: 7,
-                overflowX: "auto",
-                paddingBottom: 4,
-                scrollbarWidth: "none",
-                WebkitOverflowScrolling: "touch" as any,
-              }}>
-                {/* "All" clears the selection */}
-                <button
-                  type="button"
-                  onClick={() => { setAnalysisAthleteId(null); setAnalysisAthleteName("—"); }}
-                  style={{
-                    flexShrink: 0,
-                    padding: "8px 16px",
-                    borderRadius: 999,
-                    border: !analysisAthleteId
-                      ? (isDark ? "1px solid rgba(180,0,255,0.55)" : "1px solid rgba(20,20,40,0.28)")
-                      : `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
-                    background: !analysisAthleteId
-                      ? (isDark ? "rgba(180,0,255,0.18)" : "rgba(20,20,40,0.09)")
-                      : "transparent",
-                    color: !analysisAthleteId
-                      ? (isDark ? "rgba(210,140,255,0.95)" : "rgba(20,20,40,0.88)")
-                      : (isDark ? "rgba(255,255,255,0.45)" : "rgba(20,20,40,0.45)"),
-                    font: "inherit",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    cursor: "pointer",
-                    transition: "all 130ms ease",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  All Athletes
-                </button>
-
-                {insightsAthletes.map(a => {
-                  const isSelected = analysisAthleteId === a.id;
-                  // Show "First L." format to keep pills compact
-                  const parts = a.name.trim().split(" ");
-                  const display = parts.length > 1
-                    ? `${parts[0]} ${parts[parts.length - 1].charAt(0)}.`
-                    : parts[0];
-                  return (
-                    <button
-                      key={a.id}
-                      type="button"
-                      onClick={() => {
-                        setAnalysisAthleteId(a.id);
-                        setAnalysisAthleteName(a.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                      }}
-                      style={{
-                        flexShrink: 0,
-                        padding: "8px 16px",
-                        borderRadius: 999,
-                        border: isSelected
-                          ? "1px solid rgba(180,0,255,0.55)"
-                          : `1px solid ${isDark ? "rgba(255,255,255,0.14)" : "rgba(20,20,40,0.14)"}`,
-                        background: isSelected
-                          ? "rgba(180,0,255,0.18)"
-                          : (isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)"),
-                        color: isSelected
-                          ? "rgba(210,140,255,0.95)"
-                          : (isDark ? "rgba(255,255,255,0.70)" : "rgba(20,20,40,0.70)"),
-                        font: "inherit",
-                        fontSize: 12,
-                        fontWeight: 700,
-                        cursor: "pointer",
-                        transition: "all 130ms ease",
-                        whiteSpace: "nowrap",
-                      }}
-                    >
-                      {display}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
           {/* ── ATHLETE SECTION HEADER ── */}
           <div className="ts-span2" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingBottom: 4 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", opacity: 0.45 }}>Athletes</div>
@@ -4425,17 +4325,11 @@ export default function Dashboard() {
                     tabIndex={0}
                     aria-label={`View sessions for ${row.name}`}
                     title={`View sessions for ${row.name}`}
-                    onClick={() => {
-                      setAnalysisAthleteId(row.athleteId);
-                      setAnalysisAthleteName(row.name);
-                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                    }}
+                    onClick={() => goToSessionsForAthlete(row.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setAnalysisAthleteId(row.athleteId);
-                        setAnalysisAthleteName(row.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        goToSessionsForAthlete(row.name);
                       }
                     }}
                   >
@@ -4478,17 +4372,11 @@ export default function Dashboard() {
                     tabIndex={0}
                     aria-label={`View sessions for ${row.name}`}
                     title={`View sessions for ${row.name}`}
-                    onClick={() => {
-                      setAnalysisAthleteId(row.athleteId);
-                      setAnalysisAthleteName(row.name);
-                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                    }}
+                    onClick={() => goToSessionsForAthlete(row.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setAnalysisAthleteId(row.athleteId);
-                        setAnalysisAthleteName(row.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        goToSessionsForAthlete(row.name);
                       }
                     }}
                   >
@@ -4517,17 +4405,11 @@ export default function Dashboard() {
                     tabIndex={0}
                     aria-label={`View sessions for ${row.name}`}
                     title={`View sessions for ${row.name}`}
-                    onClick={() => {
-                      setAnalysisAthleteId(row.athleteId);
-                      setAnalysisAthleteName(row.name);
-                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                    }}
+                    onClick={() => goToSessionsForAthlete(row.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setAnalysisAthleteId(row.athleteId);
-                        setAnalysisAthleteName(row.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        goToSessionsForAthlete(row.name);
                       }
                     }}
                   >
@@ -4563,17 +4445,11 @@ export default function Dashboard() {
                     tabIndex={0}
                     aria-label={`View sessions for ${row.name}`}
                     title={`View sessions for ${row.name}`}
-                    onClick={() => {
-                      setAnalysisAthleteId(row.athleteId);
-                      setAnalysisAthleteName(row.name);
-                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                    }}
+                    onClick={() => goToSessionsForAthlete(row.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setAnalysisAthleteId(row.athleteId);
-                        setAnalysisAthleteName(row.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        goToSessionsForAthlete(row.name);
                       }
                     }}
                   >
@@ -4623,17 +4499,11 @@ export default function Dashboard() {
                     tabIndex={0}
                     aria-label={`View sessions for ${row.name}`}
                     title={`View sessions for ${row.name}`}
-                    onClick={() => {
-                      setAnalysisAthleteId(row.athleteId);
-                      setAnalysisAthleteName(row.name);
-                      setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
-                    }}
+                    onClick={() => goToSessionsForAthlete(row.name)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        setAnalysisAthleteId(row.athleteId);
-                        setAnalysisAthleteName(row.name);
-                        setTimeout(() => analysisCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
+                        goToSessionsForAthlete(row.name);
                       }
                     }}
                   >

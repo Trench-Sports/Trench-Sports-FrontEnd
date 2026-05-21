@@ -68,8 +68,8 @@ const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 // • Secondary bags live in `slotsRef` and have their own `SlotState` (frames,
 //   assembler, deviceInfo). START/STOP fans out to all of them; save uploads
 //   one Supabase row per slot.
-// Toggle: VITE_MULTIBAG=on   (default off — production sees today's UX)
-const MULTIBAG_ENABLED = ((import.meta as any).env?.VITE_MULTIBAG ?? "off") === "on";
+// Toggle: VITE_MULTIBAG=off  (default on — set to "off" to disable multi-bag UI)
+const MULTIBAG_ENABLED = ((import.meta as any).env?.VITE_MULTIBAG ?? "on") === "on";
 
 // ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
 // Defined in a separate file to avoid a circular dependency with modeRolodex.tsx.
