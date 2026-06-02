@@ -4279,10 +4279,8 @@ export default function Session() {
     bleStatus === "connected" && !sessionActive,
   );
 
-  // Wave 2 #4 — Focus mode. Double-click the bag to collapse both sidebars and
-  // give the bag the full width. Escape exits. The grid transition is on the
-  // outer .ts-ses-layout container; sidebars get overflow:hidden so children
-  // don't bleed during the slide-out.
+  // Wave 2 #4 — Focus mode. Double-click/double-tap the bag to collapse both
+  // sidebars and give the bag the full width. Escape exits.
   const [focused, setFocused] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -4291,6 +4289,21 @@ export default function Session() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // Manual double-tap tracker — more reliable on iOS than the browser-
+  // synthesised dblclick event, which often doesn't fire when onTouchStart /
+  // onTouchEnd are also attached to the same element.
+  const lastBagTapRef = useRef(0);
+  const onBagTouchEnd = useCallback((e: React.TouchEvent) => {
+    bagSwipe.onTouchEnd(e);
+    const now = Date.now();
+    if (now - lastBagTapRef.current < 350) {
+      setFocused(f => !f);
+      lastBagTapRef.current = 0;
+    } else {
+      lastBagTapRef.current = now;
+    }
+  }, [bagSwipe]);
 
   // Wave 2 #6 — Swipe down on the Save/Discard card to discard. Disabled while
   // saving so we don't yank the buttons mid-network-call.
@@ -5149,12 +5162,10 @@ export default function Session() {
           <div
             className="ts-ses-bagWrap"
             onTouchStart={bagSwipe.onTouchStart}
-            onTouchEnd={bagSwipe.onTouchEnd}
+            onTouchEnd={onBagTouchEnd}
             onClickCapture={bagSwipe.onClickCapture}
-            // Wave 2 #4 — Double-click toggles focus mode. Most useful during
-            // an active session; before the session starts the "Tap to Start"
-            // overlay swallows the first click, so this gesture effectively
-            // gates itself behind sessionActive.
+            // Wave 2 #4 — onBagTouchEnd handles double-tap to toggle focus mode
+            // (manual tracker is more reliable than onDoubleClick on iOS).
             onDoubleClick={() => setFocused(f => !f)}
             style={{
               boxShadow: bleStatus === "connected"
@@ -5877,6 +5888,21 @@ export default function Session() {
         @media (max-width: 680px) {
           .ts-ses-layout {
             grid-template-columns: 1fr;
+          }
+          /* On mobile the layout is a single column — opacity:0 leaves the
+             panels taking vertical space so the bag never grows. Collapse them
+             fully in focus mode instead. */
+          .ts-ses-layout--focused > :nth-child(1),
+          .ts-ses-layout--focused > :nth-child(3) {
+            max-height: 0 !important;
+            overflow: hidden !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          /* With panels collapsed, give the bag a tighter chrome budget so
+             it fills as much of the viewport as possible. */
+          .ts-ses-layout--focused .ts-ses-bagWrap {
+            width: min(100%, calc((100dvh - 72px) * 0.72));
           }
         }
         /* Wave 2 #4 — Focus mode overrides. Inline style sets the columns
