@@ -188,6 +188,26 @@ export default function SessionSettingsModal({
           </div>
         </div>
 
+        <div style={F.divider} />
+
+        {/* ── Location ─────────────────────────────────────────────────── */}
+        <div style={F.sectionLabel}>Location</div>
+        <div style={F.group}>
+          <div style={F.row}>
+            <label style={F.label}>Track Session Location</label>
+            <Toggle
+              checked={settings.locationEnabled}
+              onChange={v => update({ locationEnabled: v })}
+              ariaLabel="Track session location"
+            />
+          </div>
+          <div style={F.helper}>
+            {settings.locationEnabled
+              ? "Captures your device's GPS coordinates when a session starts and saves them with the recording. Your browser will ask for permission the first time."
+              : "Location is not recorded. Sessions are saved without coordinates."}
+          </div>
+        </div>
+
       </div>
     </Modal>
   );

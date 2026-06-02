@@ -15,6 +15,7 @@ import Session from "./pages/session";
 
 // ── Mobile (iOS / phone) page variants ──────────────────────────────────────
 import MobileLogin from "./pages/mobile/login";
+import MobileHome from "./pages/mobile/home";
 import MobileSwipeDeck from "./components/mobileSwipeDeck";
 
 import { supabase } from "./supabaseClient";
@@ -97,7 +98,7 @@ function RequireOnboarding({
 // dashboard. Same for any desktop URL the shell might end up on.
 function NativeAwareLanding() {
   if (platform.isNative) {
-    return <Navigate to="/m/dashboard" replace />;
+    return <Navigate to="/m/home" replace />;
   }
   return <Landing />;
 }
@@ -154,7 +155,12 @@ export const router = createBrowserRouter([
     path: "/m",
     element: <MobileLayout />,
     children: [
-      { index: true,   element: <Navigate to="/m/dashboard" replace /> },
+      // MVP entry point — single-page, no-login power session. This is the
+      // first page the mobile app loads. It lives OUTSIDE the swipe deck and
+      // is intentionally NOT wrapped in <RequireOnboarding>, so it's reachable
+      // with no account.
+      { index: true,   element: <Navigate to="/m/home" replace /> },
+      { path: "home",  element: <MobileHome /> },
       { path: "login", element: <MobileLogin /> },
       {
         // Layout route — no path of its own. The element keeps mounted as
