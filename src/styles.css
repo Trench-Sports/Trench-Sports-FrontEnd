@@ -2258,7 +2258,16 @@ code {
     backdrop-filter: blur(14px);
     background: rgba(0, 0, 0, 0.22);
     border-bottom: 1px solid rgba(255, 255, 255, 0.10);
-    padding-top: env(safe-area-inset-top);
+    /* Top padding bakes in the safe-area inset so the blurred background fills
+       the notch while the contents sit just below it. Kept in CSS (not inline)
+       so platform rules below can raise the top floor on iOS. */
+    padding: calc(env(safe-area-inset-top) + 10px) 16px 10px;
+}
+
+/* iOS can under-report the inset in some WebView configs; guarantee the header
+   contents always clear the status bar / Dynamic Island. */
+html[data-platform="native-ios"] .mHeader {
+    padding-top: calc(max(env(safe-area-inset-top), 44px) + 10px);
 }
 
 .mMain {
@@ -2513,14 +2522,19 @@ code {
 /* ── 1. Native shell: extend into status bar + respect safe areas ──────────── */
 
 html.is-native body {
-    /* Stretch content under the status bar */
-    padding-top: env(safe-area-inset-top);
+    /* Do NOT reserve the top safe-area inset here. The sticky .mHeader sits at
+       top:0 and owns the inset via its own padding-top, so its blurred
+       background fills the status-bar / notch region. Reserving it on <body>
+       too would push the header down and leave an uncovered gap at the very
+       top on first load. */
+    padding-top: 0;
     padding-bottom: env(safe-area-inset-bottom);
 }
 
-/* iOS-specific: slightly larger status bar compensation */
+/* iOS previously over-reserved the status bar on <body>; the header now
+   handles it, so keep <body> flush to the top of the viewport. */
 html[data-platform="native-ios"] body {
-    padding-top: max(env(safe-area-inset-top), 44px);
+    padding-top: 0;
 }
 
 
