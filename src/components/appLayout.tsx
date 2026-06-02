@@ -41,7 +41,7 @@ export default function AppLayout() {
     return (
       <div className="mShell">
         {/* Slim native header — just the logo/title, no sidebar links */}
-        <header className="mHeader" style={{ padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <header className="mHeader" style={{ padding: "calc(env(safe-area-inset-top) + 10px) 16px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <img src={logoDark} alt="Trench Sports" style={{ height: 36, borderRadius: 8, objectFit: "contain" }} />
           <span style={{ fontWeight: 950, fontSize: 17, letterSpacing: "-0.01em" }}>Trench Sports</span>
           {/* Theme toggle still accessible on native if desired */}

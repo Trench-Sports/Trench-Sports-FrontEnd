@@ -41,7 +41,10 @@ export default function MobileLayout() {
       <header
         className="mHeader"
         style={{
-          padding: "10px 16px",
+          // Top padding includes the device safe-area inset so the header's
+          // blurred background fills the notch / Dynamic Island region while
+          // its contents sit just below it.
+          padding: "calc(env(safe-area-inset-top) + 10px) 16px 10px",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",

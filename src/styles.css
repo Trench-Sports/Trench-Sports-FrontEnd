@@ -2241,17 +2241,24 @@ code {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
-    padding-top: env(safe-area-inset-top);
+    /* NOTE: the top safe-area inset is intentionally NOT reserved here. The
+       header owns it (via its own padding-top) so its blurred background can
+       extend all the way up behind the notch / Dynamic Island. */
     padding-bottom: env(safe-area-inset-bottom);
 }
 
 .mHeader {
+    /* Locked to the very top of the viewport and overlaying content beneath it.
+       padding-top pushes the header's contents below the safe area while its
+       blur/background still fills the notch region above. */
     position: sticky;
-    top: env(safe-area-inset-top);
+    top: 0;
     z-index: 60;
+    -webkit-backdrop-filter: blur(14px);
     backdrop-filter: blur(14px);
     background: rgba(0, 0, 0, 0.22);
     border-bottom: 1px solid rgba(255, 255, 255, 0.10);
+    padding-top: env(safe-area-inset-top);
 }
 
 .mMain {
