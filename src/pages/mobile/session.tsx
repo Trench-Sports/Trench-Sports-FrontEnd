@@ -30,6 +30,7 @@ import {
 } from "../../bluetooth/adapter_native";
 
 import { ModeRolodex } from "../../components/modeRolodex";
+import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -656,6 +657,386 @@ function Skeleton({
   );
 }
 
+// ─── useIsTabletOrLarger ──────────────────────────────────────────────────────
+// Returns true on tablet-or-larger viewports, false on phones. Used to gate
+// multi-bag UI (the matrix / "Add bag" flow) so it never appears on phones —
+// the matrix view needs the extra screen real estate to be usable.
+//
+// 768px is the conventional phone/tablet breakpoint (iPad portrait = 768px wide).
+// We key off viewport width rather than the isMobile() helper because that
+// helper treats *any* Capacitor native build as "mobile" — which would wrongly
+// hide the button on a tablet running the native app.
+const TABLET_MIN_WIDTH_PX = 768;
+
+function useIsTabletOrLarger(): boolean {
+  const query = `(min-width: ${TABLET_MIN_WIDTH_PX}px)`;
+  const [matches, setMatches] = useState<boolean>(
+    () => (typeof window !== "undefined" ? window.matchMedia?.(query)?.matches ?? false : false),
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia(query);
+    const onChange = (e: MediaQueryListEvent) => setMatches(e.matches);
+    setMatches(mql.matches); // sync in case it changed before listener attached
+    // addEventListener is the modern API; addListener is the deprecated fallback.
+    mql.addEventListener?.("change", onChange) ?? mql.addListener?.(onChange);
+    return () => {
+      mql.removeEventListener?.("change", onChange) ?? mql.removeListener?.(onChange);
+    };
+  }, [query]);
+
+  return matches;
+}
+
+// ─── AssignModal ──────────────────────────────────────────────────────────────
+// Roster picker used by the multi-bag matrix "Assign" overlay. Renders a
+// centered dialog (portal) listing the athlete roster with a search box. Tapping
+// an athlete calls onPick; tapping the backdrop / Close calls onClose. The list
+// reuses the same Athlete shape + visual language as the left-sidebar roster.
+function AssignModal({
+  open,
+  athletes,
+  loading,
+  assignedId,
+  disabledIds,
+  title,
+  isDark,
+  onPick,
+  onClose,
+}: {
+  open: boolean;
+  athletes: Athlete[];
+  loading: boolean;
+  assignedId: string | null;
+  disabledIds: Set<string>;       // athletes already on another bag — not selectable
+  title: string;
+  isDark: boolean;
+  onPick: (a: Athlete) => void;
+  onClose: () => void;
+}) {
+  const [filter, setFilter] = useState("");
+  useEffect(() => { if (open) setFilter(""); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  const q = filter.trim().toLowerCase();
+  const list = q
+    ? athletes.filter(a =>
+        `${a.first_name} ${a.last_name}`.toLowerCase().includes(q) ||
+        (a.position ?? "").toLowerCase().includes(q) ||
+        (a.sport ?? "").toLowerCase().includes(q))
+    : athletes;
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        display: "flex", alignItems: "center", justifyContent: "center",
+        background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: "min(420px, 100%)", maxHeight: "min(70vh, 600px)",
+          display: "flex", flexDirection: "column",
+          // Solid, theme-aware surface — --panel alone is a near-transparent
+          // overlay tint, so over the backdrop it reads dark in both themes.
+          // Layer it over the opaque --bg token so the modal adapts to light/dark.
+          background: "linear-gradient(var(--panel), var(--panel)), var(--bg)",
+          border: "1px solid var(--panel-border)",
+          borderRadius: 16, padding: 16,
+          boxShadow: "0 24px 60px -12px rgba(0,0,0,0.55)",
+          animation: "tsSlideUp 0.2s ease-out",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", color: "var(--text)" }}>
+            {title}
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: "none", border: "none", cursor: "pointer",
+              color: "var(--muted)", fontSize: 16, lineHeight: 1, padding: 4,
+            }}
+          >✕</button>
+        </div>
+
+        {/* Search */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
+            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.6" />
+            <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+          <input
+            autoFocus
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="Search athletes…"
+            style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13 }}
+          />
+        </div>
+
+        {/* List */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto", paddingRight: 2 }}>
+          {loading ? (
+            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>Loading…</div>
+          ) : list.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
+              {q ? "No results" : "No athletes found"}
+            </div>
+          ) : list.map(a => {
+            const sel = assignedId === a.id;
+            // Taken by another bag — show but block selection so no athlete is
+            // assigned twice.
+            const taken = disabledIds.has(a.id);
+            const initials = `${a.first_name[0] ?? ""}${a.last_name[0] ?? ""}`.toUpperCase();
+            return (
+              <button
+                key={a.id}
+                onClick={() => { if (!taken) onPick(a); }}
+                disabled={taken}
+                title={taken ? "Already assigned to another bag" : undefined}
+                aria-disabled={taken}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10,
+                  padding: "0 11px", height: 52, flexShrink: 0,
+                  borderRadius: 11, cursor: taken ? "not-allowed" : "pointer", textAlign: "left",
+                  border: sel ? "1px solid rgba(180,0,255,0.50)" : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
+                  background: sel ? (isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.07)") : isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)",
+                  color: "var(--text)",
+                  opacity: taken ? 0.4 : 1,
+                }}
+              >
+                <div style={{
+                  width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 12, fontWeight: 800,
+                  background: "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
+                  border: "1px solid rgba(180,0,255,0.22)",
+                  color: "rgba(200,120,255,0.85)",
+                }}>{initials}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {a.first_name} {a.last_name}
+                  </div>
+                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
+                    {[a.position, a.sport].filter(Boolean).join(" · ") || "—"}
+                  </div>
+                </div>
+                {taken ? (
+                  <span style={{
+                    flexShrink: 0, fontSize: 9, fontWeight: 800, letterSpacing: "0.04em",
+                    textTransform: "uppercase", color: "var(--muted)",
+                    border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(0,0,0,0.15)",
+                    borderRadius: 999, padding: "2px 7px",
+                  }}>On a bag</span>
+                ) : sel ? (
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, boxShadow: "0 0 6px 2px rgba(180,0,255,0.55)" }} />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+// ─── BagMatrix ─────────────────────────────────────────────────────────────────
+// One live "split-screen" matrix tile in the multi-bag view. Renders the same
+// heatmap grid as the primary bag (cells light by voltage with a fade tail +
+// voltage labels), the bag identity label, an Assign overlay button (top-left),
+// a per-bag hits/peak stat (top-right), and a connection status dot. It is a
+// pure presentational component: all live data comes in via `grid` + `now`,
+// which the parent's 60ms fade-tick keeps fresh.
+function BagMatrix({
+  grid,
+  now,
+  label,
+  athleteName,
+  hitCount,
+  peakMv,
+  accentColor,
+  accentGlow,
+  connected,
+  status,
+  sessionActive,
+  onAssign,
+}: {
+  grid: GridState;
+  now: number;
+  label: string;
+  athleteName: string | null;
+  hitCount: number;
+  peakMv: number;
+  accentColor: string;
+  accentGlow: string;
+  connected: boolean;
+  status: "connected" | "disconnected" | "connecting" | "error";
+  sessionActive: boolean;
+  onAssign: () => void;
+}) {
+  return (
+    <div
+      className="ts-ses-bagWrap ts-ses-bagWrap--matrix"
+      style={{
+        boxShadow: connected
+          ? `0 0 30px -12px ${accentGlow}, inset 0 0 50px -22px ${accentGlow}`
+          : "none",
+        borderColor: connected ? `${accentColor}44` : "var(--panel-border)",
+        opacity: status === "disconnected" ? 0.55 : 1,
+        transition: "border-color 300ms, box-shadow 300ms, opacity 200ms",
+      }}
+    >
+      {/* Bag identity label (top-center) */}
+      <div style={{
+        position: "absolute", top: 7, left: "50%", transform: "translateX(-50%)",
+        fontSize: 8, fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase",
+        opacity: 0.32, pointerEvents: "none", zIndex: 4, whiteSpace: "nowrap",
+      }}>
+        {label}
+      </div>
+
+      {/* Assign overlay button (top-left). Disabled while a session is running
+          so attribution can't change mid-recording. */}
+      <button
+        type="button"
+        onClick={onAssign}
+        disabled={sessionActive}
+        title={athleteName ? `Assigned: ${athleteName}` : "Assign athlete"}
+        style={{
+          position: "absolute", top: 7, left: 7, zIndex: 9,
+          maxWidth: "62%",
+          display: "inline-flex", alignItems: "center", gap: 5,
+          padding: "4px 8px", borderRadius: 7,
+          fontSize: 10, fontWeight: 700, letterSpacing: "0.02em",
+          cursor: sessionActive ? "default" : "pointer",
+          background: athleteName ? "rgba(180,0,255,0.18)" : "rgba(0,0,0,0.55)",
+          border: athleteName ? "1px solid rgba(180,0,255,0.45)" : "1px solid rgba(255,255,255,0.18)",
+          color: athleteName ? "rgba(220,150,255,1)" : "rgba(255,255,255,0.75)",
+          backdropFilter: "blur(8px)",
+          opacity: sessionActive ? 0.6 : 1,
+        }}
+      >
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <circle cx="8" cy="5.2" r="2.8" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M3 13.5c0-2.5 2.2-4 5-4s5 1.5 5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          {athleteName ?? "Assign"}
+        </span>
+      </button>
+
+      {/* Per-bag stat (top-right): hits + peak */}
+      <div style={{
+        position: "absolute", top: 7, right: 7, zIndex: 9,
+        display: "flex", alignItems: "center", gap: 6,
+        pointerEvents: "none",
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6,
+          padding: "4px 8px", borderRadius: 7,
+          background: "rgba(0,0,0,0.55)", backdropFilter: "blur(8px)",
+          border: `1px solid ${accentColor}44`,
+          fontSize: 10, fontWeight: 800, fontVariantNumeric: "tabular-nums",
+          color: "#fff",
+        }}>
+          <span>{hitCount}<span style={{ fontSize: 8, fontWeight: 600, opacity: 0.6, marginLeft: 2 }}>hits</span></span>
+          <span style={{ opacity: 0.3 }}>·</span>
+          <span style={{ color: accentColor }}>
+            {peakMv ? (peakMv / 1000).toFixed(2) : "—"}
+            <span style={{ fontSize: 8, fontWeight: 600, opacity: 0.7, marginLeft: 1 }}>V</span>
+          </span>
+        </div>
+        <div style={{
+          width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+          background: status === "connected" ? "#00ff88" : status === "disconnected" ? "#ff6060" : "#ffcc00",
+          boxShadow: status === "connected" ? "0 0 5px 1px rgba(0,255,136,0.6)" : "none",
+        }} />
+      </div>
+
+      {/* Hit grid — fills the bag (identical structure to the primary grid) */}
+      <div style={{ position: "absolute", inset: 0 }}>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: `repeat(${NUM_COLS}, 1fr)`,
+          gridTemplateRows: `repeat(${NUM_ROWS}, 1fr)`,
+          gap: 2,
+          padding: "24px 5px 5px",
+          width: "100%", height: "100%", boxSizing: "border-box",
+        }}>
+          {Array.from({ length: NUM_ROWS }, (_, ri) =>
+            Array.from({ length: NUM_COLS }, (_, ci) => {
+              const key   = cellKey(NUM_ROWS - ri, NUM_COLS - ci);
+              const cell  = grid.get(key);
+              const age   = cell ? now - cell.ts : Infinity;
+              const alive = age < FADE_TTL_MS;
+              const fade  = alive ? Math.max(0.07, 1 - age / FADE_TTL_MS) : 0;
+              const color = alive ? mvToColor(cell!.mv) : null;
+              return (
+                <div
+                  key={key}
+                  className="ts-sim-cell ts-ses-cell"
+                  style={{
+                    position: "relative",
+                    borderRadius: 3,
+                    background: alive ? `${color}${hexAlpha(fade * 0.72)}` : "rgba(255,255,255,0.03)",
+                    boxShadow: alive ? `0 0 8px 2px ${mvToGlow(cell!.mv)}${hexAlpha(fade * 0.8)}` : "none",
+                    border: alive ? `1px solid ${color}${hexAlpha(fade * 0.6)}` : undefined,
+                    transform: alive && fade > 0.7 ? "scale(1.06)" : "scale(1)",
+                    transition: "background 60ms, box-shadow 60ms, transform 80ms, border-color 60ms",
+                    overflow: "hidden",
+                  }}
+                >
+                  {alive && cell && fade > 0.2 && (
+                    <div style={{
+                      position: "absolute", inset: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 7, fontWeight: 800, color: color!,
+                      opacity: Math.min(1, fade * 1.4), pointerEvents: "none",
+                      fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em",
+                      textShadow: `0 0 6px ${mvToGlow(cell.mv)}`,
+                    }}>
+                      {(cell.mv / 1000).toFixed(2)}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* Disconnected veil */}
+      {status === "disconnected" && (
+        <div style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+          background: "rgba(7,7,10,0.55)", zIndex: 6, pointerEvents: "none",
+          fontSize: 11, fontWeight: 700, color: "#ff8080", letterSpacing: "0.04em",
+        }}>
+          Disconnected
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── TargetOverlay ────────────────────────────────────────────────────────────
 function TargetOverlay({
   phase,
@@ -1081,6 +1462,19 @@ type SlotState = {
   frameIndex:   number;                    // increments per accepted frame
   startedAtMs:  number | null;             // set at startSession() broadcast
   errorMessage: string | null;
+  // ── Live matrix view (multi-bag) ──────────────────────────────────────────
+  // grid is the per-slot equivalent of the primary device's `grid` state — a
+  // "r,c" → CellState map mutated in place by handleSlotNotify. It's naturally
+  // bounded at NUM_ROWS×NUM_COLS (96) entries, so it never leaks. The 60ms
+  // `now` fade-tick re-renders the component, so the matrix tile animates by
+  // simply reading slot.grid (no per-frame setState bump required).
+  grid:         GridState;                 // live heatmap cells for this bag
+  peakMv:       number;                    // session peak voltage (mV) for this bag's stat tile
+  hitCount:     number;                    // total cell-hits seen this session (for the stat tile)
+  // ── Per-bag athlete assignment ────────────────────────────────────────────
+  // Coach assigns one athlete per matrix via the Assign overlay. null falls
+  // back to the primary's selectedAthlete at save time.
+  athlete:      Athlete | null;
 };
 
 function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): SlotState {
@@ -1096,11 +1490,48 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     frameIndex:   0,
     startedAtMs:  null,
     errorMessage: null,
+    grid:         new Map(),
+    peakMv:       0,
+    hitCount:     0,
+    athlete:      null,
   };
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function cellKey(r: number, c: number) { return `${r},${c}`; }
+
+// Split-screen row layout for the multi-bag matrix view. Mirrors the gamer
+// split-screen conventions the coach asked for:
+//   2 → [2]   (side by side)
+//   3 → [2,1] (two top, one bottom)
+//   4 → [2,2] (2×2)
+//   5 → [3,2] (three top, two bottom)
+// 1 falls back to a single full tile; >5 (shouldn't occur — capped at 5) degrades
+// to rows of three so the UI never breaks.
+function matrixRowCounts(n: number): number[] {
+  switch (n) {
+    case 0: return [];
+    case 1: return [1];
+    case 2: return [2];
+    case 3: return [2, 1];
+    case 4: return [2, 2];
+    case 5: return [3, 2];
+    default: {
+      const rows: number[] = [];
+      let rem = n;
+      while (rem > 0) { rows.push(Math.min(3, rem)); rem -= 3; }
+      return rows;
+    }
+  }
+}
+
+// Slice a flat list into rows per the counts from matrixRowCounts().
+function chunkByCounts<T>(items: T[], counts: number[]): T[][] {
+  const rows: T[][] = [];
+  let i = 0;
+  for (const c of counts) { rows.push(items.slice(i, i + c)); i += c; }
+  return rows;
+}
 
 function mvToColor(mv: number): string {
   const v = mv / 1000;
@@ -2346,6 +2777,17 @@ export default function Session() {
   const [, setSlotsTick] = useState(0);
   const bumpSlots   = useCallback(() => setSlotsTick(t => t + 1), []);
 
+  // Multi-bag / matrix UI is tablet-and-up only — phones don't have the screen
+  // real estate for the matrix view, so the "Add bag" entry point is hidden.
+  const isTabletOrLarger = useIsTabletOrLarger();
+
+  // Assign-athlete overlay target. `{ kind: "primary" }` reassigns the primary
+  // bag's athlete (= selectedAthlete); `{ kind: "slot", slotId }` sets that
+  // slot's per-bag athlete. null = modal closed.
+  const [assignTarget, setAssignTarget] = useState<
+    { kind: "primary" } | { kind: "slot"; slotId: SlotId } | null
+  >(null);
+
   useEffect(() => {
     if (!isNativeApp()) {
       const diag = getBluetoothDiagnostics();
@@ -3024,13 +3466,14 @@ export default function Session() {
 
     if (!captureRef.current) return;                     // ignore frames outside a session
 
+    const epochMs = Date.now();
     for (const { hits, t: frameT } of rawFrames) {
       if (!hits.length) continue;
       const idx = slot.frameIndex++;
       slot.frames.push({
         event_id:         `${slot.sessionId}_e${String(idx).padStart(5, "0")}`,
         t_device_ms:      frameT,
-        epoch_ms:         Date.now(),
+        epoch_ms:         epochMs,
         hits,
         raw:              isBatch ? { t: frameT, hits } : obj,
         reaction_time_ms: null,
@@ -3039,8 +3482,22 @@ export default function Session() {
         vol_window_idx:   null,
         vol_hit_seq:      null,
       });
+
+      // ── Live matrix heatmap ───────────────────────────────────────────────
+      // Mutate the slot's grid in place (mirrors the primary handler's setGrid)
+      // so the matrix tile lights up identically. Keys are "r,c"; the Map is
+      // bounded at 96 cells. hitCount / peakMv feed the per-bag stat tile.
+      for (const h of hits) {
+        const [r, c, mv] = h;
+        const vPeak = h[5] ?? mv;             // v_peak_mv — matches the primary peak stat
+        slot.grid.set(cellKey(r, c), { mv, ts: epochMs });
+        slot.hitCount++;
+        if (vPeak > slot.peakMv) slot.peakMv = vPeak;
+      }
     }
-    // Throttle UI bumps: every 25 frames is enough for the status strip's counter
+    // The 60ms `now` fade-tick already re-renders the matrix every frame, so a
+    // per-notification bump isn't needed for the live grid. We still bump every
+    // 25 frames to keep the slot-list frame counter reasonably fresh.
     if (slot.frameIndex % 25 === 0) bumpSlots();
   }, [bumpSlots]);
 
@@ -3221,6 +3678,12 @@ export default function Session() {
   const connectAdditionalBag = useCallback(async () => {
     if (!MULTIBAG_ENABLED) return;
     if (!bleSupported) return;
+    // Cap at 5 bags total (primary + 4 slots). Guarded here too in case the UI
+    // disabled state is ever bypassed.
+    if (slotsRef.current.size >= 4) {
+      setBleError("Maximum of 5 bags reached.");
+      return;
+    }
     setBleError(null);
     try {
       let conn: AdapterConnection;
@@ -3493,6 +3956,10 @@ export default function Session() {
         slot.frames      = [];
         slot.frameIndex  = 0;
         slot.startedAtMs = startTimeRef.current;
+        // Clear the live matrix heatmap + stats for the new session.
+        slot.grid        = new Map();
+        slot.peakMv      = 0;
+        slot.hitCount    = 0;
       }
       bumpSlots();
     }
@@ -3630,18 +4097,23 @@ export default function Session() {
       }
 
       // ── 2. Secondary slots — one Supabase row per slot ─────────────────
-      // MVP attribution: all slots share the primary's selected athlete.
-      // Per-bag athlete assignment ships in the device-manager-panel phase.
-      // Mode stats are not collected for secondary slots in MVP (Phase 3
-      // adds per-slot reaction/target/volume/accuracy mutations).
+      // Each slot uploads under the athlete assigned via the matrix Assign
+      // overlay (falling back to the primary's selected athlete). Mode stats
+      // are still primary-only in this phase (per-slot reaction/target/volume
+      // mutations remain future work — matrix tiles show the live heatmap).
       if (secondarySlotsWithFrames.length > 0) {
         const endedAt = Date.now();
         const slotResults = await Promise.allSettled(
-          secondarySlotsWithFrames.map(slot => uploadSession({
+          secondarySlotsWithFrames.map(slot => {
+            // Per-bag attribution: each slot uploads under its assigned athlete
+            // (set via the matrix Assign overlay). Falls back to the primary's
+            // selected athlete when a coach hasn't reassigned that bag.
+            const slotAthlete = slot.athlete ?? selectedAthlete;
+            return uploadSession({
             sessionId:   slot.sessionId,
             programId,
-            athleteId:   selectedAthlete.id,                        // shared in MVP
-            coreTeamId:  selectedAthlete.core_team_id ?? null,
+            athleteId:   slotAthlete.id,
+            coreTeamId:  slotAthlete.core_team_id ?? null,
             createdBy:   userId,
             frames:      slot.frames,
             startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
@@ -3651,7 +4123,8 @@ export default function Session() {
             samplingHz:   slot.device?.samplingHz   ?? 25,
             scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
             deviceId:    slot.device?.id,
-          }))
+            });
+          })
         );
         const failures = slotResults.filter(r => r.status === "rejected") as PromiseRejectedResult[];
         if (failures.length > 0) {
@@ -3826,6 +4299,90 @@ export default function Session() {
     disabled: saveState === "saving",
   });
 
+  // ── Multi-bag matrix view derivation ──────────────────────────────────────
+  // slotList is a snapshot of the secondary bags. totalBags counts the primary
+  // (when connected) plus every slot. The matrix split-screen activates only on
+  // tablet+ with the flag on, the primary connected, and at least one extra bag.
+  // MAX_BAGS = 5 total (primary + up to 4 slots) — matches the 3+2 layout.
+  const MAX_BAGS = 5;
+  const slotList = [...slotsRef.current.values()];
+  const slotCount = slotList.length;
+  const totalBags = (bleStatus === "connected" ? 1 : 0) + slotCount;
+  const atBagLimit = totalBags >= MAX_BAGS;
+  const multiMatrix =
+    MULTIBAG_ENABLED && isTabletOrLarger && bleStatus === "connected" && slotCount >= 1;
+
+  // Resolve the athlete *explicitly* assigned to the current assign target
+  // (no primary fallback here — the modal highlights only a real assignment so
+  // an unassigned bag shows nothing selected, prompting the coach to pick one).
+  const assignAssignedId =
+    assignTarget?.kind === "primary"
+      ? (selectedAthlete?.id ?? null)
+      : assignTarget?.kind === "slot"
+        ? (slotsRef.current.get(assignTarget.slotId)?.athlete?.id ?? null)
+        : null;
+
+  // Athletes already assigned to a *different* bag — disabled in the modal so an
+  // athlete can't be selected for more than one bag at a time. The athlete on
+  // the bag being edited stays selectable (so the coach can keep or swap them).
+  const assignDisabledIds = (() => {
+    const taken = new Set<string>();
+    if (!assignTarget) return taken;
+    // The primary bag holds selectedAthlete — block it for every other bag.
+    if (assignTarget.kind !== "primary" && selectedAthlete) taken.add(selectedAthlete.id);
+    for (const s of slotsRef.current.values()) {
+      if (assignTarget.kind === "slot" && assignTarget.slotId === s.id) continue; // the bag being edited
+      if (s.athlete) taken.add(s.athlete.id);
+    }
+    return taken;
+  })();
+
+  // Apply an athlete pick to whichever bag the Assign overlay was opened for.
+  const handleAssignPick = useCallback((a: Athlete) => {
+    setAssignTarget(prev => {
+      if (!prev) return null;
+      if (prev.kind === "primary") {
+        setSelectedAthlete(a);
+      } else {
+        const slot = slotsRef.current.get(prev.slotId);
+        if (slot) { slot.athlete = a; bumpSlots(); }
+      }
+      return null;   // close modal
+    });
+  }, [bumpSlots]);
+
+  // Build the ordered list of matrix tiles (primary first, then slots) and the
+  // adaptive split rows. Only computed when the matrix view is active.
+  const athleteName = (a: Athlete | null | undefined) =>
+    a ? `${a.first_name} ${a.last_name}` : null;
+  const matrixTiles = multiMatrix
+    ? [
+        {
+          key:         "primary",
+          grid,
+          label:       deviceInfo?.id ?? "Bag 1",
+          athleteName: athleteName(selectedAthlete),
+          hitCount:    feed.length,
+          peakMv,
+          status:      "connected" as const,
+          onAssign:    () => setAssignTarget({ kind: "primary" }),
+        },
+        ...slotList.map((s, i) => ({
+          key:         s.id,
+          grid:        s.grid,
+          label:       s.device?.id ?? s.bleName ?? `Bag ${i + 2}`,
+          // Show only the bag's explicit assignment so each athlete maps to one
+          // bag. Unassigned bags show the "Assign" prompt.
+          athleteName: athleteName(s.athlete),
+          hitCount:    s.hitCount,
+          peakMv:      s.peakMv,
+          status:      s.status,
+          onAssign:    () => setAssignTarget({ kind: "slot", slotId: s.id }),
+        })),
+      ]
+    : [];
+  const matrixRows = chunkByCounts(matrixTiles, matrixRowCounts(matrixTiles.length));
+
   return (
     /* Wave 2 #4 (refined) — Focus mode lifts the 1100px page cap and
        shrinks the page padding so the bag can grow to fill the viewport.
@@ -3835,7 +4392,9 @@ export default function Session() {
     <div
       className={focused ? "ts-ses-page ts-ses-page--focused" : "ts-ses-page"}
       style={{
-        maxWidth: focused ? "100%" : 1100,
+        // Lift the page cap in focus mode and in the multi-bag matrix view so
+        // the split-screen tiles can use the full width of the screen.
+        maxWidth: focused || multiMatrix ? "100%" : 1100,
         margin: "0 auto",
         padding: focused ? "8px 12px" : "24px 20px",
         transition: "max-width 380ms cubic-bezier(.25,.46,.45,.94), padding 380ms cubic-bezier(.25,.46,.45,.94)",
@@ -3914,15 +4473,24 @@ export default function Session() {
           so it applies to both directions. */}
       <div
         className={`ts-ses-layout ${focused ? "ts-ses-layout--focused" : ""}`}
-        style={focused ? {
-          gridTemplateColumns: "0px minmax(300px, 1fr) 0px",
-        } : undefined}
+        style={
+          focused
+            ? { gridTemplateColumns: "0px minmax(300px, 1fr) 0px" }
+            : multiMatrix
+              // Multi-bag: collapse to two columns — keep the Bag Connection
+              // sidebar, give everything else to the matrix split. The athlete
+              // card (left) and the stats/feed (right) are unmounted below.
+              ? { gridTemplateColumns: "300px minmax(0, 1fr)" }
+              : undefined
+        }
       >
 
         {/* ════ LEFT — Athlete + BLE ════ */}
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
-          {/* Athlete card */}
+          {/* Athlete card — hidden in multi-bag matrix mode (athletes are
+              assigned per-bag via the matrix Assign overlay instead). */}
+          {!multiMatrix && (
           <div className={flowStep === 1 ? "ts-flow-athlete" : undefined} style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, display: "flex", flexDirection: "column", height: 480, minHeight: 360, maxHeight: 560 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
@@ -4184,6 +4752,7 @@ export default function Session() {
               </div>
             )}
           </div>
+          )}
 
           {/* BLE card */}
           {selectedAthlete && (
@@ -4242,9 +4811,13 @@ export default function Session() {
               </div>
 
               {/* ── Multi-bag: secondary slots + "Add bag" button ─────────────── */}
-              {/* Only mounted when VITE_MULTIBAG=on. Primary device path stays untouched. */}
-              {MULTIBAG_ENABLED && bleStatus === "connected" && (() => {
+              {/* Only mounted when VITE_MULTIBAG=on AND the viewport is tablet-or- */}
+              {/* larger — phones don't get the matrix / "Add bag" entry point.     */}
+              {/* Primary device path stays untouched.                              */}
+              {MULTIBAG_ENABLED && isTabletOrLarger && bleStatus === "connected" && (() => {
                 const slots = [...slotsRef.current.values()];
+                // Max 5 bags total = primary + up to 4 secondary slots.
+                const addDisabled = sessionActive || atBagLimit;
                 return (
                   <div style={{
                     marginBottom: 14,
@@ -4261,21 +4834,22 @@ export default function Session() {
                         fontSize: 10, fontWeight: 800, letterSpacing: "0.08em",
                         textTransform: "uppercase", color: "#5ee7ff",
                       }}>
-                        Multi-bag · {slots.length} extra
+                        Multi-bag · {totalBags}/{MAX_BAGS} bags
                       </div>
                       <button
                         onClick={connectAdditionalBag}
-                        disabled={sessionActive}
+                        disabled={addDisabled}
+                        title={atBagLimit ? `Maximum ${MAX_BAGS} bags connected` : sessionActive ? "Can't add a bag mid-session" : "Connect another bag"}
                         style={{
                           padding: "3px 10px", borderRadius: 6,
-                          fontSize: 11, fontWeight: 700, cursor: sessionActive ? "not-allowed" : "pointer",
-                          background: sessionActive ? "rgba(94,231,255,0.10)" : "rgba(94,231,255,0.18)",
+                          fontSize: 11, fontWeight: 700, cursor: addDisabled ? "not-allowed" : "pointer",
+                          background: addDisabled ? "rgba(94,231,255,0.10)" : "rgba(94,231,255,0.18)",
                           border: "1px solid rgba(94,231,255,0.35)",
                           color: "#5ee7ff",
-                          opacity: sessionActive ? 0.5 : 1,
+                          opacity: addDisabled ? 0.5 : 1,
                         }}
                       >
-                        + Add bag
+                        {atBagLimit ? "Max reached" : "+ Add bag"}
                       </button>
                     </div>
                     {slots.map(s => (
@@ -4486,10 +5060,92 @@ export default function Session() {
           )}
         </div>
 
-        {/* ════ CENTER — Live bag grid (matches hitSimulator aesthetic) ════ */}
+        {/* ════ CENTER — Live bag grid / multi-bag matrix split ════ */}
         <div>
 
-          {/* Bag wrap — identical structure to ts-sim-bagWrap */}
+          {multiMatrix ? (
+            /* ── Multi-bag split-screen matrix view ──────────────────────── */
+            <div className="ts-matrix-wrap">
+              {/* Shared session toolbar — one Start/Stop for all bags so they
+                  begin and end together (sendCommand already fans out over BLE). */}
+              <div className="ts-matrix-toolbar">
+                <div style={{
+                  fontSize: 10, fontWeight: 800, letterSpacing: "0.08em",
+                  textTransform: "uppercase", color: MODE_META[sessionMode].color,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label}</span>
+                  <span style={{ opacity: 0.5 }}>·</span>
+                  <span style={{ color: "var(--muted)" }}>{matrixTiles.length} bags</span>
+                </div>
+
+                {sessionActive ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <ArcTimer elapsedMs={elapsedMs} maxMs={sessionMaxMs} warnMs={sessionWarnMs} size={40} />
+                    <button
+                      onClick={stopSession}
+                      style={{
+                        height: 40, padding: "0 18px", borderRadius: 8,
+                        fontWeight: 700, fontSize: 13,
+                        background: "rgba(255,80,80,0.18)", border: "1px solid rgba(255,80,80,0.35)",
+                        color: "#ff8080", cursor: "pointer",
+                        display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
+                      }}
+                    >
+                      Stop All
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={startSession}
+                    disabled={!selectedAthlete}
+                    title={selectedAthlete ? "Start all bags" : "Assign an athlete first"}
+                    style={{
+                      height: 40, padding: "0 18px", borderRadius: 8,
+                      fontWeight: 800, fontSize: 13, letterSpacing: "0.04em",
+                      cursor: selectedAthlete ? "pointer" : "not-allowed",
+                      background: selectedAthlete ? MODE_META[sessionMode].color : "rgba(255,255,255,0.06)",
+                      border: `1px solid ${selectedAthlete ? MODE_META[sessionMode].color : "rgba(255,255,255,0.12)"}`,
+                      color: selectedAthlete ? "#000" : "var(--muted)",
+                      display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
+                      opacity: selectedAthlete ? 1 : 0.7,
+                    }}
+                  >
+                    ▶ Start All
+                  </button>
+                )}
+              </div>
+
+              {/* Adaptive split grid — rows follow the gamer split-screen layout.
+                  --matrix-rows feeds the per-tile height cap so tiles fill the
+                  viewport without ever breaking the 0.72 aspect ratio. */}
+              <div className="ts-matrix-area" style={{ ["--matrix-rows" as any]: matrixRows.length }}>
+                {matrixRows.map((row, ri) => (
+                  <div className="ts-matrix-row" key={ri}>
+                    {row.map(tile => (
+                      <div className="ts-matrix-cell" key={tile.key}>
+                        <BagMatrix
+                          grid={tile.grid}
+                          now={now}
+                          label={tile.label}
+                          athleteName={tile.athleteName}
+                          hitCount={tile.hitCount}
+                          peakMv={tile.peakMv}
+                          accentColor={MODE_META[sessionMode].color}
+                          accentGlow={MODE_META[sessionMode].glow}
+                          connected={tile.status === "connected"}
+                          status={tile.status}
+                          sessionActive={sessionActive}
+                          onAssign={tile.onAssign}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+          /* Bag wrap — identical structure to ts-sim-bagWrap */
           <div
             className="ts-ses-bagWrap"
             onTouchStart={bagSwipe.onTouchStart}
@@ -4973,41 +5629,46 @@ export default function Session() {
               </div>
             )}
           </div>
+          )}
         </div>
 
-        {/* ════ RIGHT — Stats + feed ════ */}
+        {/* ════ RIGHT — Stats + feed (hidden in multi-bag matrix mode) ════ */}
+        {!multiMatrix && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
           {/* Stats */}
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label} Session</span>
-              {(() => {
-                const toggleInk = isDark ? "255,255,255" : "20,20,40";
-                return (
-                  <div style={{
-                    display: "inline-flex", alignItems: "center",
-                    background: `rgba(${toggleInk},0.04)`,
-                    border: `1px solid rgba(${toggleInk},0.10)`,
-                    borderRadius: 7,
-                    padding: "2px 4px",
-                    gap: 1,
-                  }}>
-                    {(["v", "si"] as const).map(m => (
-                      <button key={m} onClick={() => setFeedMetric(m)} style={{
-                        padding: "4px 10px", borderRadius: 5,
-                        border: feedMetric === m ? "1px solid #b400ff" : "1px solid transparent",
-                        background: feedMetric === m ? "rgba(180,0,255,0.15)" : "transparent",
-                        color: feedMetric === m ? "#b400ff" : `rgba(${toggleInk},0.50)`,
-                        font: "inherit", fontSize: 11, fontWeight: 700,
-                        cursor: "pointer",
-                        transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
-                        textTransform: "uppercase",
-                      }}>{m === "v" ? "V" : "SI"}</button>
-                    ))}
-                  </div>
-                );
-              })()}
+              <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                {(() => {
+                  const toggleInk = isDark ? "255,255,255" : "20,20,40";
+                  return (
+                    <div style={{
+                      display: "inline-flex", alignItems: "center",
+                      background: `rgba(${toggleInk},0.04)`,
+                      border: `1px solid rgba(${toggleInk},0.10)`,
+                      borderRadius: 7,
+                      padding: "2px 4px",
+                      gap: 1,
+                    }}>
+                      {(["v", "si"] as const).map(m => (
+                        <button key={m} onClick={() => setFeedMetric(m)} style={{
+                          padding: "4px 10px", borderRadius: 5,
+                          border: feedMetric === m ? "1px solid #b400ff" : "1px solid transparent",
+                          background: feedMetric === m ? "rgba(180,0,255,0.15)" : "transparent",
+                          color: feedMetric === m ? "#b400ff" : `rgba(${toggleInk},0.50)`,
+                          font: "inherit", fontSize: 11, fontWeight: 700,
+                          cursor: "pointer",
+                          transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
+                          textTransform: "uppercase",
+                        }}>{m === "v" ? "V" : "SI"}</button>
+                      ))}
+                    </div>
+                  );
+                })()}
+                <StrengthIndexInfo />
+              </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               {statsItems.map(s => (
@@ -5148,7 +5809,21 @@ export default function Session() {
           </div>
           )}
         </div>
+        )}
       </div>
+
+      {/* ── Assign-athlete modal (multi-bag matrix) ─────────────────────── */}
+      <AssignModal
+        open={assignTarget !== null}
+        athletes={athletes}
+        loading={athletesLoading}
+        assignedId={assignAssignedId}
+        disabledIds={assignDisabledIds}
+        title={assignTarget?.kind === "primary" ? "Assign athlete · Bag 1" : "Assign athlete to bag"}
+        isDark={isDark}
+        onPick={handleAssignPick}
+        onClose={() => setAssignTarget(null)}
+      />
 
       {/* ── Native BLE device picker sheet ──────────────────────────────── */}
       {pickerOpen && (
@@ -5170,6 +5845,11 @@ export default function Session() {
         mode={sessionMode}
         onModeSelect={setSessionMode}
         saveComplete={saveState === "saved"}
+        // Show a Save button beside the post-stop "Tap to change mode" pill only
+        // when auto-save is off and this session actually recorded data.
+        canSave={canSave && !sessionSettings.autoSave}
+        saving={saveState === "saving"}
+        onSave={saveSession}
       />
 
       <style>{`
@@ -5346,6 +6026,68 @@ export default function Session() {
              double-tap-to-zoom on touch devices, so two quick taps reliably
              fire the onDoubleClick handler that toggles focus mode. */
           touch-action: manipulation;
+        }
+
+        /* ── Multi-bag matrix split-screen ── */
+        .ts-matrix-wrap {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+        .ts-matrix-toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 8px 12px;
+          border-radius: 12px;
+          background: var(--panel);
+          border: 1px solid var(--panel-border);
+        }
+        .ts-matrix-area {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          align-items: center;
+          justify-content: center;
+        }
+        .ts-matrix-row {
+          display: flex;
+          gap: 10px;
+          width: 100%;
+          min-height: 0;
+          justify-content: center;
+          align-items: center;
+        }
+        .ts-matrix-cell {
+          flex: 1 1 0;
+          min-width: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        /* Matrix tile: WIDTH-driven so the bag's 0.72 portrait ratio is always
+           preserved (height is auto-derived from width — never forced, so the
+           tile can't be stretched). Two caps bound the width without ever
+           breaking the ratio:
+             • width: 100%      → never wider than its flex cell
+             • max-width        → never taller than its share of the viewport
+                                  height: (viewport − chrome) ÷ rows × 0.72.
+           --matrix-rows is set inline on .ts-matrix-area from the row count, so
+           a single-row (2-up) layout gets taller tiles than a 2-row (3–5 bag)
+           layout. height:auto avoids the collapse-to-0 issue (the bag's children
+           are all position:absolute) because width is the definite driver. */
+        .ts-ses-bagWrap--matrix {
+          width: 100%;
+          height: auto;
+          aspect-ratio: 0.72;
+          max-width: calc(((100vh - 230px) / var(--matrix-rows, 1)) * 0.72);
+          margin: 0 auto;
+        }
+        @supports (height: 100dvh) {
+          .ts-ses-bagWrap--matrix {
+            max-width: calc(((100dvh - 230px) / var(--matrix-rows, 1)) * 0.72);
+          }
         }
 
         /* ── Cells — mirrors ts-sim-cell ── */

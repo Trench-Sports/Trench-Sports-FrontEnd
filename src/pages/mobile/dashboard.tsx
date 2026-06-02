@@ -9,6 +9,7 @@ import ProgramModal from "../../components/program";
 import ManageTeamModal from "../../components/manageTeam";
 import { supabase } from "../../supabaseClient";
 import StrikeCompass from "../../components/strikeCompass";
+import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
 
 type Insight = { title: string; body: string; tag: "Power" | "Accuracy" | "Tempo" | "Recovery" };
 
@@ -4231,7 +4232,10 @@ export default function Dashboard() {
           {/* Athlete Leaderboard */}
           <div className="ts-card ts-span2">
             <div className="ts-cardTop">
-              <div className="ts-cardTitle">Athlete Leaderboard</div>
+              <div className="ts-cardTitle" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                Athlete Leaderboard
+                <StrengthIndexInfo />
+              </div>
               <div className="ts-cardMeta">
                 {leaderMetric === "strength"
                   ? strengthLoading ? "Loading…" : `${strengthRows.length} athletes · ${leaderDateRange === "all" ? "all time" : `last ${leaderDateRange}d`}`

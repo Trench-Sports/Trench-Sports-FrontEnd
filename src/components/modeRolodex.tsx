@@ -40,11 +40,15 @@ const ARC_START = 212;  // left end degrees
 const ARC_END   = 328;  // right end degrees
 const VISIBLE   = 2;    // render ±2 slots from centre
 
-function arcPos(offsetFromCenter: number, containerW: number) {
-  const cx = containerW / 2;
+// Returns the orb's horizontal offset from the arc's centre (dx) and its
+// absolute y. Horizontal placement is centre-relative so the caller can anchor
+// it with CSS `left: 50%` + translateX(dx) — this keeps the orbs centred on the
+// panel at any width without depending on a measured container width (which can
+// go stale in Chrome's device emulator and fling the orbs off-screen).
+function arcPos(offsetFromCenter: number) {
   const t = Math.max(0, Math.min(1, 0.5 + offsetFromCenter / N));
   const rad = ((ARC_START + t * (ARC_END - ARC_START)) * Math.PI) / 180;
-  return { x: cx + ARC_R * Math.cos(rad), y: ARC_CY + ARC_R * Math.sin(rad) + 60 };
+  return { dx: ARC_R * Math.cos(rad), y: ARC_CY + ARC_R * Math.sin(rad) + 60 };
 }
 
 /** Smooth size interpolation: 68 at centre → 36 at edges */
@@ -84,6 +88,13 @@ export interface ModeRolodexProps {
    *  auto-recall so the user can pick the next mode without tapping the
    *  collapsed handle. Watched on the rising edge only. */
   saveComplete?: boolean;
+  /** When true, a "Save session" button appears beside the post-stop
+   *  "Tap to change mode" pill (auto-save off + data was recorded). */
+  canSave?: boolean;
+  /** Disables the Save button + shows a "Saving…" label while the upload runs. */
+  saving?: boolean;
+  /** Called when the Save button is tapped. */
+  onSave?: () => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -94,6 +105,9 @@ export function ModeRolodex({
   onModeSelect,
   zIndex = 50,
   saveComplete = false,
+  canSave = false,
+  saving = false,
+  onSave,
 }: ModeRolodexProps) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -125,24 +139,9 @@ export function ModeRolodex({
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick(t => t + 1), []);
 
-  // Track real container width reactively so arc positions are always correct.
-  // Initialise from window.innerWidth so the very first render is right even
-  // before the ResizeObserver fires.
-  const [containerW, setContainerW] = useState(
-    () => (typeof window !== "undefined" ? window.innerWidth : 380),
-  );
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(entries => {
-      const w = entries[0]?.contentRect.width;
-      if (w) setContainerW(w);
-    });
-    ro.observe(el);
-    // Read immediately in case the first observer callback fires after paint
-    setContainerW(el.offsetWidth);
-    return () => ro.disconnect();
-  }, []);
+  // Orb horizontal placement is centre-relative (CSS `left: 50%` + translateX),
+  // so no measured container width is needed — the arc stays centred on the
+  // panel at any viewport width.
 
   // ── Open / close lifecycle ─────────────────────────────────────────────────
   // Slide up ~250 ms after adapter first connects (was 400 — felt sluggish).
@@ -327,7 +326,7 @@ export function ModeRolodex({
   // Build orb list for current scroll position
   const orbs: Array<{
     key: string; dist: number; mIdx: number;
-    x: number; y: number; size: number; opacity: number; isCenter: boolean;
+    dx: number; y: number; size: number; opacity: number; isCenter: boolean;
   }> = [];
 
   for (let offset = -VISIBLE; offset <= VISIBLE; offset++) {
@@ -335,11 +334,11 @@ export function ModeRolodex({
     const mIdx = ((Math.round(scrollPos.current) - offset) % N + N) % N;
     const op   = orbOpacity(dist);
     if (op < 0.05) continue;
-    const pos  = arcPos(-dist, containerW);
+    const pos  = arcPos(-dist);
     orbs.push({
       key: `${offset}-${mIdx}`,
       dist, mIdx,
-      x: pos.x, y: pos.y,
+      dx: pos.dx, y: pos.y,
       size: lerpSize(dist),
       opacity: op,
       isCenter: Math.abs(dist) < 0.45,
@@ -491,9 +490,9 @@ export function ModeRolodex({
             <React.Fragment key={orb.key}>
               {/* Glow halo behind active orb */}
               <div style={{
-                position: "absolute", left: orb.x, top: orb.y,
+                position: "absolute", left: "50%", top: orb.y,
                 width: orb.size + 28, height: orb.size + 28,
-                borderRadius: "50%", transform: "translate(-50%,-50%)",
+                borderRadius: "50%", transform: `translate(calc(-50% + ${orb.dx}px), -50%)`,
                 background: m.glow,
                 opacity: orb.isCenter ? 0.25 : 0,
                 pointerEvents: "none",
@@ -514,9 +513,9 @@ export function ModeRolodex({
                   }
                 }}
                 style={{
-                  position: "absolute", left: orb.x, top: orb.y,
+                  position: "absolute", left: "50%", top: orb.y,
                   width: orb.size, height: orb.size,
-                  borderRadius: "50%", transform: "translate(-50%,-50%)",
+                  borderRadius: "50%", transform: `translate(calc(-50% + ${orb.dx}px), -50%)`,
                   display: "flex", alignItems: "center", justifyContent: "center",
                   border: orb.isCenter
                     ? `2px solid ${m.color}`
@@ -557,25 +556,43 @@ export function ModeRolodex({
   // escapes the swipe deck's transformed ancestor (transformed ancestors
   // turn `position: fixed` into "fixed relative to that ancestor", which
   // would defeat the whole point of pinning this to the viewport).
+  // Stop propagation on all pointer paths so the underlying swipe deck never
+  // mistakes a tap on these pills for the start of a horizontal page swipe.
+  const stopPtr = {
+    onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
+    onPointerMove: (e: React.PointerEvent) => e.stopPropagation(),
+    onPointerUp:   (e: React.PointerEvent) => e.stopPropagation(),
+  };
+
   const bouncePeek = showBouncePeek ? (
-    <div
-      className="ts-modePeek"
-      role="button"
-      aria-label="Tap to change mode"
-      // Pointer-only handlers: prevent any propagation to the underlying
-      // swipe deck (which would otherwise see this as the start of a
-      // horizontal swipe) and explicitly drive both touch + click paths.
-      onPointerDown={(e) => e.stopPropagation()}
-      onPointerMove={(e) => e.stopPropagation()}
-      onPointerUp={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        setOpen(true);
-      }}
-      style={{ zIndex: zIndex + 10 }}
-    >
-      <span className="ts-modePeek__chev" aria-hidden="true" />
-      Tap to change mode
+    // Dock holds both pills side by side and carries the bounce so they bob
+    // together. Centred via translateX(-50%) (preserved by the keyframes).
+    <div className="ts-modePeek-dock" style={{ zIndex: zIndex + 10 }}>
+      <div
+        className="ts-modePeek"
+        role="button"
+        aria-label="Tap to change mode"
+        {...stopPtr}
+        onClick={(e) => { e.stopPropagation(); setOpen(true); }}
+      >
+        <span className="ts-modePeek__chev" aria-hidden="true" />
+        Change mode
+      </div>
+
+      {canSave && (
+        <div
+          className="ts-modePeek ts-modePeek--save"
+          role="button"
+          aria-label="Save session"
+          aria-disabled={saving}
+          {...stopPtr}
+          onClick={(e) => { e.stopPropagation(); if (!saving) onSave?.(); }}
+          style={saving ? { opacity: 0.6, cursor: "default" } : undefined}
+        >
+          <span className="ts-modePeek__save-icon" aria-hidden="true" />
+          {saving ? "Saving…" : "Save session"}
+        </div>
+      )}
     </div>
   ) : null;
 

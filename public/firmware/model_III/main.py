@@ -1,15 +1,6 @@
 # mainB.py — ESP32-WROOM-32D  (MicroPython)
 # Build B hardware: 1× MCP3208-CI/P SPI ADC  (no I²C, no MUX)
 #
-# Differences from main.py (ADS1015 + 74HC4052 build):
-#   • I²C + ADS1015 A/B replaced by SPI + single MCP3208 (cs GPIO5)
-#   • 74HC4052 MUX removed entirely — all 8 columns wire directly to CH0–CH7
-#   • Row GPIOs remapped to free GPIO18/19/23 for VSPI (same as mainA.py)
-#   • Conversion wait eliminated — MCP3208 samples during the SPI clock cycle
-#   • SCAN_PERIOD_MS 37→14→8, MAX_NOTIFY_HZ 25→50 (see timing note below)
-#   • LSB_V based on VREF=3.3V/4096 counts instead of ADS1015 PGA
-#   • hello packet carries "hw":"III" for app identification
-#   • GPIO4 is unassigned / spare vs Build A (was CS_ADC_B)
 #
 # Batch mode (v2):
 #   • Scans at ~120 Hz internally (SCAN_PERIOD_MS=8)
