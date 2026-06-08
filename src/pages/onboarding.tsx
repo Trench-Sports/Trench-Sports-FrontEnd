@@ -229,13 +229,16 @@ export default function Onboarding() {
 
     setBusy(true);
     try {
-      const { data: program, error: pErr } = await supabase
-        .from("programs")
-        .select("id, name, location, onboarding_code")
-        .eq("onboarding_code", code)
-        .maybeSingle();
+      // Look up the program via a SECURITY DEFINER RPC (programs table is no
+      // longer publicly readable). The RPC returns only id/name/location for the
+      // single program matching this exact code; we echo the typed code locally.
+      const { data: programRows, error: pErr } = await supabase
+        .rpc("find_program_by_code", { p_code: code });
 
       if (pErr) throw pErr;
+      const program = programRows?.[0]
+        ? { ...programRows[0], onboarding_code: code }
+        : null;
       if (!program) {
         setProgramHit(null);
         setTeams([]);
@@ -342,12 +345,10 @@ export default function Onboarding() {
       }
 
       // Look up program by code, then attach via direct profile upsert
-      const { data: joinProgram, error: progErr } = await supabase
-        .from("programs")
-        .select("id")
-        .eq("onboarding_code", code)
-        .maybeSingle();
+      const { data: joinRows, error: progErr } = await supabase
+        .rpc("find_program_by_code", { p_code: code });
       if (progErr) throw progErr;
+      const joinProgram = joinRows?.[0] ?? null;
       if (!joinProgram) throw new Error("No program found for that code.");
 
       const { error: upsertErr } = await supabase
@@ -394,18 +395,18 @@ export default function Onboarding() {
         return;
       }
 
-      // 1) Create program
-      const { data: program, error: pErr } = await supabase
-        .from("programs")
-        .insert({
-          name: programName.trim(),
-          location: programLocation.trim() || null,
-          onboarding_code: code,
-        })
-        .select("id, name, location, onboarding_code")
-        .single();
+      // 1) Create program via SECURITY DEFINER RPC (programs is no longer
+      // directly insert+readable under the members-only SELECT policy).
+      const { data: createdRows, error: pErr } = await supabase
+        .rpc("create_program", {
+          p_name: programName.trim(),
+          p_location: programLocation.trim() || null,
+          p_code: code,
+        });
 
       if (pErr) throw pErr;
+      const program = createdRows?.[0];
+      if (!program) throw new Error("Failed to create program.");
 
       // 2) Attach admin profile to program
       const { error: upsertErr } = await supabase

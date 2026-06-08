@@ -3,3 +3,7 @@ dist
 .DS_Store
 .elasticbeanstalk
 *.log
+
+# Server-side tooling secrets — NEVER commit (holds SUPABASE_SERVICE_ROLE_KEY)
+tools/.env
+tools/.env.*

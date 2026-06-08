@@ -1371,6 +1371,16 @@ function VolumeOverlay({
 type BleStatus = "idle" | "scanning" | "connected" | "disconnected" | "unsupported";
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+// Recap of a just-saved session, shown in the expanded Stats card summary.
+type SavedRecap = {
+  mode:       string;   // session mode at save time
+  events:     number;   // BLE frames recorded (one per detected impact event)
+  hits:       number;   // total cell contacts across all events
+  peakMv:     number;   // highest voltage observed (mV) — 0 if none
+  peakSi:     number;   // highest strength index observed — 0 if none
+  durationMs: number;   // session wall-clock duration
+};
+
 // Identity packet sent by ESP32 immediately after BLE connect.
 // hw / mode are populated from the hello packet and used to branch
 // between Model II (single-frame) and Model III (batch) data paths.
@@ -2891,6 +2901,10 @@ export default function Home() {
   const [sessionWarning, setSessionWarning] = useState(false); // true during final 5 s
   const [saveState,      setSaveState]      = useState<SaveState>("idle");
   const [saveError,      setSaveError]      = useState<string | null>(null);
+  // Recap snapshot of the most recently saved session — drives the expanded
+  // "Last saved session" summary in the Stats card. Null until a save succeeds;
+  // cleared when a new session starts or the current one is discarded.
+  const [lastSaved,      setLastSaved]      = useState<SavedRecap | null>(null);
   const [elapsedMs,      setElapsedMs]      = useState(0);
   const startTimeRef        = useRef<number | null>(null);
   const sessionIdRef        = useRef("");
@@ -3997,6 +4011,7 @@ export default function Home() {
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
+    setLastSaved(null);
     setSessionWarning(false);
     sessionWarningFired.current = false;
     startTimeRef.current = Date.now();
@@ -4194,6 +4209,33 @@ export default function Home() {
         }
       }
       setSaveState("saved");
+
+      // Capture a recap snapshot of the primary session for the Stats card.
+      // Computed from the same frames we just uploaded (still in framesRef
+      // until the next session starts or the user discards).
+      if (primaryHasFrames) {
+        const savedFrames = framesRef.current;
+        const scanMs = deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
+        let totalHits = 0;
+        let peakMvSnap = 0;
+        let peakSiSnap = 0;
+        for (const f of savedFrames) {
+          totalHits += f.hits.length;
+          for (const h of f.hits) if (h[5] > peakMvSnap) peakMvSnap = h[5];
+          const t = eventTimingFromFrame(f);
+          const si = strengthIndex(t.peakMv, t.riseTimeMs, scanMs, t.decayTimeMs);
+          if (si > peakSiSnap) peakSiSnap = si;
+        }
+        setLastSaved({
+          mode:       sessionMode,
+          events:     savedFrames.length,
+          hits:       totalHits,
+          peakMv:     peakMvSnap,
+          peakSi:     peakSiSnap,
+          durationMs: elapsedMs,
+        });
+      }
+
       // Advance queue: pop the athlete we just saved and select the next one.
       setQueue(q => {
         if (q.length === 0) return q;
@@ -4221,6 +4263,7 @@ export default function Home() {
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
+    setLastSaved(null);
   };
 
   // ── Feed / stats display metric toggle ───────────────────────────────────────
@@ -5532,9 +5575,38 @@ export default function Home() {
             )}
 
             {saveState === "saved" && !canSave && (
-              <div style={{ marginTop: 12, padding: "10px 0", borderRadius: 10, fontWeight: 700, fontSize: 13, background: "rgba(0,255,136,0.12)", border: "1px solid rgba(0,255,136,0.30)", color: "#00ff88", textAlign: "center" }}>
-                ✓ Saved
-              </div>
+              lastSaved ? (
+                <div style={{ marginTop: 12, padding: 12, borderRadius: 12, background: "rgba(0,255,136,0.06)", border: "1px solid rgba(0,255,136,0.28)" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                    <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.06em", textTransform: "uppercase", color: "#00ff88" }}>
+                      ✓ Saved · {(MODE_META[lastSaved.mode as keyof typeof MODE_META]?.label ?? lastSaved.mode)} recap
+                    </span>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}>
+                      {formatTime(lastSaved.durationMs)}
+                    </span>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    {[
+                      { label: "Events", value: String(lastSaved.events) },
+                      { label: "Hits",   value: String(lastSaved.hits) },
+                      { label: "Peak V", value: lastSaved.peakMv ? (lastSaved.peakMv / 1000).toFixed(2) : "—", sub: lastSaved.peakMv ? "V" : "" },
+                      { label: "Peak SI", value: lastSaved.peakSi ? String(lastSaved.peakSi) : "—", color: lastSaved.peakSi ? "#b400ff" : undefined },
+                    ].map(s => (
+                      <div key={s.label} style={{ padding: "9px 11px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)" }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 4 }}>{s.label}</div>
+                        <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1, color: s.color ?? "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                          {s.value}
+                          {s.sub && <span style={{ fontSize: 11, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>{s.sub}</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 12, padding: "10px 0", borderRadius: 10, fontWeight: 700, fontSize: 13, background: "rgba(0,255,136,0.12)", border: "1px solid rgba(0,255,136,0.30)", color: "#00ff88", textAlign: "center" }}>
+                  ✓ Saved
+                </div>
+              )
             )}
 
             {saveState === "error" && saveError && (
