@@ -911,7 +911,7 @@ function BagMatrix({
           : "none",
         borderColor: connected ? `${accentColor}44` : "var(--panel-border)",
         opacity: status === "disconnected" ? 0.55 : 1,
-        transition: "border-color 300ms, box-shadow 300ms, opacity 200ms",
+        transition: "border-color 300ms, box-shadow 300ms, opacity 200ms, max-width 320ms cubic-bezier(.25,.46,.45,.94)",
       }}
     >
       {/* Bag identity label (top-center) */}
@@ -1522,7 +1522,7 @@ function cellKey(r: number, c: number) { return `${r},${c}`; }
 
 // Split-screen row layout for the multi-bag matrix view. Mirrors the gamer
 // split-screen conventions the coach asked for:
-//   2 → [2]   (side by side)
+//   2 → [1,1] (top & bottom split)
 //   3 → [2,1] (two top, one bottom)
 //   4 → [2,2] (2×2)
 //   5 → [3,2] (three top, two bottom)
@@ -1532,7 +1532,7 @@ function matrixRowCounts(n: number): number[] {
   switch (n) {
     case 0: return [];
     case 1: return [1];
-    case 2: return [2];
+    case 2: return [1, 1];
     case 3: return [2, 1];
     case 4: return [2, 2];
     case 5: return [3, 2];
@@ -4408,6 +4408,31 @@ export default function Home() {
     }
   }, [bagSwipe]);
 
+  // Multi-bag matrix focus — double-tap a single tile to zoom it to full size
+  // so a coach can watch one bag. Holds the focused matrix tile key; null = the
+  // full split grid. Escape or double-tapping the focused tile exits.
+  const [focusedTileKey, setFocusedTileKey] = useState<string | null>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFocusedTileKey(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  // Per-tile manual double-tap tracker (same reliability rationale as the
+  // primary bag's onBagTouchEnd — keyed by tile so a tap on one bag followed by
+  // a tap on another doesn't register as a double-tap).
+  const lastTileTapRef = useRef<{ key: string; t: number }>({ key: "", t: 0 });
+  const onTileTouchEnd = useCallback((key: string) => {
+    const now = Date.now();
+    if (lastTileTapRef.current.key === key && now - lastTileTapRef.current.t < 350) {
+      setFocusedTileKey(prev => (prev === key ? null : key));
+      lastTileTapRef.current = { key: "", t: 0 };
+    } else {
+      lastTileTapRef.current = { key, t: now };
+    }
+  }, []);
+
   // Wave 2 #6 — Swipe down on the Save/Discard card to discard. Disabled while
   // saving so we don't yank the buttons mid-network-call.
   const dismissSwipe = useDismissSwipe(discardSession, {
@@ -4498,6 +4523,21 @@ export default function Home() {
       ]
     : [];
   const matrixRows = chunkByCounts(matrixTiles, matrixRowCounts(matrixTiles.length));
+
+  // Multi-bag focus: the single tile a coach has zoomed into (or null). If the
+  // focused bag disappears (disconnect / mode change), the effect below clears
+  // the key so we never strand the view on a missing tile.
+  const focusedTile = focusedTileKey
+    ? matrixTiles.find(t => t.key === focusedTileKey) ?? null
+    : null;
+  useEffect(() => {
+    if (focusedTileKey && !matrixTiles.some(t => t.key === focusedTileKey)) {
+      setFocusedTileKey(null);
+    }
+  }, [matrixTiles, focusedTileKey]);
+  // When focused, render that one tile as a single full-size row; otherwise the
+  // normal split grid. --matrix-rows = 1 in focus mode gives the biggest tile.
+  const renderRows = focusedTile ? [[focusedTile]] : matrixRows;
 
   return (
     /* Wave 2 #4 (refined) — Focus mode lifts the 1100px page cap and
@@ -4908,6 +4948,27 @@ export default function Home() {
                   <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label}</span>
                   <span style={{ opacity: 0.5 }}>·</span>
                   <span style={{ color: "var(--muted)" }}>{matrixTiles.length} bags</span>
+                  {focusedTile && (
+                    <>
+                      <span style={{ opacity: 0.5 }}>·</span>
+                      <button
+                        type="button"
+                        onClick={() => setFocusedTileKey(null)}
+                        title="Exit focus (Esc)"
+                        style={{
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          padding: "3px 8px", borderRadius: 7,
+                          fontSize: 10, fontWeight: 800, letterSpacing: "0.04em",
+                          textTransform: "uppercase", cursor: "pointer", lineHeight: 1,
+                          background: "rgba(180,0,255,0.16)",
+                          border: "1px solid rgba(180,0,255,0.42)",
+                          color: "rgba(220,150,255,1)",
+                        }}
+                      >
+                        Focused: {focusedTile.label} · Exit ✕
+                      </button>
+                    </>
+                  )}
                 </div>
 
                 {sessionActive ? (
@@ -4949,12 +5010,24 @@ export default function Home() {
 
               {/* Adaptive split grid — rows follow the gamer split-screen layout.
                   --matrix-rows feeds the per-tile height cap so tiles fill the
-                  viewport without ever breaking the 0.72 aspect ratio. */}
-              <div className="ts-matrix-area" style={{ ["--matrix-rows" as any]: matrixRows.length }}>
-                {matrixRows.map((row, ri) => (
+                  viewport without ever breaking the 0.72 aspect ratio.
+                  Double-tap any tile to zoom it to full size (focus); double-tap
+                  again, tap Exit focus, or press Escape to return to the grid. */}
+              <div
+                className="ts-matrix-area"
+                style={{ ["--matrix-rows" as any]: renderRows.length }}
+                title={focusedTile ? undefined : "Double-tap a bag to focus on it"}
+              >
+                {renderRows.map((row, ri) => (
                   <div className="ts-matrix-row" key={ri}>
                     {row.map(tile => (
-                      <div className="ts-matrix-cell" key={tile.key}>
+                      <div
+                        className="ts-matrix-cell"
+                        key={tile.key}
+                        onTouchEnd={() => onTileTouchEnd(tile.key)}
+                        onDoubleClick={() => setFocusedTileKey(prev => (prev === tile.key ? null : tile.key))}
+                        style={{ cursor: "zoom-in" }}
+                      >
                         <BagMatrix
                           grid={tile.grid}
                           now={now}
@@ -5938,15 +6011,33 @@ export default function Home() {
            layout. height:auto avoids the collapse-to-0 issue (the bag's children
            are all position:absolute) because width is the definite driver. */
         .ts-ses-bagWrap--matrix {
+          /* --matrix-chrome: total vertical space consumed by everything that is
+             NOT the tile grid (page padding ≈48 + header ≈68 + toolbar ≈56 +
+             wrap gap ≈10 ≈ 185). Tuned tight so tiles claim the rest of the
+             viewport; lower it to scale tiles up, raise it if they ever clip.
+             --matrix-gap mirrors the 10px row gap so multi-row layouts subtract
+             the gaps before dividing — each row gets its true height share. */
+          --matrix-chrome: 190px;
+          --matrix-gap: 10px;
           width: 100%;
           height: auto;
           aspect-ratio: 0.72;
-          max-width: calc(((100vh - 230px) / var(--matrix-rows, 1)) * 0.72);
+          /* Largest width that keeps the 0.72 portrait ratio AND fits each tile's
+             height share of the viewport. width:100% above still caps the tile to
+             its flex cell, so the tile renders at the smaller of the two — filling
+             the screen without ever overflowing or distorting. */
+          max-width: calc(
+            ((100vh - var(--matrix-chrome) - (var(--matrix-rows, 1) - 1) * var(--matrix-gap))
+              / var(--matrix-rows, 1)) * 0.72
+          );
           margin: 0 auto;
         }
         @supports (height: 100dvh) {
           .ts-ses-bagWrap--matrix {
-            max-width: calc(((100dvh - 230px) / var(--matrix-rows, 1)) * 0.72);
+            max-width: calc(
+              ((100dvh - var(--matrix-chrome) - (var(--matrix-rows, 1) - 1) * var(--matrix-gap))
+                / var(--matrix-rows, 1)) * 0.72
+            );
           }
         }
 
