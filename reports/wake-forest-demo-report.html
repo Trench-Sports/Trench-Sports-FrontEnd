@@ -1,0 +1,643 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Trench Sports — Wake Forest Demo Report</title>
+<style>
+  /* ── Trench Sports report theme (matches dashboard.tsx aesthetic) ─────────── */
+  :root {
+    --bg:        #07070a;
+    --ink:       255,255,255;
+    --power:     #b400ff;
+    --accuracy:  #00dcff;
+    --reaction:  #ffcc00;
+    --volume:    #ff6a00;
+    --target:    #00ff88;
+    --danger:    #ff6060;
+    --card:      rgba(255,255,255,0.03);
+    --card2:     rgba(255,255,255,0.05);
+    --border:    rgba(255,255,255,0.10);
+    --border2:   rgba(255,255,255,0.16);
+    --a1: #b400ff;
+    --a2: #00dcff;
+    --a3: #ffcc00;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #111; }
+  body {
+    font-family: "Inter", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: rgba(var(--ink), 0.92);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .page {
+    width: 8.5in; height: 11in;
+    margin: 24px auto; padding: 0.5in 0.55in 0.45in;
+    background: var(--bg); position: relative; overflow: hidden;
+    display: flex; flex-direction: column;
+    page-break-after: always; border-radius: 6px;
+  }
+  @page { size: letter; margin: 0; }
+  @media print {
+    body { background: var(--bg); }
+    .page { margin: 0; border-radius: 0; }
+  }
+  .page::after {
+    content: ""; position: absolute; inset: auto 0 0 0; height: 2.2in;
+    background: radial-gradient(ellipse at 50% 100%, rgba(180,0,255,0.10) 0%, transparent 65%);
+    pointer-events: none;
+  }
+  .kicker { font-size: 9px; font-weight: 800; letter-spacing: 0.18em; text-transform: uppercase; opacity: 0.45; }
+  .label  { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.5; }
+  h1 { font-size: 25px; font-weight: 800; letter-spacing: -0.01em; }
+  h2 { font-size: 14px; font-weight: 800; letter-spacing: 0.02em; }
+  p.body { font-size: 11px; line-height: 1.65; opacity: 0.82; }
+  .rpt-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 14px;
+  }
+  .wordmark { font-size: 13px; font-weight: 900; letter-spacing: 0.22em; text-transform: uppercase; }
+  .wordmark span { color: var(--power); }
+  .mode-badge {
+    display: inline-block; font-size: 9px; font-weight: 800; letter-spacing: 0.08em;
+    text-transform: uppercase; padding: 3px 9px; border-radius: 999px;
+    background: rgba(180,0,255,0.14); border: 1px solid rgba(180,0,255,0.40); color: #d28cff;
+  }
+  .rpt-footer {
+    margin-top: auto; padding-top: 10px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; font-size: 9px;
+    letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.4; font-weight: 700;
+  }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; }
+  .grid { display: grid; gap: 9px; }
+  .kpi-row { grid-template-columns: repeat(4, 1fr); }
+  .kpi .num { font-size: 21px; font-weight: 800; margin-top: 4px; }
+  .kpi .sub { font-size: 9px; opacity: 0.5; margin-top: 2px; }
+  .athlete-card { border-top: 2px solid var(--ac, var(--power)); }
+  .athlete-card .name { font-size: 13px; font-weight: 800; }
+  .chip {
+    font-size: 8px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px;
+    background: color-mix(in srgb, var(--ac) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--ac) 35%, transparent);
+    color: var(--ac);
+  }
+  .mini-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; margin-top: 9px; }
+  .mini-stats .v { font-size: 14px; font-weight: 800; }
+  .mini-stats .k { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.45; }
+  .insight {
+    display: flex; gap: 10px; align-items: flex-start;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 12px;
+  }
+  .insight .dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .insight .t { font-size: 11px; font-weight: 800; }
+  .insight .b { font-size: 10px; line-height: 1.5; opacity: 0.75; margin-top: 2px; }
+  .insight .tag {
+    margin-left: auto; flex-shrink: 0; font-size: 8px; font-weight: 800;
+    letter-spacing: 0.07em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+  }
+  .chart-box svg { display: block; width: 100%; height: auto; }
+  .heatwrap { position: relative; }
+  .heatmap { display: grid; grid-template-columns: repeat(8, 1fr); gap: 3px; }
+  .heatmap .cell { aspect-ratio: 1 / 1.02; border-radius: 3px; }
+  .com-marker {
+    position: absolute; width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid #fff; box-shadow: 0 0 8px rgba(255,255,255,0.7), inset 0 0 4px rgba(255,255,255,0.5);
+    transform: translate(-50%, -50%); pointer-events: none;
+  }
+  .callout { border-radius: 8px; padding: 8px 11px; font-size: 10px; line-height: 1.55; opacity: 0.95; }
+  .callout .label { display: block; margin-bottom: 3px; opacity: 0.8; }
+  .callout.purple { background: rgba(180,0,255,0.08);  border: 1px solid rgba(180,0,255,0.20); }
+  .callout.cyan   { background: rgba(0,220,255,0.07);  border: 1px solid rgba(0,220,255,0.18); }
+  .callout.yellow { background: rgba(255,200,0,0.07);  border: 1px solid rgba(255,200,0,0.20); }
+  .callout.green  { background: rgba(0,255,136,0.07);  border: 1px solid rgba(0,255,136,0.20); }
+  .two-col   { grid-template-columns: 1.05fr 1fr; }
+  .three-col { grid-template-columns: repeat(3, 1fr); }
+  .section-head { display: flex; align-items: baseline; gap: 8px; margin: 12px 0 7px; }
+  .section-head .rule { flex: 1; height: 1px; background: var(--border); }
+  .stat-pill { text-align: center; padding: 9px 6px; }
+  .stat-pill .v { font-size: 15px; font-weight: 800; white-space: nowrap; }
+  .stat-pill .k { font-size: 7.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.45; margin-top: 2px; }
+  /* appendix */
+  .glossary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .glossary .g { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; }
+  .glossary .g .gt { font-size: 10.5px; font-weight: 800; margin-bottom: 3px; }
+  .glossary .g .gt em { font-style: normal; font-size: 8px; opacity: 0.45; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; margin-left: 6px; }
+  .glossary .g .gb { font-size: 9.5px; line-height: 1.5; opacity: 0.75; }
+</style>
+</head>
+<body>
+
+<!-- ════════════════════════ PAGE 1 — SESSION OVERVIEW ═══════════════════════ -->
+<div class="page">
+  <div class="rpt-header">
+    <div>
+      <div class="wordmark">Trench <span>Sports</span></div>
+      <h1 style="margin-top:9px;">Wake Forest Demo — Session Report</h1>
+      <div style="font-size:11px; opacity:0.55; margin-top:4px;">
+        Hitting Bag Performance Overview · 3 Athletes · June 9, 2026
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <span class="mode-badge">Power Mode</span>
+      <div class="kicker" style="margin-top:8px;">Report · Page 1 of 5</div>
+    </div>
+  </div>
+
+  <div class="grid kpi-row">
+    <div class="card kpi"><div class="label">Total Sessions</div><div class="num" id="kpi-sessions">—</div><div class="sub">across all athletes</div></div>
+    <div class="card kpi"><div class="label">Total Contacts</div><div class="num" id="kpi-contacts">—</div><div class="sub">impact events recorded</div></div>
+    <div class="card kpi"><div class="label">Active Hitting Time</div><div class="num" id="kpi-time">—</div><div class="sub">cumulative session time</div></div>
+    <div class="card kpi"><div class="label">Peak Sensor Reading</div><div class="num" id="kpi-peak">—</div><div class="sub">hit sensor ceiling — see appendix</div></div>
+  </div>
+
+  <div class="section-head"><h2>Athlete Snapshot</h2><div class="rule"></div></div>
+  <div class="grid three-col" id="athlete-cards"></div>
+
+  <div class="section-head"><h2>Session Trends</h2><div class="rule"></div></div>
+  <div class="grid two-col">
+    <div class="card chart-box">
+      <div class="label">Avg Strength Index by Round (chronological)</div>
+      <div id="trend-chart"></div>
+      <div style="display:flex; gap:14px; margin-top:5px;">
+        <span style="font-size:8px; opacity:0.7;"><span style="display:inline-block;width:14px;height:2px;background:#b400ff;vertical-align:middle;margin-right:4px;"></span>Athlete 1</span>
+        <span style="font-size:8px; opacity:0.7;"><span style="display:inline-block;width:14px;height:2px;background:#00dcff;vertical-align:middle;margin-right:4px;"></span>Athlete 2</span>
+        <span style="font-size:8px; opacity:0.7;"><span style="display:inline-block;width:14px;height:2px;background:#ffcc00;vertical-align:middle;margin-right:4px;"></span>Athlete 3</span>
+      </div>
+    </div>
+    <div class="card chart-box">
+      <div class="label">Per-Hit Intensity — Avg Strength Index</div>
+      <div id="compare-chart"></div>
+    </div>
+  </div>
+
+  <div class="section-head"><h2>AI Insights</h2><div class="rule"></div></div>
+  <div class="grid" style="grid-template-columns: 1fr; gap: 6px;">
+    <div class="insight">
+      <div class="dot" style="background:#00ff88;"></div>
+      <div><div class="t">Athlete 1 leads the group in per-swing power</div>
+        <div class="b">Event-weighted strength index of ≈108 vs ≈92 (A3) and ≈68 (A2). Multiple impacts from all three athletes
+        railed the sensor at 3.3&nbsp;V, so true peak force is higher than recorded — calibration will unlock absolute numbers.</div></div>
+      <span class="tag" style="background:rgba(180,0,255,0.12); border:1px solid rgba(180,0,255,0.4); color:#d28cff;">Power</span>
+    </div>
+    <div class="insight">
+      <div class="dot" style="background:#ffcc00;"></div>
+      <div><div class="t">Contact drifts off-center when tempo climbs</div>
+        <div class="b">All three athletes cluster contact low-center (rows 6–10), but in Athlete 2's two fastest rounds (23+ contacts/sec)
+        the center of mass pulled hard toward the left edge (col ≈1.9–3.2). Athlete 1 kept the tightest, most centered cluster overall.</div></div>
+      <span class="tag" style="background:rgba(0,220,255,0.10); border:1px solid rgba(0,220,255,0.35); color:#7fe8ff;">Accuracy</span>
+    </div>
+    <div class="insight">
+      <div class="dot" style="background:#ff6060;"></div>
+      <div><div class="t">Intensity fades when chasing volume</div>
+        <div class="b">Athlete 2's highest-cadence rounds averaged SI 38–54 vs 138 in their best controlled round — roughly a 60% drop
+        in per-hit quality. Long resets (5.6–6.0&nbsp;s pauses for A2/A3) mid-round suggest fatigue checkpoints worth programming around.</div></div>
+      <span class="tag" style="background:rgba(255,200,0,0.10); border:1px solid rgba(255,200,0,0.35); color:#ffe27a;">Tempo</span>
+    </div>
+  </div>
+
+  <div class="section-head"><h2>Session Summary</h2><div class="rule"></div></div>
+  <p class="body">
+    The Wake Forest demo captured 24 power-mode rounds — 4,097 bag contacts over roughly nine minutes of active hitting —
+    split evenly across three athletes. Athlete 1 was the most efficient per swing, generating the group's highest per-contact
+    intensity with the most centered strike cluster. Athlete 2 was the motor of the group: nearly double A1's contact volume and
+    the fastest hands (23.7 contacts/sec peak), but per-hit quality dropped sharply at top speed. Athlete 3 split the difference,
+    pairing above-average intensity with high volume, though long mid-round pauses point to pacing as the next focus.
+    The headline for the staff: every athlete repeatedly maxed out the force sensor — these are strong hitters, and a calibrated
+    rig at the next visit will produce true newton-scale numbers.
+  </p>
+
+  <div class="rpt-footer">
+    <span>Trench Sports · Smart Hitting Bag</span>
+    <span>Wake Forest Demo · Confidential</span>
+    <span>Page 1 / 5</span>
+  </div>
+</div>
+
+<!-- ═══════════════ PAGES 2–4 — PER-ATHLETE PAGES (rendered by JS) ════════════ -->
+<div id="athlete-pages"></div>
+
+<template id="athlete-page-template">
+  <div class="page">
+    <div class="rpt-header" style="align-items:center;">
+      <div>
+        <div class="wordmark">Trench <span>Sports</span></div>
+        <h1 style="margin-top:8px; font-size:21px;">{{name}} — Performance Breakdown</h1>
+        <div style="font-size:10px; opacity:0.5; margin-top:3px;">Wake Forest Demo · Power Mode · {{sessions}} rounds · {{contacts}} contacts · {{time}} active</div>
+      </div>
+      <div style="text-align:right;">
+        <span style="font-size:10px; padding:4px 12px; background:color-mix(in srgb, {{accent}} 12%, transparent); border:1px solid color-mix(in srgb, {{accent}} 40%, transparent); color:{{accent}}; border-radius:999px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase;">{{tag}}</span>
+        <div class="kicker" style="margin-top:8px;">Page {{pageNum}} of 5</div>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: repeat(5, 1fr);">
+      <div class="card stat-pill"><div class="v">{{si}}</div><div class="k">Avg Strength Idx</div></div>
+      <div class="card stat-pill"><div class="v">{{peak}}</div><div class="k">Peak Reading</div></div>
+      <div class="card stat-pill"><div class="v">{{cadence}}</div><div class="k">Peak Cadence (hits/s)</div></div>
+      <div class="card stat-pill"><div class="v">{{angle}}</div><div class="k">Mean Impact Angle</div></div>
+      <div class="card stat-pill"><div class="v">{{rise}}</div><div class="k">Avg Rise Time</div></div>
+    </div>
+
+    <div class="grid two-col" style="margin-top:10px;">
+      <div class="card">
+        <div class="label">Hit Location — Bag Contact Map</div>
+        <div style="display:flex; gap:12px; margin-top:7px;">
+          <div style="flex:1;">
+            <div class="heatwrap" id="heat-{{idx}}"></div>
+            <div style="display:flex; justify-content:space-between; font-size:7px; opacity:0.4; margin-top:4px; text-transform:uppercase; letter-spacing:0.08em;">
+              <span>Left</span><span>Bag face · 8 × 12 sensor grid · ○ = center of mass</span><span>Right</span>
+            </div>
+          </div>
+          <div style="width:39%; display:flex; flex-direction:column; gap:6px;">
+            <div class="callout purple">
+              <span class="label">Hot Zone</span>
+              {{hotZoneText}}
+            </div>
+            <div class="callout cyan">
+              <span class="label">Contact Pattern</span>
+              {{comText}}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card chart-box">
+        <div class="label">Impact Angle Profile</div>
+        <div id="dial-{{idx}}"></div>
+        <div class="callout yellow" style="margin-top:7px;">
+          <span class="label">Angle Feedback</span>
+          {{angleText}}
+        </div>
+      </div>
+    </div>
+
+    <div class="section-head"><h2>Power Output</h2><div class="rule"></div></div>
+    <div class="grid two-col">
+      <div class="card chart-box">
+        <div class="label">Avg Strength Index by Round</div>
+        <div id="bars-{{idx}}"></div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:7px;">
+        <div class="grid" style="grid-template-columns:1fr 1fr; gap:7px;">
+          <div class="card stat-pill"><div class="v">{{impulse}}</div><div class="k">Avg Impulse</div></div>
+          <div class="card stat-pill"><div class="v">{{decay}}</div><div class="k">Avg Decay</div></div>
+        </div>
+        <div class="callout purple" style="flex:1;">
+          <span class="label">Power Feedback</span>
+          {{powerText}}
+        </div>
+      </div>
+    </div>
+
+    <div class="section-head"><h2>Tempo &amp; Coach Recommendations</h2><div class="rule"></div></div>
+    <div class="grid two-col">
+      <div class="card">
+        <div class="label">Rhythm &amp; Consistency</div>
+        <div class="grid" style="grid-template-columns:repeat(3,1fr); margin-top:8px;">
+          <div class="stat-pill"><div class="v">{{iei}}</div><div class="k">Avg Interval</div></div>
+          <div class="stat-pill"><div class="v">{{pause}}</div><div class="k">Longest Pause</div></div>
+          <div class="stat-pill"><div class="v">{{avgCad}}</div><div class="k">Avg Cadence (hits/s)</div></div>
+        </div>
+        <div class="callout cyan" style="margin-top:8px;">
+          <span class="label">Tempo Feedback</span>
+          {{tempoText}}
+        </div>
+      </div>
+      <div class="callout green" style="display:flex; flex-direction:column;">
+        <span class="label">Recommended Focus &amp; Drills</span>
+        <div style="font-size:10px; line-height:1.65;">{{drillText}}</div>
+      </div>
+    </div>
+
+    <div class="rpt-footer">
+      <span>Trench Sports · Smart Hitting Bag</span>
+      <span>Wake Forest Demo · Confidential</span>
+      <span>Page {{pageNum}} / 5</span>
+    </div>
+  </div>
+</template>
+
+<!-- ════════════════════════ PAGE 5 — APPENDIX ════════════════════════════════ -->
+<div class="page">
+  <div class="rpt-header">
+    <div>
+      <div class="wordmark">Trench <span>Sports</span></div>
+      <h1 style="margin-top:9px; font-size:21px;">Appendix — Reading the Results</h1>
+      <div style="font-size:10px; opacity:0.5; margin-top:3px;">What every metric in this report measures, and how to use it</div>
+    </div>
+    <div style="text-align:right;">
+      <span class="mode-badge">Reference</span>
+      <div class="kicker" style="margin-top:8px;">Page 5 of 5</div>
+    </div>
+  </div>
+
+  <div class="glossary">
+    <div class="g"><div class="gt">Contacts / Events <em>count</em></div>
+      <div class="gb">Each distinct impact the bag registers. One swing that lands clean counts once, even when it lights up several sensor cells at the same instant.</div></div>
+    <div class="g"><div class="gt">Strength Index <em>0–225 in this demo</em></div>
+      <div class="gb">Trench's per-hit intensity score, computed from how hard and how sharply each impact loads the sensor grid. Higher is harder. The "avg" is weighted across every contact, so high-volume rounds count proportionally.</div></div>
+    <div class="g"><div class="gt">Peak Reading <em>volts (mV)</em></div>
+      <div class="gb">The single largest raw sensor reading in a round. The demo rig saturates at ≈3.3&nbsp;V — every athlete pinned it, so peaks shown are floors, not ceilings. Newton conversion requires a calibrated rig.</div></div>
+    <div class="g"><div class="gt">Impulse (Avg) <em>volts</em></div>
+      <div class="gb">Average sensor voltage sustained across contacts — a proxy for how much energy each swing transfers into the bag, not just the instantaneous spike.</div></div>
+    <div class="g"><div class="gt">Rise / Decay Time <em>ms</em></div>
+      <div class="gb">How fast force builds into the bag (rise) and how fast it releases (decay). Short rise = sharp, snappy contact. Long rise or decay usually means pushing or dragging through the bag rather than striking it.</div></div>
+    <div class="g"><div class="gt">Impact Angle <em>degrees, −180° to +180°</em></div>
+      <div class="gb">Orientation of each impact across the bag face, with 0° square to the bag. The mean shows the dominant strike direction; the shaded band on the dial shows spread (±1 std). A tight band = repeatable barrel delivery.</div></div>
+    <div class="g"><div class="gt">Contact Map / Heatmap <em>8 cols × 12 rows</em></div>
+      <div class="gb">Where contact energy landed on the bag face (log scale — the brightest cells absorbed the most cumulative energy). Row 1 is the top of the bag, column 1 the left edge. Corner cells can include mount/lean artifacts.</div></div>
+    <div class="g"><div class="gt">Center of Mass <em>grid coordinates</em></div>
+      <div class="gb">The energy-weighted "average" landing spot of all contacts, marked ○ on the map. Grid center is column 4.5, row 6.5 — distance from center is a one-number read on strike placement.</div></div>
+    <div class="g"><div class="gt">Cadence <em>hits per second (Hz)</em></div>
+      <div class="gb">Contact rate over the active round. Power rounds run slower by design; the value matters most when compared against the strength index it was achieved at — speed that holds intensity is the goal.</div></div>
+    <div class="g"><div class="gt">Inter-Event Interval &amp; Longest Pause <em>ms / s</em></div>
+      <div class="gb">Average gap between consecutive contacts, and the single longest gap in a round. Big pauses mid-round flag resets, instruction breaks, or fatigue — useful context before judging a low cadence number.</div></div>
+    <div class="g"><div class="gt">Most-Contacted Cell <em>row, column</em></div>
+      <div class="gb">The single grid cell hit most in a round. When this sits far from the center of mass, contact is spread or bimodal rather than clustered.</div></div>
+    <div class="g"><div class="gt">Session Duration <em>mm:ss</em></div>
+      <div class="gb">Active recording time per round, from first to last registered event. Cumulative time per athlete appears in their page header.</div></div>
+  </div>
+
+  <div class="section-head"><h2>Data Quality Notes — This Demo</h2><div class="rule"></div></div>
+  <div class="grid" style="grid-template-columns:1fr 1fr; gap:8px;">
+    <div class="callout yellow">
+      <span class="label">Sensor Saturation</span>
+      Peak readings of ≈3,280–3,300&nbsp;mV across rounds indicate the ADC ceiling was reached repeatedly.
+      Relative comparisons (strength index, impulse averages) remain valid; absolute force in newtons requires
+      the calibrated production rig.
+    </div>
+    <div class="callout cyan">
+      <span class="label">De-Identified Data</span>
+      Sessions were recorded without athlete, program, or team IDs and assigned to Athletes 1–3 by rotation order.
+      Eight rounds per athlete, June 9, 2026, all in Power mode. Corner-cell dwell values (esp. row 1, col 1) include
+      probable mount-contact artifacts and are damped by the log scale on the maps.
+    </div>
+  </div>
+
+  <div class="rpt-footer">
+    <span>Trench Sports · Smart Hitting Bag</span>
+    <span>Wake Forest Demo · Confidential</span>
+    <span>Page 5 / 5</span>
+  </div>
+</div>
+
+<script>
+/* ════════════════════════════════════════════════════════════════════════════
+   RAW SESSION DATA — Wake Forest demo, June 9 2026 (de-identified).
+   a = athlete (rotation order 1,2,3). mcc/com = [row, col]. heat = cell dwell.
+   All report numbers are computed from this array at render time.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const S = [
+{a:1,d:"15:11",n:110,dur:16886,cad:6.514,iei:49.826,pause:1021,avgMv:1268.63,peakMv:3279,rise:551.821,decay:1134.611,angM:-76.546,angS:43.36,mcc:[1,5],com:[2.83,4.75],si:14.073,siMax:219,
+heat:{"1,1":19464,"1,2":248,"1,5":307846,"1,7":1796,"1,8":248,"2,6":13108,"3,6":10188,"4,1":216,"4,2":211,"4,3":225,"4,4":211,"4,5":211,"4,6":208,"4,7":209,"4,8":205,"5,1":2728,"5,2":1159,"5,3":1098,"5,4":1460,"5,5":1086,"5,6":498,"5,7":2681,"5,8":1481,"6,1":3622,"6,2":2210,"6,3":4949,"6,4":2185,"6,5":1236,"6,6":510,"6,7":2759,"6,8":1755,"7,1":2706,"7,2":1223,"7,3":494,"7,4":794,"7,5":488,"7,6":495,"7,7":6374,"7,8":1558,"8,1":1056,"8,2":805,"8,3":496,"8,4":821,"8,5":497,"8,6":494,"8,7":1182,"8,8":1182,"9,1":7986,"9,2":2320,"9,3":747,"9,4":738,"9,5":755,"9,6":746,"9,7":4416,"9,8":2084,"10,1":2500,"10,2":4271,"10,3":3976,"10,4":727,"10,5":748,"10,6":722,"10,7":2155,"10,8":10007,"11,1":702,"11,2":2058,"11,3":4000,"11,4":729,"11,5":3987,"11,6":732,"11,7":708,"11,8":657,"12,1":215,"12,2":212,"12,3":212,"12,4":213,"12,5":214,"12,6":214,"12,7":212,"12,8":215}},
+{a:2,d:"15:09",n:10,dur:15042,cad:0.665,iei:72.222,pause:177,avgMv:364.21,peakMv:3279,rise:246.5,decay:229.333,angM:-49.38,angS:112.639,mcc:[3,3],com:[5.82,3.89],si:37.7,siMax:219,
+heat:{"1,1":3641,"1,2":373,"1,3":378,"1,4":378,"1,5":378,"1,6":189,"1,7":374,"1,8":374,"3,1":374,"3,2":1096,"3,3":8008,"3,4":966,"3,5":608,"3,6":189,"3,7":374,"3,8":1078,"4,1":370,"4,2":1007,"4,3":1002,"4,4":4328,"4,5":1062,"4,6":386,"4,7":371,"4,8":960,"5,1":364,"5,2":379,"5,3":373,"5,4":370,"5,5":372,"5,6":187,"5,7":2268,"5,8":2265,"6,1":2394,"6,2":3975,"6,3":5816,"6,4":1740,"6,5":909,"6,6":222,"6,7":594,"6,8":1330,"7,1":572,"7,2":4773,"7,3":1000,"7,4":1335,"7,5":388,"7,6":215,"7,7":595,"7,8":1065,"8,1":191,"8,2":638,"8,3":664,"8,4":673,"8,5":657,"8,6":391,"8,7":772,"8,8":926,"9,1":583,"9,2":1738,"9,3":5038,"9,4":1051,"9,5":414,"9,6":221,"9,7":808,"9,8":1113,"10,1":733,"10,2":1080,"10,3":1020,"10,4":881,"10,5":584,"10,6":398,"10,7":583,"10,8":880,"11,7":165,"11,8":165}},
+{a:3,d:"14:10",n:23,dur:6361,cad:3.616,iei:151.364,pause:1081,avgMv:682.97,peakMv:3279,rise:184.692,decay:121.786,angM:18.213,angS:97.299,mcc:[4,6],com:[7.18,4.36],si:51.913,siMax:224,
+heat:{"1,2":581,"1,3":642,"1,6":732,"1,7":676,"2,2":2024,"2,3":2056,"2,5":248,"2,6":2225,"2,7":3744,"3,2":10999,"3,3":2676,"3,5":528,"3,6":4100,"3,7":1564,"4,2":3985,"4,3":4479,"4,5":178,"4,6":22951,"4,7":4854,"5,2":4005,"5,3":1117,"5,6":10583,"5,7":1140,"6,2":5578,"6,3":1241,"6,5":514,"6,6":1628,"6,7":1088,"7,1":593,"7,2":1274,"7,3":1056,"7,4":296,"7,5":675,"7,6":592,"7,7":1060,"7,8":593,"8,1":1341,"8,2":14197,"8,3":5543,"8,4":297,"8,5":1195,"8,6":2290,"8,7":5835,"8,8":592,"9,1":983,"9,2":6801,"9,3":4684,"9,4":302,"9,5":758,"9,6":2076,"9,7":6649,"9,8":1012,"10,1":985,"10,2":5541,"10,3":8445,"10,4":289,"10,5":730,"10,6":5752,"10,7":8648,"10,8":861,"11,1":955,"11,2":4467,"11,3":3968,"11,4":305,"11,5":1101,"11,6":2951,"11,7":5235,"11,8":871,"12,1":1006,"12,2":5382,"12,3":5421,"12,4":295,"12,5":1152,"12,6":1879,"12,7":2092,"12,8":902}},
+{a:1,d:"14:09",n:40,dur:9186,cad:4.354,iei:147.718,pause:1290,avgMv:856.14,peakMv:3279,rise:181.056,decay:123.045,angM:-11.015,angS:89.52,mcc:[9,3],com:[6.53,4.83],si:50.875,siMax:224,
+heat:{"2,1":2961,"2,2":801,"2,3":4994,"2,4":1541,"2,5":4207,"2,6":771,"2,7":15352,"2,8":1559,"3,1":1443,"3,2":1203,"3,3":6419,"3,4":5543,"3,5":1578,"3,6":2619,"3,7":5136,"3,8":14062,"4,1":1827,"4,2":1784,"4,3":17218,"4,4":3861,"4,5":2643,"4,6":1503,"4,7":5130,"4,8":2072,"5,1":1548,"5,3":2488,"5,4":10562,"5,5":7877,"5,6":4014,"5,7":14726,"5,8":2053,"6,4":834,"6,6":4092,"6,7":1503,"7,2":1120,"7,3":1124,"7,4":1123,"7,5":1732,"7,6":296,"7,7":594,"7,8":594,"8,2":4265,"8,3":4235,"8,4":1719,"8,5":2052,"8,6":1504,"8,7":2356,"8,8":1122,"9,2":5394,"9,3":26184,"9,4":2888,"9,5":1749,"9,6":1095,"9,7":5863,"9,8":1612,"10,2":2430,"10,3":2490,"10,4":8310,"10,5":4332,"10,6":2886,"10,7":1464,"10,8":3289,"11,2":5351,"11,3":9917,"11,4":1980,"11,5":7640,"11,6":9435,"11,7":1980,"11,8":3704,"12,5":1032,"12,6":1492,"12,7":2445,"12,8":1504}},
+{a:2,d:"11:16:32",n:450,dur:19480,cad:23.101,iei:38.88,pause:404,avgMv:1768.29,peakMv:3285,rise:395.333,decay:284.511,angM:-55.237,angS:106.014,mcc:[1,1],com:[5.53,3.2],si:54,siMax:224,
+heat:{"1,1":1071089,"1,2":4696,"1,3":8025,"1,4":2920,"1,5":14745,"1,6":28644,"1,7":29590,"1,8":2956,"3,5":3268,"4,3":655,"4,5":8118,"4,6":7452,"4,7":6596,"4,8":2414,"6,1":640,"6,2":361,"6,3":10361,"6,5":5666,"6,6":16320,"6,7":14522,"6,8":6115,"9,1":43701,"9,2":29863,"9,3":17215,"9,5":46749,"9,6":147634,"9,7":94973,"9,8":43511,"10,1":70869,"10,2":45080,"10,3":22651,"10,5":24003,"10,6":118312,"10,7":70991,"10,8":45028,"11,1":132113,"11,2":13515,"11,3":16682,"11,5":6967,"11,6":46795,"11,7":22738,"11,8":27864,"12,2":1332,"12,3":7225,"12,5":6766,"12,6":39043,"12,7":27738,"12,8":9814}},
+{a:3,d:"11:16:08",n:329,dur:15530,cad:21.185,iei:46.646,pause:837,avgMv:1947.42,peakMv:3283,rise:110.155,decay:82.421,angM:-13.874,angS:115.035,mcc:[11,1],com:[5.27,4.14],si:108.158,siMax:224,
+heat:{"1,1":311387,"1,2":6690,"1,3":20738,"1,4":92502,"1,5":60332,"1,6":157386,"1,7":162397,"1,8":72892,"2,3":2185,"2,4":6547,"2,5":8982,"2,6":13794,"2,7":13736,"2,8":12114,"3,1":2945,"3,2":4191,"3,3":4584,"3,5":4059,"3,6":5808,"3,7":5889,"3,8":4302,"4,1":5963,"4,2":4149,"4,3":12595,"4,5":24422,"4,6":49878,"4,7":49654,"4,8":34062,"6,1":17600,"6,2":22236,"6,3":23774,"6,4":344,"6,5":53154,"6,6":80710,"6,7":78294,"6,8":92620,"9,1":14625,"9,2":13320,"9,3":28022,"9,4":310,"9,5":23999,"9,6":43005,"9,7":38294,"9,8":38286,"10,1":18605,"10,2":65477,"10,3":9590,"10,5":2666,"10,6":2391,"10,7":2436,"10,8":1635,"11,1":417501,"11,2":10982,"11,4":23681,"11,5":473,"11,6":14523,"11,7":14484,"11,8":475}},
+{a:1,d:"11:15:48",n:322,dur:21677,cad:14.854,iei:58.231,pause:1712,avgMv:1940.64,peakMv:3283,rise:71.311,decay:72.381,angM:16.7,angS:112.125,mcc:[11,1],com:[6.96,3.86],si:136.084,siMax:224,
+heat:{"1,1":250903,"1,2":4206,"1,3":14967,"1,4":22290,"1,5":4474,"1,6":52651,"1,7":57575,"1,8":136,"3,1":2502,"3,5":5878,"3,6":20042,"3,7":16586,"3,8":1334,"4,1":4336,"4,2":6756,"4,3":4619,"4,5":7101,"4,6":55326,"4,7":53272,"4,8":17306,"6,1":38885,"6,2":58994,"6,3":45381,"6,5":116723,"6,6":43328,"6,7":40383,"6,8":71646,"9,1":59155,"9,2":108207,"9,3":67282,"9,5":46438,"9,6":56116,"9,7":59254,"9,8":110116,"10,1":80657,"10,2":87148,"10,3":59932,"10,4":1790,"10,5":25585,"10,6":28681,"10,7":28094,"10,8":27473,"11,1":269657,"11,2":5072,"11,3":9713,"11,5":1697,"11,6":23041,"11,7":21759,"11,8":10098}},
+{a:2,d:"11:15:15",n:453,dur:19082,cad:23.74,iei:37.498,pause:449,avgMv:2022.37,peakMv:3285,rise:144.973,decay:270.497,angM:-89.951,angS:100.37,mcc:[1,1],com:[4.61,1.86],si:37.83,siMax:224,
+heat:{"1,1":1334802,"1,2":3100,"1,3":2100,"1,5":505,"1,8":1589,"4,8":275,"6,1":64212,"6,2":8691,"6,3":14205,"6,5":7141,"6,6":1313,"6,7":1315,"6,8":1189,"8,8":13722,"9,1":11808,"9,2":124165,"9,3":116860,"9,5":30042,"9,6":9765,"9,7":8580,"9,8":22470,"10,1":9316,"10,2":58811,"10,3":119615,"10,5":22196,"10,6":3767,"10,7":3725,"10,8":52524,"11,1":155373,"11,2":27465,"11,3":48645,"11,5":11041,"11,6":978,"11,7":982,"11,8":4192,"12,1":1022,"12,2":9802,"12,3":10704,"12,5":3679}},
+{a:3,d:"11:14:49",n:572,dur:43747,cad:13.075,iei:73.713,pause:5973,avgMv:1859.4,peakMv:3299,rise:134.794,decay:103.461,angM:-21.003,angS:108.487,mcc:[1,1],com:[6.03,3.98],si:99.159,siMax:225,
+heat:{"1,1":733984,"1,2":35862,"1,3":37444,"1,5":3710,"1,6":187360,"1,7":187041,"1,8":7932,"3,1":1779,"3,2":3843,"3,3":4294,"3,5":2337,"3,6":5306,"3,7":5302,"3,8":1946,"4,1":7434,"4,2":10033,"4,3":43261,"4,5":55039,"4,6":37679,"4,7":37162,"4,8":19226,"6,1":48020,"6,2":95257,"6,3":98053,"6,5":188814,"6,6":92408,"6,7":72316,"6,8":219310,"8,1":3299,"8,3":3299,"8,5":8320,"8,6":8955,"8,7":6941,"8,8":133853,"9,1":49210,"9,2":174128,"9,3":341650,"9,5":155298,"9,6":81259,"9,7":86455,"9,8":82654,"10,1":114120,"10,2":107012,"10,3":161980,"10,5":75666,"10,6":31248,"10,7":30113,"10,8":23833,"11,1":96276,"11,2":20735,"11,3":51522,"11,5":26828,"11,6":9458,"11,7":9253,"11,8":7535,"12,1":378,"12,2":376,"12,3":377,"12,5":374,"12,6":3612,"12,7":3877}},
+{a:1,d:"11:13:48",n:144,dur:21945,cad:6.562,iei:99.86,pause:719,avgMv:1405.02,peakMv:3277,rise:102.444,decay:119.548,angM:72.606,angS:74.922,mcc:[10,1],com:[8.47,4.25],si:107.076,siMax:224,
+heat:{"1,1":4908,"1,2":5018,"1,3":21229,"1,4":41180,"1,5":6299,"1,6":46784,"1,7":42764,"4,1":172,"6,1":13453,"6,2":15613,"6,3":13315,"6,5":6640,"6,6":28178,"6,7":27150,"6,8":7225,"8,1":16756,"8,2":17296,"8,3":3612,"8,4":366,"8,5":22522,"8,6":9018,"8,7":8288,"8,8":750,"9,1":83534,"9,2":112620,"9,3":35644,"9,4":3153,"9,5":60544,"9,6":111432,"9,7":122010,"9,8":55023,"10,1":140409,"10,2":117607,"10,3":33376,"10,4":6111,"10,5":53539,"10,6":71843,"10,7":60188,"10,8":27504,"11,1":53356,"11,2":23229,"11,3":14661,"11,4":283,"11,5":17388,"11,6":22628,"11,7":21733,"11,8":15362,"12,5":3182,"12,6":6432,"12,7":4111}},
+{a:2,d:"11:13:14",n:237,dur:16111,cad:14.71,iei:56.699,pause:342,avgMv:1998.42,peakMv:3299,rise:75.567,decay:69.667,angM:-46.097,angS:64.445,mcc:[6,1],com:[4.92,5.15],si:138.308,siMax:225,
+heat:{"1,1":7986,"1,2":6624,"1,3":7579,"1,4":170024,"1,5":64527,"1,6":166136,"1,7":160399,"1,8":10538,"3,1":3607,"3,2":1282,"3,3":1280,"3,5":5314,"3,6":2340,"3,7":2322,"3,8":13032,"4,1":49401,"4,2":14877,"4,3":9388,"4,5":43238,"4,6":48183,"4,7":44706,"4,8":88455,"6,1":222139,"6,2":51444,"6,3":45764,"6,4":2666,"6,5":92707,"6,6":153438,"6,7":138045,"6,8":208362,"8,1":23761,"8,2":43290,"8,3":18575,"8,4":1986,"8,5":20528,"8,6":46535,"8,7":38274,"8,8":36000,"9,1":37680,"9,2":16841,"9,3":10988,"9,4":441,"9,5":15803,"9,6":27988,"9,7":24160,"9,8":45029,"10,1":493,"10,2":2188,"10,3":2180,"10,5":1695,"10,6":2185,"10,7":2183,"10,8":2189,"11,5":3245,"12,1":773,"12,3":790,"12,4":1796,"12,6":9046,"12,7":8967,"12,8":779}},
+{a:3,d:"11:11:43",n:372,dur:16395,cad:22.69,iei:43.668,pause:360,avgMv:1566.37,peakMv:3286,rise:177.892,decay:385.787,angM:-75.141,angS:87.005,mcc:[1,1],com:[4.83,3.33],si:69.925,siMax:224,
+heat:{"1,1":834426,"1,2":408,"1,3":5074,"1,4":65039,"1,5":386,"1,7":763,"1,8":509,"2,4":6812,"3,1":1844,"3,2":364,"3,3":361,"3,4":42672,"3,5":735,"4,1":1520,"4,2":3901,"4,3":16459,"4,4":17415,"4,5":25059,"4,6":8822,"4,7":8267,"4,8":10944,"6,1":6938,"6,2":11898,"6,3":37726,"6,4":27063,"6,5":31618,"6,6":19101,"6,7":18273,"6,8":26550,"7,1":2933,"7,2":13973,"7,3":36492,"7,4":18484,"7,5":50935,"7,6":47543,"7,7":45444,"7,8":25810,"8,1":3422,"8,2":24146,"8,3":59589,"8,4":9350,"8,5":135729,"8,6":35913,"8,7":33201,"8,8":16297,"9,1":486,"9,2":11203,"9,3":12443,"9,4":3487,"9,5":94888,"9,6":22562,"9,7":18618,"9,8":5978,"10,1":13920,"10,2":37448,"10,3":50034,"10,4":2513,"10,5":47254,"10,6":5343,"10,7":4984,"10,8":22767,"11,1":959,"11,2":2970,"11,3":6333,"11,4":352,"11,5":6240,"11,6":5610,"11,7":3745,"11,8":5752,"12,6":2840,"12,7":3053,"12,8":3100}},
+{a:1,d:"11:11:21",n:164,dur:16825,cad:9.747,iei:85.012,pause:449,avgMv:1495.12,peakMv:3279,rise:88.852,decay:82.7,angM:89.651,angS:63.4,mcc:[8,2],com:[8.53,4.4],si:128.963,siMax:224,
+heat:{"1,1":3253,"1,3":1142,"1,4":4049,"1,5":745,"1,8":765,"4,1":876,"4,2":490,"4,3":8957,"4,4":1016,"4,5":774,"4,6":491,"4,7":490,"4,8":1263,"6,1":12680,"6,2":20074,"6,3":17476,"6,4":26345,"6,5":7246,"6,6":3631,"6,7":3610,"6,8":7009,"7,1":50416,"7,2":29114,"7,3":19616,"7,4":64507,"7,5":20035,"7,6":11179,"7,7":10451,"7,8":10371,"8,1":10665,"8,2":71510,"8,3":66624,"8,4":46391,"8,5":36040,"8,6":57268,"8,7":58242,"8,8":7096,"9,1":5661,"9,2":29299,"9,3":37975,"9,4":16909,"9,5":64202,"9,6":43479,"9,7":42051,"9,8":5434,"10,1":3288,"10,2":19295,"10,3":32260,"10,4":25668,"10,5":51582,"10,6":23782,"10,7":22427,"10,8":2040,"11,2":1396,"11,3":3047,"11,4":1958,"11,5":5001,"11,6":7748,"11,7":7543,"11,8":743,"12,1":10129,"12,2":7421,"12,3":894,"12,4":408,"12,5":17476,"12,6":35893,"12,7":35792,"12,8":22632}},
+{a:2,d:"11:10:54",n:135,dur:28426,cad:4.749,iei:129.843,pause:2493,avgMv:997.66,peakMv:3276,rise:123.411,decay:73.089,angM:86.787,angS:20.96,mcc:[9,5],com:[9.58,4.69],si:93.963,siMax:223,
+heat:{"1,2":480,"1,3":2567,"1,4":1385,"1,5":1161,"1,6":1387,"1,7":1392,"4,6":103,"6,2":550,"6,3":2121,"6,4":1942,"6,5":951,"6,6":1188,"6,7":1266,"6,8":381,"7,2":1645,"7,3":11296,"7,4":10285,"7,5":9298,"7,6":8020,"7,7":8386,"7,8":868,"8,2":3995,"8,3":19323,"8,4":32688,"8,5":20487,"8,6":17723,"8,7":16606,"8,8":909,"9,2":7483,"9,3":27334,"9,4":71511,"9,5":102045,"9,6":22398,"9,7":21293,"9,8":840,"10,2":6154,"10,3":31324,"10,4":79954,"10,5":99183,"10,6":15885,"10,7":12415,"10,8":867,"11,2":7355,"11,3":12129,"11,4":35925,"11,5":39689,"11,6":9433,"11,7":7846,"11,8":7651,"12,2":13712,"12,3":17802,"12,4":25206,"12,5":23377,"12,6":5404,"12,7":5416,"12,8":26816}},
+{a:3,d:"10:23",n:31,dur:26971,cad:1.149,iei:183.633,pause:691,avgMv:1378.66,peakMv:3278,rise:70,decay:64.5,angM:102.755,angS:43.451,mcc:[9,4],com:[8.34,3.89],si:118.613,siMax:224,
+heat:{"1,4":3625,"1,5":338,"1,6":338,"1,7":339,"6,3":3469,"6,4":3033,"6,5":2080,"7,2":6556,"7,3":12038,"7,4":4448,"7,5":1915,"8,2":12121,"8,3":3631,"8,4":13393,"8,5":21083,"8,6":3241,"8,7":3241,"9,3":14282,"9,4":21358,"9,5":11586,"10,2":3500,"10,3":10086,"10,4":18104,"10,5":8773,"11,4":991,"11,5":2053,"11,6":242,"11,7":255}},
+{a:1,d:"10:21",n:27,dur:16445,cad:1.642,iei:369.192,pause:1204,avgMv:1835.94,peakMv:3276,rise:47.333,decay:53.25,angM:11.244,angS:95.017,mcc:[1,4],com:[6.21,4.84],si:167.185,siMax:224,
+heat:{"1,2":312,"1,3":4864,"1,4":26142,"1,6":3257,"1,7":3254,"2,3":3260,"2,5":5082,"2,6":1835,"4,1":3265,"4,3":1824,"4,5":1815,"6,4":3203,"6,5":3847,"6,6":3208,"6,7":3206,"7,3":873,"7,4":797,"7,5":955,"7,6":413,"7,7":483,"8,3":15315,"8,4":930,"8,5":10676,"8,6":1535,"8,7":1791,"8,8":3614,"9,3":506,"9,4":7112,"9,5":6685,"9,6":6125,"9,7":5623,"9,8":1853,"10,4":760,"10,5":13467,"10,6":5247,"10,7":5249,"10,8":1292,"11,4":485,"11,5":3239}},
+{a:2,d:"10:20",n:141,dur:41624,cad:3.387,iei:118.136,pause:1230,avgMv:1214.83,peakMv:3279,rise:98.536,decay:81.484,angM:59.991,angS:67.249,mcc:[8,3],com:[8,5.2],si:93.546,siMax:224,
+heat:{"1,3":2438,"1,4":11516,"1,5":2907,"1,6":5173,"1,7":7523,"1,8":2582,"2,3":1575,"2,4":1578,"3,1":3277,"3,3":606,"3,4":302,"3,5":608,"3,6":370,"3,7":373,"3,8":368,"4,2":374,"4,3":6052,"4,4":786,"4,5":4863,"4,6":2492,"4,7":2508,"4,8":3486,"6,1":11072,"6,2":15367,"6,3":15106,"6,4":6013,"6,5":8250,"6,6":12401,"6,7":12925,"6,8":8878,"7,1":4059,"7,2":7837,"7,3":35240,"7,4":13999,"7,5":23309,"7,6":56478,"7,7":62065,"7,8":14651,"8,1":5211,"8,2":17126,"8,3":69860,"8,4":19419,"8,5":33265,"8,6":62723,"8,7":62329,"8,8":16268,"9,2":13655,"9,3":10708,"9,4":25544,"9,5":39827,"9,6":57023,"9,7":61113,"9,8":8991,"10,2":6577,"10,3":6958,"10,4":16437,"10,5":53888,"10,6":28575,"10,7":34637,"10,8":7333,"11,3":13491,"11,4":4329,"11,5":7708,"11,6":2580,"11,7":1442,"11,8":5094,"12,2":1571,"12,3":799,"12,4":11486,"12,5":5569,"12,6":4832,"12,7":4759,"12,8":1602}},
+{a:3,d:"10:08:46",n:32,dur:20239,cad:1.581,iei:264.452,pause:2132,avgMv:1015.07,peakMv:3278,rise:59.375,decay:35.2,angM:-54.588,angS:103.22,mcc:[1,4],com:[4.12,4.04],si:138.406,siMax:224,
+heat:{"1,1":5244,"1,2":3167,"1,3":2957,"1,4":17365,"1,5":6321,"1,6":3079,"1,7":4210,"1,8":867,"2,1":3762,"2,2":3284,"2,3":9215,"2,4":3922,"2,5":9910,"2,6":2340,"2,7":3059,"2,8":546,"3,1":1844,"3,2":1302,"3,3":2843,"3,4":4571,"3,5":1703,"3,6":4063,"3,7":5465,"3,8":3622,"4,1":795,"4,2":2434,"4,3":807,"4,4":2438,"4,5":3411,"4,6":3152,"4,7":3402,"4,8":1157,"6,1":16883,"6,2":954,"6,3":5462,"6,4":965,"6,5":5170,"6,6":2190,"6,7":2285,"6,8":5195,"7,1":1101,"7,2":6281,"7,3":7232,"7,4":2580,"7,5":2468,"7,6":5800,"7,7":6968,"7,8":874,"8,1":1502,"8,2":14426,"8,3":1770,"8,4":801}},
+{a:1,d:"10:08:04",n:76,dur:36178,cad:2.101,iei:199.52,pause:1622,avgMv:1377.75,peakMv:3299,rise:75.529,decay:59.826,angM:13.645,angS:100.009,mcc:[7,6],com:[6.37,4.75],si:116.553,siMax:225,
+heat:{"1,1":295,"1,2":729,"1,3":1161,"1,4":14096,"1,5":4958,"1,6":4844,"1,7":3042,"1,8":444,"2,1":307,"2,2":306,"2,3":304,"2,4":2444,"2,5":670,"2,6":2521,"2,7":2518,"3,1":3557,"3,2":2431,"3,3":751,"3,4":2038,"3,5":11070,"3,6":7811,"3,7":12160,"3,8":8861,"4,1":8383,"4,2":5975,"4,3":8916,"4,4":4482,"4,5":4574,"4,6":18875,"4,7":25919,"4,8":12172,"6,1":32577,"6,2":19489,"6,3":10723,"6,4":5918,"6,5":18955,"6,6":20453,"6,7":21491,"6,8":37315,"7,1":49865,"7,2":38866,"7,3":64827,"7,4":22557,"7,5":31597,"7,6":65856,"7,7":46690,"7,8":58831,"8,1":7082,"8,2":6965,"8,3":16344,"8,4":29267,"8,5":3457,"8,6":12194,"8,7":10494,"8,8":14076,"9,1":4909,"9,2":3036,"9,3":7452,"9,4":2485,"9,5":2371,"9,6":1713,"9,7":1702,"9,8":1274,"10,1":1520,"10,2":3797,"10,3":8802,"10,4":5515,"10,5":508,"11,8":3299,"12,1":3299,"12,3":518,"12,4":3758,"12,5":515,"12,6":3078,"12,7":2020,"12,8":1822}},
+{a:2,d:"10:06",n:212,dur:51691,cad:4.101,iei:154.995,pause:5625,avgMv:1789.05,peakMv:3279,rise:366.965,decay:296.37,angM:15.363,angS:82.228,mcc:[2,8],com:[6.44,5.41],si:53.25,siMax:224,
+heat:{"1,1":27895,"1,2":618,"1,3":10876,"1,4":28920,"1,5":9112,"1,6":25464,"1,7":117272,"1,8":26470,"2,1":5014,"2,2":4243,"2,3":6340,"2,4":2169,"2,5":6126,"2,6":8657,"2,7":26443,"2,8":144684,"3,1":4848,"3,2":792,"3,3":8196,"3,4":2786,"3,5":8813,"3,6":19763,"3,7":7012,"3,8":13110,"4,1":9239,"4,2":1246,"4,3":35199,"4,4":11768,"4,5":39180,"4,6":14788,"4,7":6307,"4,8":776,"6,1":30846,"6,2":9362,"6,3":22249,"6,4":14916,"6,5":18364,"6,6":33109,"6,7":25692,"6,8":8351,"7,1":34556,"7,2":17128,"7,3":22718,"7,4":13663,"7,5":34785,"7,6":37789,"7,7":81990,"7,8":79167,"8,1":5152,"8,2":14984,"8,3":20764,"8,4":11943,"8,5":17095,"8,6":10214,"8,7":28033,"8,8":49189,"9,3":94763,"9,4":3279,"9,5":4788,"9,6":34054,"9,7":1400,"10,6":747,"11,2":6715,"11,7":71613,"11,8":39059,"12,1":384,"12,2":143099,"12,3":648,"12,4":652,"12,5":664,"12,6":621,"12,7":35818,"12,8":90660}},
+{a:3,d:"10:03",n:55,dur:41065,cad:1.339,iei:187.741,pause:1918,avgMv:1846.78,peakMv:3283,rise:155.088,decay:72.2,angM:13.227,angS:79.755,mcc:[10,8],com:[7.02,5.43],si:84.527,siMax:224,
+heat:{"1,1":22509,"1,6":3279,"2,1":1857,"2,7":21525,"2,8":6558,"3,1":3725,"3,2":1848,"3,7":1845,"3,8":20726,"4,1":2438,"4,2":6546,"4,3":714,"4,7":1520,"4,8":6768,"6,1":15401,"6,2":554,"6,3":19035,"6,5":433,"6,6":5143,"6,7":14229,"6,8":31292,"7,1":16990,"7,2":4951,"7,3":1810,"7,5":6558,"7,6":6090,"7,7":24292,"7,8":31677,"8,1":3088,"8,2":6647,"8,3":6928,"8,4":3274,"8,5":1854,"8,6":2347,"8,7":17095,"8,8":3089,"9,1":2793,"9,2":2216,"9,6":3775,"9,7":24882,"9,8":15726,"10,1":10283,"10,2":823,"10,7":788,"10,8":38190,"11,1":34172,"11,2":360,"11,7":361,"11,8":34086}},
+{a:1,d:"01:52",n:49,dur:8041,cad:6.094,iei:103.208,pause:1143,avgMv:1072.3,peakMv:3279,rise:120.629,decay:155.457,angM:-11.384,angS:87.959,mcc:[1,3],com:[5.86,4.71],si:62.286,siMax:224,
+heat:{"1,1":2583,"1,2":1044,"1,3":42577,"1,4":2620,"1,5":624,"1,6":42540,"2,1":2113,"2,2":528,"2,3":10275,"2,4":2646,"2,5":781,"2,6":15072,"2,7":192,"3,1":2102,"3,2":525,"3,3":5726,"3,4":2628,"3,5":8410,"3,6":408,"3,7":810,"4,1":2057,"4,3":4121,"4,4":2570,"4,5":10475,"4,6":2057,"4,7":1528,"6,5":10902,"6,6":364,"6,7":1632,"7,2":1522,"7,3":2545,"7,4":2510,"7,5":746,"8,2":1547,"8,3":4764,"8,4":3955,"8,5":840,"8,6":5700,"8,7":2515,"8,8":2542,"9,2":1558,"9,3":1538,"9,4":1155,"9,5":709,"9,6":3083,"9,7":4098,"9,8":2581,"10,2":1107,"10,3":12613,"10,4":10842,"10,5":634,"10,7":1872,"10,8":12958,"11,2":1603,"11,3":20872,"11,4":10620,"11,5":1290,"11,6":6795,"11,7":5460,"11,8":7030,"12,2":1147,"12,3":1142,"12,4":594,"12,5":596,"12,6":7184,"12,7":3042,"12,8":6556}},
+{a:2,d:"01:47",n:82,dur:13030,cad:6.293,iei:95.58,pause:870,avgMv:1710.23,peakMv:3279,rise:169.72,decay:209.968,angM:-10.726,angS:101.218,mcc:[8,3],com:[5.97,3.99],si:65.28,siMax:224,
+heat:{"1,1":4962,"1,2":3516,"1,3":4940,"1,4":530,"2,1":32590,"2,2":15545,"2,3":1632,"2,4":540,"2,7":3761,"3,1":7186,"3,2":38116,"3,3":1054,"3,4":538,"3,5":1658,"3,7":33228,"4,1":6770,"4,2":3539,"4,3":21813,"4,4":4288,"4,5":11420,"4,7":20152,"5,3":9837,"5,4":780,"5,5":32790,"5,7":9229,"6,2":18549,"6,3":2623,"6,4":7482,"6,5":17109,"6,6":12845,"6,7":3138,"7,3":6304,"7,4":766,"7,5":2595,"7,6":9185,"7,7":3073,"8,3":58535,"8,4":641,"8,5":12332,"8,6":3173,"8,7":26216,"9,3":25840,"9,4":42774,"10,3":2154,"10,4":12510,"11,3":8483,"11,5":26133,"12,3":261,"12,4":6632}},
+{a:3,d:"01:46",n:31,dur:6279,cad:4.937,iei:100.933,pause:901,avgMv:828.91,peakMv:3279,rise:324.429,decay:167.524,angM:-34.042,angS:107.923,mcc:[4,2],com:[5.97,3.17],si:44.581,siMax:224,
+heat:{"1,1":306,"1,2":311,"1,3":312,"2,1":2668,"2,2":4950,"2,3":2294,"2,4":1377,"2,5":2036,"2,6":215,"2,7":1008,"3,1":1045,"3,2":6716,"3,3":534,"3,4":1412,"3,5":12297,"3,6":365,"3,7":1140,"4,1":4180,"4,2":19444,"4,3":2879,"4,4":1431,"4,5":13549,"4,6":559,"4,7":760,"5,1":812,"5,2":3797,"5,3":2240,"5,4":1394,"5,5":6825,"5,6":1050,"5,7":1076,"6,1":2236,"6,2":4843,"6,3":4132,"6,4":1554,"6,5":2152,"6,6":994,"6,7":802,"7,1":700,"7,2":774,"7,3":775,"8,2":1535,"8,3":6283,"8,4":505,"9,2":5686,"9,3":5829,"9,4":2430,"10,2":7533,"10,3":10797,"10,4":2319,"11,2":6989,"11,3":6995,"11,4":2350,"12,2":511,"12,3":509}}
+];
+
+/* ── Coach-facing narrative (authored from the computed numbers) ───────────── */
+const TEXT = {
+  1: {
+    comText: "The tightest, most centered cluster of the group — center of mass sits just right of dead center and slightly low, consistent with a level, repeatable swing path into the bag's sweet zone.",
+    angleText: "Mean angle is positive but session means swung from −77° to +90° round-to-round. Within-round spread is also wide. Barrel orientation is changing between rounds — worth standardizing setup before each block.",
+    powerText: "Group leader in per-hit intensity (avg SI ≈108, with a 167-average round). Several impacts pinned the 3.3 V sensor ceiling. Rise times were sharp (≈71 ms) in the best block but ballooned to ≈552 ms in the final round — a fatigue tell.",
+    tempoText: "Steadiest worker on the team — never paused longer than 1.8 s across all eight rounds. Cadence peaked at 14.9 hits/s while still holding SI ≈136 — the best speed-with-quality block any athlete produced.",
+    drillText: "1) Tempo-ladder rounds: 8 → 12 hits/s while holding SI above 100 — A1 has the most headroom here. 2) Fixed-setup angle work: same stance and barrel cue each round to shrink the ±85° session swing. 3) Cap final-round length; sharpness dropped measurably late."
+  },
+  2: {
+    comText: "Center of mass sits left of center (col ≈3.7) and drifts hardest in the fastest rounds — in the two 23+ hits/s blocks it pulled to col ≈1.9–3.2. High volume is pulling contact off-center.",
+    angleText: "Mean angle ≈−32° with the widest spread on the team, but the most controlled round (86.8° ± 21°) proves a repeatable barrel is in there. Spread collapses when tempo comes down.",
+    powerText: "Volume leader (1,720 contacts) and highest average impulse (≈1.75 V), but per-hit intensity averaged just ≈68 SI — versus 138 in the best controlled round. The power shows up when tempo drops below ~15 hits/s.",
+    tempoText: "Fastest hands in the group: 23.7 hits/s peak. The cost: SI fell to 38–54 in those sprint rounds, and the day's longest grind (52 s) contained a 5.6 s reset pause.",
+    drillText: "1) Quality-capped volume: rounds capped at 15 hits/s with a minimum SI-90 standard per contact. 2) Center-strike resets: pause and re-center any time contact drifts past col 3 — the left drift is tempo-driven, not mechanical. 3) Shorter rounds (≤25 s) to eliminate mid-round stalls."
+  },
+  3: {
+    comText: "Center of mass slightly high-left of center (col ≈3.9, row ≈5.6). Contact spreads across a broad band of the face — more scatter than A1, less drift than A2.",
+    angleText: "Mean ≈−30° with session means ranging −75° to +103°. Like A1, the round-to-round swing is the issue more than within-round spread — a consistent entry cue should tighten both.",
+    powerText: "Strong second in per-hit intensity (avg SI ≈92, best round 138) with the day's single longest sustained round — 572 contacts in 43.7 s while holding SI ≈99. Genuine power-endurance profile.",
+    tempoText: "Peaked at 22.7 hits/s. Endurance rounds came with the day's longest pause (6.0 s) — output held up, but pacing inside long rounds is the clear next gain.",
+    drillText: "1) Structured long rounds: 40 s blocks with planned 2 s micro-resets every 10 s to eliminate unplanned 6 s stalls. 2) SI-floor intervals: alternate 15 s at 18+ hits/s with 15 s power-only — protect intensity while keeping the volume edge. 3) Entry-angle consistency reps mirroring A1's setup drill."
+  }
+};
+
+const META = [
+  null,
+  { name: "Athlete 1", tag: "Athlete 1", color: "#b400ff", rgb: "180,0,255", page: 2 },
+  { name: "Athlete 2", tag: "Athlete 2", color: "#00dcff", rgb: "0,220,255",  page: 3 },
+  { name: "Athlete 3", tag: "Athlete 3", color: "#ffcc00", rgb: "255,204,0",  page: 4 },
+];
+
+/* ── Aggregation ───────────────────────────────────────────────────────────── */
+function agg(aId) {
+  const rows = S.filter(s => s.a === aId);
+  const n = rows.reduce((t, r) => t + r.n, 0);
+  const w = f => rows.reduce((t, r) => t + f(r) * r.n, 0) / n;
+  const heat = {};
+  rows.forEach(r => { for (const [k, v] of Object.entries(r.heat)) heat[k] = (heat[k] || 0) + v; });
+  let top = null, topV = 0, tot = 0;
+  for (const [k, v] of Object.entries(heat)) { tot += v; if (v > topV) { topV = v; top = k; } }
+  return {
+    rows, n,
+    durMs: rows.reduce((t, r) => t + r.dur, 0),
+    si: w(r => r.si), avgMv: w(r => r.avgMv),
+    peakMv: Math.max(...rows.map(r => r.peakMv)),
+    cadAvg: rows.reduce((t, r) => t + r.cad, 0) / rows.length,
+    cadMax: Math.max(...rows.map(r => r.cad)),
+    angM: w(r => r.angM), angS: w(r => r.angS),
+    rise: w(r => r.rise), decay: w(r => r.decay), iei: w(r => r.iei),
+    pause: Math.max(...rows.map(r => r.pause)),
+    comR: w(r => r.com[0]), comC: w(r => r.com[1]),
+    heat, top, topPct: 100 * topV / tot,
+  };
+}
+const A = [null, agg(1), agg(2), agg(3)];
+
+const fmtT = ms => { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+const fmt = (x, d = 0) => x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+
+/* ── Page 1 ────────────────────────────────────────────────────────────────── */
+const totN = A[1].n + A[2].n + A[3].n;
+const totMs = A[1].durMs + A[2].durMs + A[3].durMs;
+document.getElementById("kpi-sessions").textContent = S.length;
+document.getElementById("kpi-contacts").textContent = fmt(totN);
+document.getElementById("kpi-time").textContent = fmtT(totMs) + " min";
+document.getElementById("kpi-peak").textContent = (Math.max(A[1].peakMv, A[2].peakMv, A[3].peakMv) / 1000).toFixed(2) + " V";
+
+document.getElementById("athlete-cards").innerHTML = [1, 2, 3].map(i => {
+  const a = A[i], m = META[i];
+  return `<div class="card athlete-card" style="--ac:${m.color};">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+      <div class="name">${m.name}</div><span class="chip" style="--ac:${m.color};">8 rounds</span>
+    </div>
+    <div class="mini-stats">
+      <div><div class="v">${fmt(a.si)}</div><div class="k">Avg Strength Idx</div></div>
+      <div><div class="v">${fmt(a.n)}</div><div class="k">Contacts</div></div>
+      <div><div class="v">${fmt(a.cadMax, 1)}</div><div class="k">Peak Cadence /s</div></div>
+      <div><div class="v">${(a.avgMv / 1000).toFixed(2)} V</div><div class="k">Avg Impulse</div></div>
+    </div>
+  </div>`;
+}).join("");
+
+/* trend line chart — per-athlete avg SI per round, chronological */
+(function () {
+  const W = 320, H = 130, maxSI = 180;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  [45, 90].forEach(si => {
+    const y = 122 - si / maxSI * 110;
+    svg += `<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="rgba(255,255,255,0.07)"/>`;
+    svg += `<text x="2" y="${y - 2}" fill="rgba(255,255,255,0.3)" font-size="7">${si}</text>`;
+  });
+  [1, 2, 3].forEach(i => {
+    const rows = A[i].rows.slice().reverse(); // data is newest-first → chronological
+    const pts = rows.map((r, j) => `${10 + j * (300 / (rows.length - 1))},${(122 - r.si / maxSI * 110).toFixed(1)}`).join(" ");
+    svg += `<polyline points="${pts}" fill="none" stroke="${META[i].color}" stroke-width="2" opacity="0.85"/>`;
+    rows.forEach((r, j) => {
+      svg += `<circle cx="${10 + j * (300 / (rows.length - 1))}" cy="${(122 - r.si / maxSI * 110).toFixed(1)}" r="2.2" fill="${META[i].color}"/>`;
+    });
+  });
+  svg += `<line x1="0" y1="122" x2="${W}" y2="122" stroke="rgba(255,255,255,0.18)"/>`;
+  svg += `<text x="10" y="129" fill="rgba(255,255,255,0.35)" font-size="7">Round 1</text>`;
+  svg += `<text x="${W - 40}" y="129" fill="rgba(255,255,255,0.35)" font-size="7">Round 8</text></svg>`;
+  document.getElementById("trend-chart").innerHTML = svg;
+})();
+
+/* comparison bar chart — avg SI per athlete */
+(function () {
+  const W = 320, H = 130, maxSI = 130;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  [1, 2, 3].forEach(i => {
+    const a = A[i], x = 30 + (i - 1) * 100;
+    const h = a.si / maxSI * 95, y = 117 - h;
+    svg += `<rect x="${x}" y="${y}" width="48" height="${h}" rx="3" fill="${META[i].color}" opacity="0.8"/>`;
+    svg += `<text x="${x + 24}" y="${y - 4}" fill="#fff" font-size="11" font-weight="800" text-anchor="middle">${fmt(a.si)}</text>`;
+    svg += `<text x="${x + 24}" y="${H - 3}" fill="rgba(255,255,255,0.5)" font-size="9" font-weight="700" text-anchor="middle">${META[i].name}</text>`;
+  });
+  svg += `<line x1="0" y1="117" x2="${W}" y2="117" stroke="rgba(255,255,255,0.18)"/></svg>`;
+  document.getElementById("compare-chart").innerHTML = svg;
+})();
+
+/* ── Athlete pages ─────────────────────────────────────────────────────────── */
+const tpl = document.getElementById("athlete-page-template").innerHTML;
+document.getElementById("athlete-pages").innerHTML = [1, 2, 3].map(i => {
+  const a = A[i], m = META[i], t = TEXT[i];
+  const hot = a.top.split(",");
+  const fill = {
+    idx: i, name: m.name, tag: m.tag, accent: m.color, pageNum: m.page,
+    sessions: a.rows.length, contacts: fmt(a.n), time: fmtT(a.durMs),
+    si: fmt(a.si), peak: (a.peakMv / 1000).toFixed(2) + " V",
+    cadence: fmt(a.cadMax, 1), angle: (a.angM >= 0 ? "+" : "−") + fmt(Math.abs(a.angM)) + "°",
+    rise: fmt(a.rise) + " ms", impulse: (a.avgMv / 1000).toFixed(2) + " V",
+    decay: fmt(a.decay) + " ms", iei: fmt(a.iei) + " ms",
+    pause: (a.pause / 1000).toFixed(1) + " s", avgCad: fmt(a.cadAvg, 1),
+    hotZoneText: `Row ${hot[0]}, Col ${hot[1]} — ${fmt(a.topPct, 1)}% of recorded contact energy. ` +
+      (hot[0] === "1" ? "Top-edge dwell here includes probable mount/lean artifact (see appendix); the live cluster sits in the mid-low band." : "Cleanest single landing zone of the group's maps."),
+    comText: t.comText, angleText: t.angleText, powerText: t.powerText,
+    tempoText: t.tempoText, drillText: t.drillText,
+  };
+  let html = tpl;
+  for (const [k, v] of Object.entries(fill)) html = html.replaceAll(`{{${k}}}`, String(v));
+  return html;
+}).join("");
+
+/* heatmaps + COM markers */
+[1, 2, 3].forEach(i => {
+  const a = A[i], m = META[i];
+  const logMax = Math.log(1 + Math.max(...Object.values(a.heat)));
+  let cells = '<div class="heatmap">';
+  for (let r = 1; r <= 12; r++) for (let c = 1; c <= 8; c++) {
+    const v = a.heat[`${r},${c}`] || 0;
+    const t = v > 0 ? Math.log(1 + v) / logMax : 0;
+    const alpha = v > 0 ? (0.08 + 0.85 * Math.pow(t, 2.2)).toFixed(3) : 0;
+    const glow = t > 0.92 ? `box-shadow:0 0 9px rgba(${m.rgb},0.45);` : "";
+    cells += `<div class="cell" style="background:rgba(${m.rgb},${alpha});border:1px solid rgba(255,255,255,${v > 0 ? 0.05 : 0.04});${glow}"></div>`;
+  }
+  cells += "</div>";
+  const left = ((a.comC - 0.5) / 8 * 100).toFixed(1);
+  const top = ((a.comR - 0.5) / 12 * 100).toFixed(1);
+  document.getElementById("heat-" + i).innerHTML =
+    cells + `<div class="com-marker" style="left:${left}%; top:${top}%;"></div>`;
+});
+
+/* angle dials — pointer at mean, shaded band ±1 std */
+[1, 2, 3].forEach(i => {
+  const a = A[i], m = META[i];
+  const phi = ang => (180 - (Math.max(-180, Math.min(180, ang)) + 180) / 2) * Math.PI / 180;
+  const pt = (ang, rad) => [150 + rad * Math.cos(phi(ang)), 118 - rad * Math.sin(phi(ang))];
+  const [px, py] = pt(a.angM, 82);
+  const [b1x, b1y] = pt(a.angM - a.angS, 110);
+  const [b2x, b2y] = pt(a.angM + a.angS, 110);
+  const svg = `<svg viewBox="0 0 300 132" xmlns="http://www.w3.org/2000/svg">
+    <path d="M 40 118 A 110 110 0 0 1 260 118" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="10" stroke-linecap="round"/>
+    <path d="M ${b1x.toFixed(1)} ${b1y.toFixed(1)} A 110 110 0 0 1 ${b2x.toFixed(1)} ${b2y.toFixed(1)}" fill="none" stroke="${m.color}" stroke-width="10" stroke-linecap="round" opacity="0.45"/>
+    <line x1="150" y1="118" x2="${px.toFixed(1)}" y2="${py.toFixed(1)}" stroke="#fff" stroke-width="2"/>
+    <circle cx="150" cy="118" r="4" fill="#fff"/>
+    <text x="150" y="105" fill="${m.color}" font-size="13" font-weight="800" text-anchor="middle">${(a.angM >= 0 ? "+" : "−") + Math.abs(a.angM).toFixed(0)}°</text>
+    <g fill="rgba(255,255,255,0.45)" font-size="9" font-weight="700">
+      <text x="26" y="130">−180°</text><text x="143" y="20">0°</text><text x="252" y="130">+180°</text>
+    </g></svg>`;
+  document.getElementById("dial-" + i).innerHTML = svg;
+});
+
+/* per-round SI bar charts */
+[1, 2, 3].forEach(i => {
+  const a = A[i], m = META[i];
+  const rows = a.rows.slice().reverse();
+  const W = 320, H = 112, maxSI = 180, bw = 28;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`;
+  rows.forEach((r, j) => {
+    const h = Math.max(2, r.si / maxSI * 88), x = 14 + j * 37, y = 99 - h;
+    svg += `<rect x="${x}" y="${y}" width="${bw}" height="${h}" rx="2" fill="${m.color}" opacity="0.78"/>`;
+    svg += `<text x="${x + bw / 2}" y="${y - 3}" fill="rgba(255,255,255,0.75)" font-size="8" font-weight="700" text-anchor="middle">${Math.round(r.si)}</text>`;
+    svg += `<text x="${x + bw / 2}" y="${H - 3}" fill="rgba(255,255,255,0.35)" font-size="7.5" text-anchor="middle">R${j + 1}</text>`;
+  });
+  svg += `<line x1="0" y1="99" x2="${W}" y2="99" stroke="rgba(255,255,255,0.18)"/></svg>`;
+  document.getElementById("bars-" + i).innerHTML = svg;
+});
+</script>
+</body>
+</html>

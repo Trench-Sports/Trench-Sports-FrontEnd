@@ -1,0 +1,36 @@
+# Default build config for the Trench Build B native-C scan core.
+# These are applied on the first `idf.py build`; tweak further via `idf.py menuconfig`.
+
+# ── Max CPU clock (240 MHz) — same intent as boot.py machine.freq(240_000_000)
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# ── Task watchdog OFF for the benchmark build ─────────────────────────────
+# The scan core runs a tight, continuously-busy loop. With the idle-task
+# watchdog enabled, a fully-saturated core trips a reset after ~5 s. For a
+# dedicated scan benchmark that is exactly the intended behavior, so we turn
+# the TWDT off here. When you add BLE, RE-ENABLE this and either run the scan
+# on its own core-1 task with periodic vTaskDelay, or feed esp_task_wdt.
+CONFIG_ESP_TASK_WDT_INIT=n
+
+# ── BLE — NimBLE (smaller than Bluedroid), peripheral role only ───────────
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+# Match MicroPython's ble.config(mtu=512) — server-preferred MTU
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=512
+
+# ── Compile at -O2 — the scan loop benefits measurably over default -Og ────
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# ── Chip has 4 MB flash (boot log: "Detected size(4096k)") ─────────────────
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# ── BLE OTA — custom A/B partition table (partitions.csv): ota_0 + ota_1,
+#    NVS unchanged at 0x9000 so device identity survives
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Roll back automatically if a new OTA image fails before its first successful
+# BLE hello (the app confirms itself in scan_task after hello is sent)
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

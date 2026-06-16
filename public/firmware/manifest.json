@@ -1,5 +1,10 @@
 {
+  "comment": "Place at public/firmware/manifest.json. The key for each model MUST match the hw string the device reports in its BLE hello packet. The Build B / Everything-in-C firmware reports hw:\"III.I\". 'version' is compared against the device's reported fw with semantic ordering; 'file' is the path (relative to the web root) of the raw .bin image. Bump 'version' and replace the .bin to ship an update.",
   "models": {
+    "IV": {
+      "version": "1.2.0",
+      "file": "firmware/model_IV/trench_scan.bin"
+    },
     "II": {
       "version": "1.1.1",
       "file":    "firmware/model_II/main.py",

@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/CMakeFiles/bootloader
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/CMakeFiles/bootloader.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/CMakeFiles/bootloader-complete.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

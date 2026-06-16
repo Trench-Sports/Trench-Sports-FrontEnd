@@ -62,11 +62,45 @@ const NUM_COLS       = 8;
 const FADE_TTL_MS    = 400;
 // SCAN_PERIOD_MS is now per-device — derived from the hello packet and stored in
 // deviceInfoRef so handleNotify always reads the correct value without closure staleness.
-// Model II  @ 80 MHz  → 37 ms (~27 Hz)
-// Model III @ 160 MHz → 8 ms  (~120 Hz)
 // Used as a duration floor for single-frame events where t_start == t_end.
 // The constant below is a safe fallback before a hello has been received.
 const SCAN_PERIOD_MS_DEFAULT = 37;
+
+// Per-adapter scan timing, keyed by the hw string reported in the hello packet.
+// scanPeriodMs doubles as the SI rise-time floor — a contact can't be resolved
+// faster than one scan cycle — and samplingHz is persisted with each session.
+//   II  @ 80 MHz  MicroPython         → 37 ms (~27 Hz)
+//   III @ 160 MHz MicroPython (batch) → 8 ms  (~120 Hz)
+//   IV  @ native C, free-running scan → 2.5 ms (~400 Hz nominal)  ← fastest adapter
+//        SCAN_HZ_NOMINAL=400 in app_main.c; verified ~437 Hz on hardware. The IV
+//        firmware also reports its live measured rate in the hello "hz" field, so
+//        resolveScanTiming() below prefers that over the nominal when present.
+//        (BLE still flushes in batch mode on a 40 ms esp_timer; the scan loop runs
+//         flat-out on a dedicated core.)
+const SCAN_PROFILES: Record<string, { scanPeriodMs: number; samplingHz: number }> = {
+  "II":  { scanPeriodMs: 37,  samplingHz: 25  },
+  "III": { scanPeriodMs: 8,   samplingHz: 120 },
+  "IV":  { scanPeriodMs: 2.5, samplingHz: 400 },
+};
+// Resolve a scan profile for a hw string; unknown/missing hw falls back to Model II.
+function scanProfileFor(hw: string | undefined | null): { scanPeriodMs: number; samplingHz: number } {
+  return SCAN_PROFILES[hw ?? ""] ?? SCAN_PROFILES["II"];
+}
+// Resolve per-device scan timing. If the hello carries a live measured "hz" field
+// (Model IV native-C firmware), use it for samplingHz / scanPeriodMs; otherwise fall
+// back to the adapter's nominal profile. The SI ceiling stays fixed (SI_FASTEST_SCAN_HZ)
+// for cross-device comparability — only the per-device rise-time floor adapts here.
+function resolveScanTiming(hw: string | undefined | null, hz?: unknown): { scanPeriodMs: number; samplingHz: number } {
+  const base = scanProfileFor(hw);
+  if (typeof hz === "number" && Number.isFinite(hz) && hz > 0) {
+    return { samplingHz: hz, scanPeriodMs: +(1000 / hz).toFixed(3) };
+  }
+  return base;
+}
+// device_model string persisted with each session ("TSII" | "TSIII" | "TSIV").
+function deviceModelFor(hw: string | undefined | null): string {
+  return "TS" + (hw ?? "II");
+}
 const VOLUME_WINDOW_MS  = 5000;   // 5-second recording window for volume mode
 const SESSION_MAX_MS    = 30_000; // hard cap — session auto-stops after 30 s
 const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
@@ -1387,12 +1421,12 @@ type SavedRecap = {
 type DeviceInfo = {
   id:           string;
   fw:           string;
-  hw:           string;        // "II" | "III"
+  hw:           string;        // "II" | "III" | "IV"
   rows:         number;
   cols:         number;
-  mode:         string;        // "batch" (Model III) | "single" (Model II)
-  scanPeriodMs: number;        // 8 ms (Model III @ 120 Hz) | 37 ms (Model II @ 27 Hz)
-  samplingHz:   number;        // 120 (Model III) | 25 (Model II)
+  mode:         string;        // "batch" (Model III / IV) | "single" (Model II)
+  scanPeriodMs: number;        // 2.5 ms (IV @ 400 Hz) | 8 ms (III @ 120 Hz) | 37 ms (II @ 27 Hz)
+  samplingHz:   number;        // 400 (IV, or live "hz") | 120 (III) | 25 (II)
 } | null;
 
 type Athlete = {
@@ -1605,21 +1639,29 @@ function hexAlpha(fraction: number) {
  *   • iei_prev_ms   — wall-clock gap since previous event
  *   • angle_deg     — direction of hit centroid from grid center (0° = right, CCW+)
  *   • quality.strength_index (0–1000):
- *       Rate of force application — how fast the user reached peak voltage.
- *       rate           = peakMv / max(riseTimeMs, scanPeriodMs)             [mV/ms]
- *       MAX_RATE       = 3300 mV / (1000 / 120) ms  ≈ 396 mV/ms             [SI 1000 ceiling]
- *       baseSi         = clamp(rate / MAX_RATE, 0, 1) × 1000
- *       deload         = exp(-timeSincePeakMs / SI_DELOAD_TAU_MS)
- *       SI             = round(baseSi × deload)
+ *       Rate of force DEVELOPMENT — the peak speed at which voltage rises, i.e. the
+ *       steepest scan-to-scan climb during the strike (max instantaneous dV/dt):
+ *         slope_i  = (mv_i − mv_{i-1}) / (t_i − t_{i-1})   per cell, per scan   [mV/ms]
+ *         maxSlope = max over the rising edge of the contact                    [mV/ms]
+ *         SI       = round(clamp(maxSlope / SI_MAX_SLOPE_MV_PER_MS, 0, 1) × 1000)
  *
- *       The MAX_RATE ceiling is intentionally tied to Model III's 120 Hz scan period:
- *         • Model III (8.33 ms scan)  → can resolve up to 396 mV/ms → full 1000 reachable
- *         • Model II  (37 ms  scan)   → physically capped at 3300/37 ≈ 89 mV/ms → SI ≲ 225
- *       Slower hardware can't see fast impacts, so it can't score them — by design.
+ *       Why max slope (not peakMv / riseTime): a slow lean and an explosive snap can
+ *       reach the same peak voltage, but only the snap has a steep dV/dt. A flat hold
+ *       contributes slope 0 and the falling edge is negative (clamped to 0), so
+ *       sustained pressure cannot inflate the score — it scores the first explosive
+ *       rise and nothing else.
  *
- *       Deload ramp: once a cell hits v_peak, subsequent frames in the same sustained
- *       contact carry a growing timeSincePeak, so SI decays exponentially with a half-life
- *       of SI_DELOAD_TAU_MS × ln(2) ≈ 69 ms. Holding past the impact does not keep scoring.
+ *       SI_MAX_SLOPE_MV_PER_MS is a SINGLE shared ceiling across all builds, so scores
+ *       stay comparable. Slower hardware physically can't resolve as steep a slope
+ *       (its scan period is the smallest measurable Δt), so it caps proportionally:
+ *         • Model IV  (2.5 ms scan) → resolves up to ~1320 mV/ms → full 1000 reachable
+ *         • Model III (8.33 ms scan)→ ~396 mV/ms ceiling → SI ≲ 300
+ *         • Model II  (37 ms scan)  → ~89 mV/ms ceiling  → SI ≲ 68
+ *
+ *       The ceiling is PROVISIONAL (set to the IV hardware speed limit). logStrikeRates()
+ *       records the real mV/ms distribution per session so it can be recalibrated to the
+ *       elite-human peak slope — at which point SI 1000 = top of human ability, not
+ *       top of hardware.
  */
 
 // ── helpers (module-level, no closure deps) ──────────────────────────────────
@@ -1644,48 +1686,163 @@ function eventAngleDeg(hits: RichHit[]): number | null {
   return +angleDeg.toFixed(1);
 }
 
-// SI scaling constants — exported for live-display callers and unit-level checks.
-// MAX_SENSOR_MV          : ADC ceiling — 3.3 V rail in millivolts
-// SI_MAX_RATE_MV_PER_MS  : human/hardware ceiling — 3300 mV applied in one Model III
-//                          scan cycle (1000/120 ≈ 8.33 ms) → ~396 mV/ms → SI 1000.
-//                          Pinning this to Model III's resolution is what makes the
-//                          faster adapter able to score the full range; Model II's
-//                          37 ms floor naturally caps it around SI 225.
-// SI_DELOAD_TAU_MS       : exponential time constant for post-peak deload.
-//                          Half-life = TAU × ln(2) ≈ 69 ms. After ~300 ms the SI
-//                          for a sustained contact has fallen below 5% of its peak.
-const MAX_SENSOR_MV         = 3300;
-const SI_MAX_RATE_MV_PER_MS = MAX_SENSOR_MV / (1000 / 120);   // ≈ 396 mV/ms
-const SI_DELOAD_TAU_MS      = 100;
+// SI scaling constants.
+// MAX_SENSOR_MV          : ADC ceiling — 3.3 V rail in millivolts.
+// HIT_THRESHOLD_MV       : firmware HIT_THRESHOLD_V (0.10 V). The voltage a cell is
+//                          assumed to have crossed up from at contact onset — used to
+//                          estimate the onset slope on a contact's first frame.
+// SI_FASTEST_SCAN_HZ     : scan rate of the fastest adapter shipping (Model IV).
+// SI_MAX_SLOPE_MV_PER_MS : the rising slope (mV/ms) that maps to SI 1000. SHARED across
+//                          all builds for cross-model comparability — slower builds can't
+//                          resolve as steep a slope (their scan period is the smallest
+//                          measurable Δt) so they cap proportionally lower.
+//                          PROVISIONAL: a full-rail climb in one Model IV scan
+//                          (3300 mV / 2.5 ms = 1320 mV/ms) = the hardware speed limit.
+//                          Recalibrate to the elite-human peak slope from logStrikeRates()
+//                          data so 1000 = top of human ability, not top of hardware.
+// SI_DELOAD_TAU_MS       : decay constant for the LIVE tile only — after the last steep
+//                          slope, the displayed SI decays to 0 (~69 ms half-life) so a
+//                          held contact visibly resets instead of staying pinned.
+const MAX_SENSOR_MV          = 3300;
+const HIT_THRESHOLD_MV       = 100;
+const SI_FASTEST_SCAN_HZ     = 400;                                  // Model IV (native C) nominal
+const SI_MAX_SLOPE_MV_PER_MS = MAX_SENSOR_MV / (1000 / SI_FASTEST_SCAN_HZ);   // = 1320 mV/ms
+const SI_DELOAD_TAU_MS       = 100;
 
-/**
- * Rate-based Strength Index — see uploadSession JSDoc for the formal definition.
- *
- * @param peakMv          v_peak_mv for the event (highest voltage observed for the
- *                        dominant cell in this frame).
- * @param riseTimeMs      time from event onset to t_peak. 0 = single-frame impact;
- *                        will be floored to scanPeriodMs since the adapter cannot
- *                        physically resolve a faster rise.
- * @param scanPeriodMs    adapter scan period (8 ms Model III, 37 ms Model II).
- *                        Acts as the rise-time floor.
- * @param timeSincePeakMs ms elapsed since t_peak for THIS frame. Drives the
- *                        exponential deload — pass 0 for single-frame events and
- *                        for live-display computations on a freshly updated peak.
- */
-function strengthIndex(
-  peakMv:           number,
-  riseTimeMs:       number,
-  scanPeriodMs:     number,
-  timeSincePeakMs:  number = 0,
-): number {
-  if (peakMv <= 0) return 0;
+// Strength Index from a rising slope (mV/ms). 0 for non-positive slope (flat hold or
+// falling edge), so sustained pressure never scores. Shared ceiling across all builds.
+function siFromSlope(slopeMvPerMs: number): number {
+  if (!(slopeMvPerMs > 0)) return 0;
+  return Math.round(Math.max(0, Math.min(1, slopeMvPerMs / SI_MAX_SLOPE_MV_PER_MS)) * 1000);
+}
 
-  const effectiveRiseMs = Math.max(riseTimeMs, scanPeriodMs);
-  const rate            = peakMv / effectiveRiseMs;                // mV / ms
-  const baseSi          = Math.max(0, Math.min(1, rate / SI_MAX_RATE_MV_PER_MS)) * 1000;
-  const deload          = Math.exp(-Math.max(0, timeSincePeakMs) / SI_DELOAD_TAU_MS);
+// ── Strike segmentation ──────────────────────────────────────────────────────
+// A "strike" is one continuous contact: a run of frames with no gap longer than
+// IDLE_GAP_MS. We score ONE SI per strike (not per frame), so a single hit yields a
+// single, stable number instead of a noisy per-frame stream.
+const IDLE_GAP_MS = 90;
 
-  return Math.round(baseSi * deload);
+// Per-strike cell accumulator (shared by the upload path and the live feed).
+type StrikeCell = { r: number; c: number; samples: { mv: number; t: number }[] };
+
+// 3-point median — drops an isolated single-sample saturation spike (e.g. a cell
+// momentarily railing to ~3.3 V) before slope is measured, while preserving a genuine
+// multi-sample rise.
+function median3(a: number, b: number, c: number): number {
+  return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+}
+
+// De-spiked peak voltage (mV) and steepest GENUINE rising slope (mV/ms) of one cell.
+// A 3-point median filter removes isolated single-sample spikes BEFORE both the peak
+// and the slope are taken — so a cell that momentarily rails doesn't get credited with
+// either a huge peak or a huge slope. Falls back to the onset estimate only when the
+// cell has a single sample (sub-scan rise on slow hardware, e.g. II).
+function cellRise(samples: { mv: number; t: number }[], scanPeriodMs: number): { peak: number; slope: number } {
+  const floorDt = Math.max(scanPeriodMs, 0.1);
+  if (samples.length === 0) return { peak: 0, slope: 0 };
+  if (samples.length === 1) {
+    const peak = samples[0].mv;
+    return { peak, slope: Math.max(0, (peak - HIT_THRESHOLD_MV) / floorDt) };
+  }
+  const mv = samples.map((s, i) =>
+    (i === 0 || i === samples.length - 1) ? s.mv : median3(samples[i - 1].mv, s.mv, samples[i + 1].mv));
+  let maxSlope = 0;
+  for (let i = 1; i < samples.length; i++) {
+    if (mv[i] > mv[i - 1]) {
+      const slope = (mv[i] - mv[i - 1]) / Math.max(samples[i].t - samples[i - 1].t, floorDt);
+      if (slope > maxSlope) maxSlope = slope;
+    }
+  }
+  const peak = Math.max(...mv);
+  // Never rose after de-spiking (flat/declining) → onset fallback from the peak.
+  if (maxSlope === 0) maxSlope = Math.max(0, (peak - HIT_THRESHOLD_MV) / floorDt);
+  return { peak, slope: maxSlope };
+}
+
+// Score one strike from its DOMINANT cell — the cell with the highest DE-SPIKED peak,
+// so a neighbouring cell that merely blips to the rail (high raw peak, removed by the
+// median filter) can't hijack the score. SI is that cell's rise rate.
+function scoreStrike(cells: Map<number, StrikeCell>, scanPeriodMs: number):
+    { r: number; c: number; peakMv: number; slope: number; si: number; cellCount: number } | null {
+  let best: { r: number; c: number; peak: number; slope: number } | null = null;
+  for (const cell of cells.values()) {
+    const cr = cellRise(cell.samples, scanPeriodMs);
+    if (!best || cr.peak > best.peak) best = { r: cell.r, c: cell.c, peak: cr.peak, slope: cr.slope };
+  }
+  if (!best) return null;
+  return { r: best.r, c: best.c, peakMv: best.peak, slope: best.slope, si: siFromSlope(best.slope), cellCount: cells.size };
+}
+
+type Strike = {
+  tStart: number; tEnd: number;
+  r: number; c: number; peakMv: number; slope: number; si: number; cellCount: number;
+  eventIds: string[];
+};
+
+// Split the frame stream into idle-gap-separated strikes and score each once.
+function segmentStrikes(frames: BleFrame[], scanPeriodMs: number): Strike[] {
+  const strikes: Strike[] = [];
+  let cur: { tStart: number; tEnd: number; eventIds: string[]; cells: Map<number, StrikeCell> } | null = null;
+
+  const close = () => {
+    if (!cur) return;
+    const sc = scoreStrike(cur.cells, scanPeriodMs);
+    if (sc) strikes.push({ tStart: cur.tStart, tEnd: cur.tEnd, eventIds: cur.eventIds, ...sc });
+    cur = null;
+  };
+
+  for (const f of frames) {
+    if (!f.hits.length) continue;
+    const ft = f.t_device_ms;
+    if (cur && ft - cur.tEnd > IDLE_GAP_MS) close();
+    if (!cur) cur = { tStart: ft, tEnd: ft, eventIds: [], cells: new Map() };
+    cur.tEnd = ft;
+    cur.eventIds.push(f.event_id);
+    for (const h of f.hits) {
+      const key = h[0] * 100 + h[1];
+      let cell = cur.cells.get(key);
+      if (!cell) { cell = { r: h[0], c: h[1], samples: [] }; cur.cells.set(key, cell); }
+      cell.samples.push({ mv: h[2], t: ft });
+    }
+  }
+  close();
+  return strikes;
+}
+
+// Map each frame's event_id to the SI of the strike it belongs to, so the per-frame
+// events table stays intact while every frame in a strike shares one stable SI.
+function strikeSiByEvent(strikes: Strike[]): Map<string, number> {
+  const m = new Map<string, number>();
+  for (const s of strikes) for (const id of s.eventIds) m.set(id, s.si);
+  return m;
+}
+
+// Rate-logging — records the per-session distribution of rising slopes (mV/ms) so the
+// SI ceiling can later be recalibrated to elite-human ability. Logs a one-line summary
+// to the console and returns a stats object persisted in session_summaries.quality.
+function logStrikeRates(
+  strikes:      Strike[],
+  scanPeriodMs: number,
+  deviceModel:  string,
+): { count: number; max: number; mean: number; p50: number; p90: number; p95: number; scan_period_ms: number } | null {
+  const slopes = strikes.map(s => s.slope).filter(s => s > 0).sort((a, b) => a - b);
+  if (!slopes.length) return null;
+  const q = (p: number) => slopes[Math.min(slopes.length - 1, Math.floor(p * slopes.length))];
+  const stats = {
+    count:          slopes.length,
+    max:            +slopes[slopes.length - 1].toFixed(2),
+    mean:           +(slopes.reduce((a, b) => a + b, 0) / slopes.length).toFixed(2),
+    p50:            +q(0.50).toFixed(2),
+    p90:            +q(0.90).toFixed(2),
+    p95:            +q(0.95).toFixed(2),
+    scan_period_ms: scanPeriodMs,
+  };
+  console.log(
+    `[SI] ${deviceModel} rate-log (mV/ms): n=${stats.count} max=${stats.max} ` +
+    `mean=${stats.mean} p50=${stats.p50} p90=${stats.p90} p95=${stats.p95} ` +
+    `| ceiling=${SI_MAX_SLOPE_MV_PER_MS} → peak SI=${siFromSlope(stats.max)}`,
+  );
+  return stats;
 }
 
 /**
@@ -1840,13 +1997,18 @@ async function uploadSession(opts: {
     decayTimeMs: number;          // tEnd  − tPeak  (== timeSincePeak for this frame)
   };
 
+  // Segment the stream into strikes (idle-gap separated) and score each once from its
+  // dominant cell. Every frame in a strike shares that one SI — see segmentStrikes.
+  const strikes      = segmentStrikes(frames, scanPeriodMs);
+  const siByEvent    = strikeSiByEvent(strikes);
+
   const derived: EventDerived[] = frames.map((f, i) => {
     const iei       = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
     const cellCount = f.hits.length;
     const t         = eventTimingFromFrame(f);
-    // Rate-based SI: faster adapter sees faster impacts → higher achievable score.
-    // Sustained contacts deload exponentially via decayTime (== time-since-peak).
-    const si = strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
+    // Strength Index = the SI of the strike this frame belongs to (speed-to-peak of the
+    // strike's dominant cell). Constant across the strike, so one hit = one score.
+    const si = siByEvent.get(f.event_id) ?? 0;
     return {
       iei,
       angle:       eventAngleDeg(f.hits),
@@ -1959,8 +2121,13 @@ async function uploadSession(opts: {
   // Angles across all events
   const angleVals = derived.map(d => d.angle).filter((a): a is number => a !== null);
 
-  // Strength index across all events
-  const siVals = derived.map(d => d.si);
+  // Strength index across STRIKES (one value per hit, not per frame). Peak SI = the
+  // best strike; mean describes the strikes themselves.
+  const siVals = strikes.map(s => s.si).filter(v => v > 0);
+
+  // Rate-logging — per-session mV/ms distribution (one per strike) for recalibrating
+  // the SI ceiling to elite-human ability.
+  const rateLog = logStrikeRates(strikes, scanPeriodMs, deviceModel);
 
   // Per-event timing distributions — collected from eventRows which already have
   // rise/decay/duration computed. Used to populate session_summaries aggregate columns.
@@ -2083,12 +2250,8 @@ async function uploadSession(opts: {
       .map(([idx, wFrames]) => {
         // Sort by sequence so intra-window slope is meaningful
         const sorted = [...wFrames].sort((a, b) => (a.vol_hit_seq ?? 0) - (b.vol_hit_seq ?? 0));
-        // Rate-based SI — same formula as the stored per-event SI, evaluated
-        // per hit with the frame's own rise/decay window. No cadence component.
-        const siPerHit = sorted.map(f => {
-          const t = eventTimingFromFrame(f);
-          return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
-        });
+        // Per-strike SI looked up per hit (every frame in a strike shares its SI).
+        const siPerHit = sorted.map(f => siByEvent.get(f.event_id) ?? 0);
         // IEI between consecutive hits in this window (wall-clock ms)
         const ieiWithin = sorted.slice(1).map((f, i) => f.epoch_ms - sorted[i].epoch_ms);
 
@@ -2152,10 +2315,7 @@ async function uploadSession(opts: {
     // Session-level SI values in chronological hit order for dashboard charting
     const allHitSiValues = frames
       .filter(f => f.vol_window_idx !== null)
-      .map(f => {
-        const t = eventTimingFromFrame(f);
-        return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
-      });
+      .map(f => siByEvent.get(f.event_id) ?? 0);
 
     return {
       windows,
@@ -2205,6 +2365,7 @@ async function uploadSession(opts: {
     //   windows[], si_fatigue_slope, etc → volume mode only
     quality: {
       strength_index: statSummary(siVals),
+      rate_log:       rateLog,   // mV/ms slope distribution — for SI ceiling calibration
       ...(accuracyQuality  ?? {}),
       ...(reactionQuality  ?? {}),
       ...(targetQuality    ?? {}),
@@ -2970,19 +3131,17 @@ export default function Home() {
   // ── Grid / data ──────────────────────────────────────────────────────────────
   const [grid,    setGrid]    = useState<GridState>(new Map());
   const [now,     setNow]     = useState(Date.now());
-  const [peakMv,  setPeakMv]  = useState(0);
-  // Live SI deload — tracks the most recent peak mv that beat the running
-  // exponential decay, plus the perf.now() timestamp when it was set. The SI
-  // tile reads these refs each render; siTick (50ms interval while a session
-  // is active) drives the re-renders so the ramp visibly decays even when
-  // no new BLE frames arrive.
-  const liveSiPeakMvRef = useRef(0);
-  const liveSiAtMsRef   = useRef(0);
-  const [siTick, setSiTick] = useState(0);
+  const [peakMv,  setPeakMv]  = useState(0);   // all-time session peak voltage (mV)
+  const [peakSi,  setPeakSi]  = useState(0);   // all-time session peak Strength Index (max slope SI)
+  // Live strike accumulator — collects the cells of the in-progress contact so it can
+  // be scored once (one feed row per hit) when it closes on an idle gap. Mirrors
+  // segmentStrikes; lastWallMs lets the flush timer close the trailing strike.
+  const liveStrikeRef = useRef<{ lastT: number; lastWallMs: number; cells: Map<number, StrikeCell> } | null>(null);
   const [ripples, setRipples] = useState<Array<{ id: number; x: number | string; y: number | string; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
-  type FeedItem = { row: number; col: number; mv: number; key: string };
+  // One impact-feed row per strike: dominant cell, its peak voltage, and the strike SI.
+  type FeedItem = { r: number; c: number; peakMv: number; si: number; cellCount: number; key: string };
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const feedCounter = useRef(0);
 
@@ -3144,15 +3303,6 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  // Live SI deload tick — bumps siTick every 50ms while a session is active so
-  // the SI tile re-renders and the exponential decay is visible even when the
-  // BLE stream is quiet. Idle when not in a session to avoid wasted renders.
-  useEffect(() => {
-    if (!sessionActive) return;
-    const id = setInterval(() => setSiTick(t => t + 1), 50);
-    return () => clearInterval(id);
-  }, [sessionActive]);
-
   // Timer — also drives the 30 s hard cap and the 5 s warning cue
   useEffect(() => {
     if (!sessionActive) return;
@@ -3187,6 +3337,33 @@ export default function Home() {
     if (volTickTimer.current) clearInterval(volTickTimer.current);
   }, [sessionActive]);
 
+  // Close the in-progress live strike: score it, push ONE feed row, bump peak SI.
+  // Called both on an idle gap inside handleNotify and by the flush timer below.
+  const closeLiveStrike = useCallback(() => {
+    const s = liveStrikeRef.current;
+    if (!s) return;
+    liveStrikeRef.current = null;
+    const sp = deviceInfoRef.current?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
+    const sc = scoreStrike(s.cells, sp);
+    if (!sc) return;
+    setFeed(prev => [{
+      r: sc.r, c: sc.c, peakMv: sc.peakMv, si: sc.si, cellCount: sc.cellCount,
+      key: String(feedCounter.current++),
+    }, ...prev].slice(0, 60));
+    setPeakSi(prev => Math.max(prev, sc.si));
+  }, []);
+
+  // Flush timer — closes the trailing strike once frames stop arriving for IDLE_GAP_MS,
+  // so the last hit's feed row + peak SI land even though no "next frame" triggers it.
+  useEffect(() => {
+    if (!sessionActive) { closeLiveStrike(); return; }
+    const id = setInterval(() => {
+      const s = liveStrikeRef.current;
+      if (s && performance.now() - s.lastWallMs > IDLE_GAP_MS) closeLiveStrike();
+    }, 40);
+    return () => clearInterval(id);
+  }, [sessionActive, closeLiveStrike]);
+
   // ── BLE notify handler ────────────────────────────────────────────────────────
   // Accepts a DataView directly — same signature used by both adapter paths.
   const handleNotify = useCallback((value: DataView) => {
@@ -3202,17 +3379,20 @@ export default function Home() {
     // ── Non-data control frames — handled before the hits path ────────────────
     if (obj.type === "hello") {
       // Derive per-device timing constants from the hello packet.
-      // Model III sends hw:"III" and mode:"batch"; Model II omits both fields.
-      const isModelIII    = obj.hw === "III";
+      // III / IV send hw + mode:"batch"; Model II omits both fields. Model IV also
+      // reports its live measured scan rate in "hz" — resolveScanTiming prefers it,
+      // falling back to the adapter's nominal SCAN_PROFILES entry.
+      const hw     = obj.hw ?? "II";
+      const timing = resolveScanTiming(hw, obj.hz);
       const info: DeviceInfo = {
         id:           obj.id,
         fw:           obj.fw,
-        hw:           obj.hw   ?? "II",
+        hw,
         rows:         obj.rows,
         cols:         obj.cols,
         mode:         obj.mode ?? "single",
-        scanPeriodMs: isModelIII ? 8  : 37,
-        samplingHz:   isModelIII ? 120 : 25,
+        scanPeriodMs: timing.scanPeriodMs,
+        samplingHz:   timing.samplingHz,
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
@@ -3462,27 +3642,27 @@ export default function Home() {
     });
     setRipples(prev => [...prev, ...newRipples].slice(-24));
 
-    // Update feed
-    const newItems: FeedItem[] = hits.map(([row, col, mv]) => ({
-      row, col, mv, key: String(feedCounter.current++),
-    }));
-    setFeed(prev => [...newItems, ...prev].slice(0, 60));
+    // Strike accumulation — fold this frame into the in-progress strike (mirrors
+    // segmentStrikes). On an idle gap the prior strike closes (scored once → one feed
+    // row, peak SI bump); the flush timer closes the trailing strike. This is why the
+    // feed shows one SI per hit instead of a noisy per-frame stream.
+    {
+      const prevStrike = liveStrikeRef.current;
+      if (prevStrike && frameT - prevStrike.lastT > IDLE_GAP_MS) closeLiveStrike();
+      const strike = liveStrikeRef.current
+        ?? (liveStrikeRef.current = { lastT: frameT, lastWallMs: performance.now(), cells: new Map() });
+      strike.lastT      = frameT;
+      strike.lastWallMs = performance.now();
+      for (const h of hits) {
+        const key = h[0] * 100 + h[1];
+        let cell = strike.cells.get(key);
+        if (!cell) { cell = { r: h[0], c: h[1], samples: [] }; strike.cells.set(key, cell); }
+        cell.samples.push({ mv: h[2], t: frameT });
+      }
+    }
 
     const batchMaxMv = Math.max(...hits.map(h => h[5]));        // h[5] = v_peak_mv
     setPeakMv(prev => Math.max(prev, batchMaxMv));               // all-time session peak (V tile)
-
-    // Live SI peak — beats the currently-decayed value? Then it's a new impact
-    // worth scoring (handles a softer second hit that still feels fresh because
-    // the previous peak has mostly decayed away).
-    {
-      const nowPerf = performance.now();
-      const elapsed = nowPerf - liveSiAtMsRef.current;
-      const decayed = liveSiPeakMvRef.current * Math.exp(-elapsed / SI_DELOAD_TAU_MS);
-      if (batchMaxMv > decayed) {
-        liveSiPeakMvRef.current = batchMaxMv;
-        liveSiAtMsRef.current   = nowPerf;
-      }
-    }
 
     } // end for (batch dispatcher loop)
   }, []);
@@ -3507,16 +3687,17 @@ export default function Home() {
 
     // hello packet — derive device info, mirror the primary handler's logic
     if (obj.type === "hello") {
-      const isModelIII = obj.hw === "III";
+      const hw     = obj.hw ?? "II";
+      const timing = resolveScanTiming(hw, obj.hz);
       slot.device = {
         id:           obj.id,
         fw:           obj.fw,
-        hw:           obj.hw   ?? "II",
+        hw,
         rows:         obj.rows,
         cols:         obj.cols,
         mode:         obj.mode ?? "single",
-        scanPeriodMs: isModelIII ? 8   : 37,
-        samplingHz:   isModelIII ? 120 : 25,
+        scanPeriodMs: timing.scanPeriodMs,
+        samplingHz:   timing.samplingHz,
       };
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
@@ -4006,8 +4187,8 @@ export default function Home() {
     setFeed([]);
     setRipples([]);
     setPeakMv(0);
-    liveSiPeakMvRef.current = 0;
-    liveSiAtMsRef.current   = 0;
+    setPeakSi(0);
+    liveStrikeRef.current = null;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
@@ -4150,7 +4331,7 @@ export default function Home() {
           mode:        sessionMode,
           // Derive hardware metadata from the hello packet — never hardcoded.
           // Falls back to Model II defaults when deviceInfo is unavailable.
-          deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+          deviceModel:  deviceModelFor(deviceInfo?.hw),
           samplingHz:   deviceInfo?.samplingHz   ?? 25,
           scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
           // reaction live stats
@@ -4194,7 +4375,7 @@ export default function Home() {
             startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
             endedAtMs:   endedAt,
             mode:        sessionMode,
-            deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
+            deviceModel: deviceModelFor(slot.device?.hw),
             samplingHz:   slot.device?.samplingHz   ?? 25,
             scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
             deviceId:    slot.device?.id,
@@ -4216,16 +4397,14 @@ export default function Home() {
       if (primaryHasFrames) {
         const savedFrames = framesRef.current;
         const scanMs = deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
+        const recapStrikes = segmentStrikes(savedFrames, scanMs);
         let totalHits = 0;
         let peakMvSnap = 0;
-        let peakSiSnap = 0;
         for (const f of savedFrames) {
           totalHits += f.hits.length;
           for (const h of f.hits) if (h[5] > peakMvSnap) peakMvSnap = h[5];
-          const t = eventTimingFromFrame(f);
-          const si = strengthIndex(t.peakMv, t.riseTimeMs, scanMs, t.decayTimeMs);
-          if (si > peakSiSnap) peakSiSnap = si;
         }
+        const peakSiSnap = recapStrikes.reduce((m, s) => Math.max(m, s.si), 0);
         setLastSaved({
           mode:       sessionMode,
           events:     savedFrames.length,
@@ -4258,8 +4437,8 @@ export default function Home() {
     setFeed([]);
     setGrid(new Map());
     setPeakMv(0);
-    liveSiPeakMvRef.current = 0;
-    liveSiAtMsRef.current   = 0;
+    setPeakSi(0);
+    liveStrikeRef.current = null;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
@@ -4310,20 +4489,6 @@ export default function Home() {
   type StatItem = { label: string; value: string; sub?: string; color?: string };
   const tgtAccPct = tgtAttempts > 0 ? Math.round((tgtHits / tgtAttempts) * 100) : null;
 
-  // Live SI with deload — driven by the siTick interval so it re-renders even
-  // between BLE frames. Uses scanPeriod as the rise-time floor (we don't track
-  // per-impact rise live), so a fresh peak shows full SI; subsequent renders
-  // multiply by exp(-elapsed / SI_DELOAD_TAU_MS) until the next impact resets it.
-  void siTick;  // anchor — the interval bumps this state purely to trigger a re-render
-  const liveScanMs = deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
-  const liveSi = liveSiPeakMvRef.current > 0
-    ? strengthIndex(
-        liveSiPeakMvRef.current,
-        liveScanMs,
-        liveScanMs,
-        performance.now() - liveSiAtMsRef.current,
-      )
-    : 0;
   const statsItems: StatItem[] = sessionMode === "reaction"
     ? [
         { label: "Time",     value: formatTime(elapsedMs) },
@@ -4339,9 +4504,9 @@ export default function Home() {
         { label: "Accuracy", value: avgAccuracy != null ? String(avgAccuracy) : "—", sub: avgAccuracy != null ? "%" : "",
           color: avgAccuracy != null ? (avgAccuracy >= 70 ? "#00ff88" : avgAccuracy >= 45 ? "#00dcff" : "#ffcc00") : undefined },
         { label: "Peak",     value: feedMetric === "si"
-            ? (liveSi ? String(liveSi) : "—")
+            ? (peakSi ? String(peakSi) : "—")
             : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
-          sub: feedMetric === "si" ? (liveSi ? "SI" : "") : (peakMv ? "V" : ""),
+          sub: feedMetric === "si" ? (peakSi ? "SI" : "") : (peakMv ? "V" : ""),
           color: feedMetric === "si" ? "#b400ff" : undefined },
       ]
     : sessionMode === "target"
@@ -4358,9 +4523,9 @@ export default function Home() {
         { label: "Events", value: String(sessionActive ? frameCount : framesRef.current.length), color: MODE_META.power.color },
         { label: "Hits",   value: String(feed.length) },
         { label: "Peak",   value: feedMetric === "si"
-            ? (liveSi ? String(liveSi) : "—")
+            ? (peakSi ? String(peakSi) : "—")
             : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
-          sub: feedMetric === "si" ? (liveSi ? "SI" : "") : (peakMv ? "V" : ""),
+          sub: feedMetric === "si" ? (peakSi ? "SI" : "") : (peakMv ? "V" : ""),
           color: feedMetric === "si" ? "#b400ff" : MODE_META.power.color },
       ];
 
@@ -4667,16 +4832,28 @@ export default function Home() {
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
                       v{deviceInfo.fw}
                     </span>
-                    {/* Hardware generation badge — distinguishes Model II from Model III */}
-                    <span style={{
-                      fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                      color: deviceInfo.hw === "III" ? "#00ff88" : "#b400ff",
-                      background: deviceInfo.hw === "III" ? "rgba(0,255,136,0.12)" : "rgba(180,0,255,0.12)",
-                      border: `1px solid ${deviceInfo.hw === "III" ? "rgba(0,255,136,0.30)" : "rgba(180,0,255,0.30)"}`,
-                      borderRadius: 4, padding: "1px 5px",
-                    }}>
-                      {deviceInfo.hw === "III" ? "III · 120Hz" : "II · 27Hz"}
-                    </span>
+                    {/* Hardware generation badge — II / III / IV */}
+                    {(() => {
+                      // Per-model accent + display rate. IV (native C) gets its own cyan
+                      // accent to stand apart from the green Model III, and shows its live
+                      // reported scan rate (from the hello "hz" field, nominal 400).
+                      const badge = deviceInfo.hw === "IV"
+                        ? { rgb: "0,224,255",  label: `IV · ${Math.round(deviceInfo.samplingHz)}Hz` }
+                        : deviceInfo.hw === "III"
+                        ? { rgb: "0,255,136",  label: "III · 120Hz" }
+                        : { rgb: "180,0,255",  label: "II · 27Hz" };
+                      return (
+                        <span style={{
+                          fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+                          color: `rgb(${badge.rgb})`,
+                          background: `rgba(${badge.rgb},0.12)`,
+                          border: `1px solid rgba(${badge.rgb},0.30)`,
+                          borderRadius: 4, padding: "1px 5px",
+                        }}>
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
@@ -5086,14 +5263,14 @@ export default function Home() {
               const modeColor = MODE_META[sessionMode].color;
               const isHits   = topMetric === "hits";
               const topValue = isHits ? String(feed.length) : String(frameCount);
-              // SI tile shows the live rate-based SI with deload; V tile keeps
-              // the all-time session peak (peakMv) since "peak voltage" is a
-              // monotonically growing diagnostic, not a coachable score.
+              // Both tiles show the all-time session peak: peak SI (best strike) and
+              // peak voltage. Peak SI only rises on a fast rise — a slow press/hold
+              // produces no slope, so it can't inflate the score.
               const peakValue = feedMetric === "si"
-                ? (liveSi ? String(liveSi) : "—")
+                ? (peakSi ? String(peakSi) : "—")
                 : (peakMv ? (peakMv / 1000).toFixed(2) : "—");
               const peakSub = feedMetric === "si"
-                ? (liveSi ? "SI" : "")
+                ? (peakSi ? "SI" : "")
                 : (peakMv ? "V" : "");
               const peakColor = feedMetric === "si" ? "#b400ff" : modeColor;
 
@@ -5728,12 +5905,22 @@ export default function Home() {
                   }}
                 >
                   <span style={{ color: "var(--muted)", fontFamily: "monospace", fontSize: 11 }}>
-                    R{String(h.row).padStart(2, "0")} C{String(h.col).padStart(2, "0")}
+                    R{String(h.r).padStart(2, "0")} C{String(h.c).padStart(2, "0")}
+                    {h.cellCount > 1 && (
+                      <span style={{ marginLeft: 4, opacity: 0.6 }}>·{h.cellCount}</span>
+                    )}
                   </span>
-                  <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: mvToColor(h.mv) }}>
-                    {(h.mv / 1000).toFixed(3)}
-                    <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>V</span>
-                  </span>
+                  {feedMetric === "si" ? (
+                    <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "#b400ff" }}>
+                      {h.si || "—"}
+                      <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>SI</span>
+                    </span>
+                  ) : (
+                    <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: mvToColor(h.peakMv) }}>
+                      {(h.peakMv / 1000).toFixed(3)}
+                      <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>V</span>
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
@@ -6070,4 +6257,4 @@ export default function Home() {
       `}</style>
     </div>
   );
-}
+} 
