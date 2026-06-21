@@ -6046,7 +6046,7 @@ export default function Home() {
                 <strong>Error:</strong> {saveError}
               </div>
             )}
-          </div>
+          </div> 
 
           {/* Impact feed — hidden until a session starts; remains visible afterward if there's data to review */}
           {(sessionActive || feed.length > 0) && (
