@@ -6043,9 +6043,9 @@ export default function Home() {
 
             {saveState === "error" && saveError && (
               <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 9, background: "rgba(255,80,80,0.08)", border: "1px solid rgba(255,80,80,0.22)", fontSize: 11, color: "#ff9090", lineHeight: 1.5 }}>
-                <strong>Error:</strong> {saveError}
+                <strong>Error:</strong> {saveError} 
               </div>
-            )}
+            )} 
           </div> 
 
           {/* Impact feed — hidden until a session starts; remains visible afterward if there's data to review */}
