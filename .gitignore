@@ -7,3 +7,9 @@ dist
 # Server-side tooling secrets — NEVER commit (holds SUPABASE_SERVICE_ROLE_KEY)
 tools/.env
 tools/.env.*
+
+# ESP-IDF firmware build artifacts — generated, large, contain absolute-path
+# symlinks that break `vite build` if committed. Keep only source under firmware-src/.
+firmware-src/**/build/
+**/build/esp-idf/
+sdkconfig.old
