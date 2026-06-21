@@ -107,12 +107,17 @@ export async function startNotifications(
   return startNotificationsWeb(conn, uuid, onValue);
 }
 
-export async function writeUtf8(conn: AdapterConnection, characteristicUuid: string, text: string) {
+export async function writeUtf8(
+  conn: AdapterConnection,
+  characteristicUuid: string,
+  text: string,
+  opts?: { withoutResponse?: boolean },
+) {
   const uuid = normalizeUuid(characteristicUuid);
   if (!uuid) throw new Error("Missing write characteristic UUID (VITE_BLE_CHAR_UUID_RX).");
 
-  if (conn.kind === "native") return writeUtf8Native(conn, uuid, text);
-  return writeUtf8Web(conn, uuid, text);
+  if (conn.kind === "native") return writeUtf8Native(conn, uuid, text, opts);
+  return writeUtf8Web(conn, uuid, text, opts);
 }
 
 // ─── Multi-bag helper ────────────────────────────────────────────────────────

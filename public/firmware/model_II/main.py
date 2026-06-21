@@ -48,6 +48,13 @@ MUX_EN_PIN = None       # tie low on PCB, or set GPIO number
 
 ROW_PINS = [18, 19, 23, 25, 26, 32, 33, 27, 2, 4, 12, 15]   # R1-R12
 
+# Identity / status LED (app "led" command). A single WS2812 / NeoPixel gives
+# each bag a coloured identity light so a coach can match a physical adapter to
+# its on-screen split-screen tile. GPIO16 is free on this build (GPIO4 is R10).
+# Init is defensive — no LED wired ⇒ the command is a harmless no-op.
+LED_PIN   = 16
+LED_COUNT = 1
+
 COL_A = (1, 2, 3, 4)   # 4052 sel 0-3 → col numbers for ADC A
 COL_B = (5, 6, 7, 8)   # 4052 sel 0-3 → col numbers for ADC B
 
@@ -252,6 +259,18 @@ class BLEUARTStreamer:
                         _ota_new_fw = obj.get("fw", "0.0.0")
                         _ota_apply  = True
                         print(f"[OTA] end — will apply as {_ota_filename}")
+                elif cmd == "led":
+                    # Identity color. Wire format matches model IV: flat r/g/b
+                    # keys (0..255), or {"off": true} to clear the override.
+                    if obj.get("off"):
+                        _set_led(0, 0, 0)
+                        print("[BLE] cmd=led off")
+                    else:
+                        _r = int(obj.get("r", 0))
+                        _g = int(obj.get("g", 0))
+                        _b = int(obj.get("b", 0))
+                        _set_led(_r, _g, _b)
+                        print(f"[BLE] cmd=led r={_r} g={_g} b={_b}")
                 else:
                     print(f"[BLE] unknown cmd: {cmd}")
             except Exception as e:
@@ -271,6 +290,30 @@ if MUX_EN_PIN is not None:
 rows = [Pin(p, Pin.OUT) for p in ROW_PINS]
 for r in rows:
     r.value(0)
+
+# Identity / status LED (optional hardware) — init defensively so a board with
+# no NeoPixel wired still boots normally.
+_led = None
+try:
+    from neopixel import NeoPixel
+    _led = NeoPixel(Pin(LED_PIN, Pin.OUT), LED_COUNT)
+    _led.fill((0, 0, 0))
+    _led.write()
+    print(f"[LED] NeoPixel ready on GPIO{LED_PIN} (x{LED_COUNT})")
+except Exception as _led_err:
+    _led = None
+    print(f"[LED] init skipped ({_led_err}) — 'led' command will be a no-op")
+
+def _set_led(r, g, b):
+    if _led is None:
+        return
+    try:
+        c = (int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF)
+        for i in range(LED_COUNT):
+            _led[i] = c
+        _led.write()
+    except Exception as e:
+        print(f"[LED] set failed: {e}")
 
 # ─────────────────────────────────────────
 # ADC helpers

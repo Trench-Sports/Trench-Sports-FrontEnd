@@ -92,7 +92,18 @@ SPI_CLK_PIN  = 18          # GPIO18 VSPI SCK
 SPI_MISO_PIN = 19          # GPIO19 VSPI MISO  ← MCP3208 D_OUT
 SPI_MOSI_PIN = 23          # GPIO23 VSPI MOSI  → MCP3208 D_IN
 CS_PIN       = 5           # GPIO5  → MCP3208 CS/SHDN  ← boot pull-up ✓ (CS idle HIGH)
-# GPIO4 is spare/unassigned in Build B
+# GPIO4 is spare/unassigned in Build B → used here as the status-LED data line.
+
+# ─────────────────────────────────────────
+# Identity / status LED  (app "led" command)
+# ─────────────────────────────────────────
+# A single WS2812 / NeoPixel on GPIO4 gives each bag a coloured identity light
+# so a coach can match a physical adapter to its on-screen split-screen tile.
+# The app pushes {"cmd":"led","rgb":[r,g,b]} right after it connects. If no LED
+# is wired (or the neopixel module is missing) init fails gracefully and the
+# command becomes a no-op — nothing else in the firmware depends on it.
+LED_PIN   = 4
+LED_COUNT = 1
 
 # Row drive GPIOs (R1–R12) — same remapping as Build A
 ROW_PINS = [25, 26, 27, 32, 33, 13, 14, 12, 15, 21, 22, 2]
@@ -236,6 +247,19 @@ def _drain_cmd_queue(uart):
                 _ota_apply  = True
                 print(f"[OTA] end — will apply as {_ota_filename}")
 
+        elif cmd == "led":
+            # Identity color from the app. Wire format matches model IV:
+            # flat r/g/b keys (0..255), or {"off": true} to clear the override.
+            if obj.get("off"):
+                _set_led(0, 0, 0)
+                print("[BLE] cmd=led off")
+            else:
+                r = int(obj.get("r", 0))
+                g = int(obj.get("g", 0))
+                b = int(obj.get("b", 0))
+                _set_led(r, g, b)
+                print(f"[BLE] cmd=led r={r} g={g} b={b}")
+
         elif cmd == "provision":
             new_name = obj.get("name", "")
             new_id   = obj.get("id",   "")
@@ -376,6 +400,30 @@ cs = Pin(CS_PIN, Pin.OUT, value=1)   # MCP3208  (C1–C8)
 rows = [Pin(p, Pin.OUT) for p in ROW_PINS]
 for r in rows:
     r.value(0)
+
+# Identity / status LED (optional hardware) — init defensively so a board with
+# no NeoPixel wired still boots normally.
+_led = None
+try:
+    from neopixel import NeoPixel
+    _led = NeoPixel(Pin(LED_PIN, Pin.OUT), LED_COUNT)
+    _led.fill((0, 0, 0))
+    _led.write()
+    print(f"[LED] NeoPixel ready on GPIO{LED_PIN} (x{LED_COUNT})")
+except Exception as _led_err:
+    _led = None
+    print(f"[LED] init skipped ({_led_err}) — 'led' command will be a no-op")
+
+def _set_led(r, g, b):
+    if _led is None:
+        return
+    try:
+        c = (int(r) & 0xFF, int(g) & 0xFF, int(b) & 0xFF)
+        for i in range(LED_COUNT):
+            _led[i] = c
+        _led.write()
+    except Exception as e:
+        print(f"[LED] set failed: {e}")
 
 # ─────────────────────────────────────────
 # MCP3208 SPI read helper

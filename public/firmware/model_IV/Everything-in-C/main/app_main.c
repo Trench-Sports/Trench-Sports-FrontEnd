@@ -43,7 +43,9 @@
 #include "nvs.h"
 #include "cJSON.h"
 #include "esp_ota_ops.h"
+#include "esp_random.h"
 #include "mbedtls/base64.h"
+#include "mbedtls/md.h"
 
 // NimBLE
 #include "nimble/nimble_port.h"
@@ -82,7 +84,7 @@ static const int ROW_PINS[NROWS] = {25,26,27,32,33,13,14,12,15,21,22,2};
 #define FIRST_HIT_FLUSH 1                // flush immediately on new contact
 #define MAX_BUF_FRAMES  8                // hard cap (force-flush when full)
 #define NOTIFY_MAX_LEN  400              // MicroPython max_len
-#define FW_VERSION_C    "1.3.0-c"        // fw reported in hello — bump per release
+#define FW_VERSION_C    "1.4.0-c"        // fw reported in hello — bump per release (1.4.0: identity LED + OTA auth gate)
 #define HW_REV          "IV"             // hw reported in hello (matches manifest.json key + app SCAN_PROFILES)
 
 // ── Globals ────────────────────────────────────────────────────────────────
@@ -92,6 +94,25 @@ static char s_dev_id[64]   = "TS-UNKNOWN";
 static char s_dev_name[64] = "TS-UNKNOWN";
 static char s_dev_fw[64]   = FW_VERSION_C;
 static char s_dev_uuid[40] = "";
+
+// ── OTA / provisioning auth ────────────────────────────────────────────────
+// Challenge-response gate: the app must prove knowledge of OTA_AUTH_KEY before
+// the device accepts `ota_start` or `provision`. Flow:
+//     app → {"cmd":"auth_begin"}
+//     dev → {"type":"auth_chal","nonce":"<32 hex>"}      (16 random bytes)
+//     app → {"cmd":"auth","mac":"<64 hex>"}              HMAC-SHA256(KEY, nonce)
+//     dev → {"type":"auth_ok"} | {"type":"auth_err"}
+// Must stay byte-identical to the web app's VITE_OTA_AUTH_SECRET (same 32 bytes,
+// hex). This stops other BLE apps and drive-by writers from initiating an OTA.
+// It is NOT image authenticity — the web bundle is public — so pair it with
+// signed images (see SECURITY.md). To rotate: openssl rand -hex 32, then update
+// both this array and VITE_OTA_AUTH_SECRET, rebuild firmware, redeploy app.
+static const uint8_t OTA_AUTH_KEY[32] = {
+    0x5e,0xe2,0xbe,0xab,0xb6,0xb9,0x6a,0xdd,0x6a,0x15,0xc2,0xbc,0xbe,0xf9,0xa0,0x8e,
+    0xff,0x57,0x07,0x78,0xc6,0x0c,0xfe,0x0f,0x29,0xe3,0xa8,0x72,0x79,0x35,0x24,0x87,
+};
+static volatile bool s_authed = false;     // true once this connection passes auth
+static uint8_t       s_nonce[16];           // current challenge (per auth_begin)
 
 static volatile uint16_t s_conn        = BLE_HS_CONN_HANDLE_NONE;
 static volatile bool     s_notify_on   = false;
@@ -129,6 +150,21 @@ static bool nvs_get_str_blob(nvs_handle_t h, const char *key, char *out, size_t 
     return true;
 }
 
+// Semver compare on "major.minor.patch" (any suffix like "-c" is ignored).
+// Returns true if a is strictly newer than b. Mirrors the app's fwIsOutdated().
+static void fw_parse(const char *v, int o[3])
+{
+    o[0] = o[1] = o[2] = 0;
+    sscanf(v, "%d.%d.%d", &o[0], &o[1], &o[2]);
+}
+static bool fw_is_newer(const char *a, const char *b)
+{
+    int x[3], y[3];
+    fw_parse(a, x); fw_parse(b, y);
+    for (int i = 0; i < 3; i++) if (x[i] != y[i]) return x[i] > y[i];
+    return false;
+}
+
 static void identity_load(void)
 {
     nvs_handle_t h;
@@ -139,6 +175,17 @@ static void identity_load(void)
         if (!nvs_get_str_blob(h, "name", s_dev_name, sizeof(s_dev_name)))
             strlcpy(s_dev_name, s_dev_id, sizeof(s_dev_name));
         nvs_get_str_blob(h, "fw", s_dev_fw, sizeof(s_dev_fw));
+        // If this *image* is newer than the recorded version (e.g. a fresh USB
+        // flash, or NVS never had "fw"), adopt the compiled-in version and
+        // persist it. After an OTA, ota_end has already written the installed
+        // version, so the record always reflects the newest of {running code,
+        // last install} — and send_hello reports it, so the app stops offering
+        // an update the device already has.
+        if (fw_is_newer(FW_VERSION_C, s_dev_fw)) {
+            strlcpy(s_dev_fw, FW_VERSION_C, sizeof(s_dev_fw));
+            nvs_set_blob(h, "fw", s_dev_fw, strlen(s_dev_fw));
+            nvs_commit(h);
+        }
         have_uuid = nvs_get_str_blob(h, "uuid", s_dev_uuid, sizeof(s_dev_uuid));
 
         if (!have_uuid) {                       // derive v4-style UUID from MAC
@@ -479,6 +526,7 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
         s_scanning  = false;
         s_pending_hello = false;         // don't carry a stale hello into next conn
         s_led_id_on = false;             // drop identity color — app re-sends on reconnect
+        s_authed    = false;             // re-auth required on every new connection
         s_att_mtu   = 23;
         ESP_LOGI(TAG, "[BLE] central disconnected → re-advertising");
         ble_advertise();
@@ -634,7 +682,7 @@ static void send_hello(void)
         "{\"type\":\"hello\",\"uuid\":\"%s\",\"id\":\"%s\",\"name\":\"%s\","
         "\"fw\":\"%s\",\"hw\":\"" HW_REV "\",\"rows\":%d,\"cols\":%d,"
         "\"mode\":\"batch\",\"batch_size\":%d,\"hz\":%lu}",
-        s_dev_uuid, s_dev_id, s_dev_name, FW_VERSION_C, NROWS, NCOLS, BATCH_SIZE,
+        s_dev_uuid, s_dev_id, s_dev_name, s_dev_fw, NROWS, NCOLS, BATCH_SIZE,
         (unsigned long)(s_scan_hz ? s_scan_hz : SCAN_HZ_NOMINAL));
     notify_json_chunked(s_json);
 }
@@ -680,6 +728,9 @@ static void ota_fail(const char *msg)
 
 static void ota_start(const cJSON *obj)
 {
+    // Gate: the app must have passed the challenge-response on this connection.
+    if (!s_authed) { ota_fail("unauthorized — auth required before OTA"); return; }
+
     if (s_ota_active) { esp_ota_abort(s_ota_handle); s_ota_active = false; }
 
     s_ota_part = esp_ota_get_next_update_partition(NULL);
@@ -761,6 +812,36 @@ static void ota_end(const cJSON *obj)
     esp_restart();
 }
 
+// ── Auth helpers ────────────────────────────────────────────────────────────
+static inline int hexnib(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// Verify an app-supplied HMAC-SHA256(OTA_AUTH_KEY, s_nonce) given as 64 hex
+// chars. Constant-time compare so a wrong key leaks no timing signal.
+static bool auth_verify(const char *mac_hex)
+{
+    if (!mac_hex || strlen(mac_hex) != 64) return false;
+
+    uint8_t want[32];
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (!info) return false;
+    if (mbedtls_md_hmac(info, OTA_AUTH_KEY, sizeof(OTA_AUTH_KEY),
+                        s_nonce, sizeof(s_nonce), want) != 0) return false;
+
+    uint8_t diff = 0;
+    for (int i = 0; i < 32; i++) {
+        int hi = hexnib(mac_hex[i * 2]), lo = hexnib(mac_hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        diff |= want[i] ^ (uint8_t)((hi << 4) | lo);
+    }
+    return diff == 0;
+}
+
 // ── Command handling (port of _drain_cmd_queue) ────────────────────────────
 static void handle_command(const char *raw)
 {
@@ -776,11 +857,33 @@ static void handle_command(const char *raw)
     } else if (!strcmp(cmd, "stop")) {
         s_scanning = false;
         ESP_LOGI(TAG, "[BLE] cmd=stop  → scanning paused");
+    } else if (!strcmp(cmd, "auth_begin")) {
+        // Issue a fresh random challenge; invalidate any prior auth on this link.
+        esp_fill_random(s_nonce, sizeof(s_nonce));
+        s_authed = false;
+        char buf[80];
+        int n = snprintf(buf, sizeof(buf), "{\"type\":\"auth_chal\",\"nonce\":\"");
+        for (int i = 0; i < (int)sizeof(s_nonce); i++)
+            n += snprintf(buf + n, sizeof(buf) - n, "%02x", s_nonce[i]);
+        snprintf(buf + n, sizeof(buf) - n, "\"}");
+        notify_json_chunked(buf);
+        ESP_LOGI(TAG, "[BLE] auth challenge issued");
+    } else if (!strcmp(cmd, "auth")) {
+        const cJSON *jmac = cJSON_GetObjectItem(obj, "mac");
+        s_authed = auth_verify(cJSON_IsString(jmac) ? jmac->valuestring : NULL);
+        notify_json_chunked(s_authed ? "{\"type\":\"auth_ok\"}"
+                                     : "{\"type\":\"auth_err\"}");
+        ESP_LOGI(TAG, "[BLE] auth %s", s_authed ? "ok" : "FAILED");
     } else if (!strcmp(cmd, "provision")) {
-        const cJSON *jn = cJSON_GetObjectItem(obj, "name");
-        const cJSON *ji = cJSON_GetObjectItem(obj, "id");
-        identity_provision(cJSON_IsString(jn) ? jn->valuestring : NULL,
-                           cJSON_IsString(ji) ? ji->valuestring : NULL);
+        if (!s_authed) {
+            notify_json_chunked("{\"type\":\"err\",\"msg\":\"unauthorized\"}");
+            ESP_LOGW(TAG, "[BLE] provision rejected — not authorized");
+        } else {
+            const cJSON *jn = cJSON_GetObjectItem(obj, "name");
+            const cJSON *ji = cJSON_GetObjectItem(obj, "id");
+            identity_provision(cJSON_IsString(jn) ? jn->valuestring : NULL,
+                               cJSON_IsString(ji) ? ji->valuestring : NULL);
+        }
     } else if (!strcmp(cmd, "led")) {
         // Multi-bag identity color. {"cmd":"led","off":true} clears the override;
         // otherwise r/g/b (0..255, default 0) set the solid "connected" color.

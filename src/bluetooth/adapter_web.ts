@@ -141,8 +141,20 @@ export async function startNotificationsWeb(
   return ch;
 }
 
-export async function writeUtf8Web(conn: WebAdapterConnection, characteristicUuid: string, text: string) {
+export async function writeUtf8Web(
+  conn: WebAdapterConnection,
+  characteristicUuid: string,
+  text: string,
+  opts?: { withoutResponse?: boolean },
+) {
   const ch = await conn.service.getCharacteristic(characteristicUuid);
-  const enc = new TextEncoder();
-  await ch.writeValue(enc.encode(text));
+  const data = new TextEncoder().encode(text);
+  // Without-response skips the per-write ATT ACK so chunks pipeline within a
+  // connection event (used for fast OTA). Falls back to writeValue if the
+  // platform/characteristic doesn't expose it.
+  if (opts?.withoutResponse && typeof (ch as any).writeValueWithoutResponse === "function") {
+    await (ch as any).writeValueWithoutResponse(data);
+  } else {
+    await ch.writeValue(data);
+  }
 }

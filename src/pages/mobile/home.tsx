@@ -57,6 +57,71 @@ function getCharUuids() {
   };
 }
 
+// ─── Per-bag accent palette ──────────────────────────────────────────────────
+// Each connected bag gets a fixed identity color by slot index, drawn from the
+// session-mode color scheme. The same color is pushed to the device's LED on
+// connect (see sendLedColor) so the on-screen accent ring and the physical
+// adapter's LED match — letting a coach tell at a glance which split-screen
+// tile maps to which physical bag. Index 0 = primary bag, 1–4 = secondary slots
+// (matches the matrixTiles order: primary first, then slots).
+const BAG_ACCENTS: { color: string; glow: string; rgb: [number, number, number] }[] = [
+  { color: "#b400ff", glow: "rgba(180,0,255,0.55)", rgb: [180, 0, 255] },   // Bag 1 — power purple
+  { color: "#00dcff", glow: "rgba(0,220,255,0.55)", rgb: [0, 220, 255] },   // Bag 2 — accuracy cyan
+  { color: "#ffcc00", glow: "rgba(255,200,0,0.55)", rgb: [255, 204, 0] },   // Bag 3 — reaction yellow
+  { color: "#ff6a00", glow: "rgba(255,106,0,0.55)", rgb: [255, 106, 0] },   // Bag 4 — volume orange
+  { color: "#00ff88", glow: "rgba(0,255,136,0.55)", rgb: [0, 255, 136] },   // Bag 5 — target green
+];
+function bagAccent(index: number) {
+  return BAG_ACCENTS[((index % BAG_ACCENTS.length) + BAG_ACCENTS.length) % BAG_ACCENTS.length];
+}
+
+// Push a bag's identity color to its device LED so the physical adapter matches
+// the on-screen accent ring. Best-effort: firmware that predates the `led`
+// command simply ignores it (the device logs an "unknown cmd" and carries on),
+// so this is always safe to call after a successful connect.
+//
+// Wire format mirrors the model IV firmware (the canonical implementation):
+// flat r/g/b keys, 0–255 per channel. Model IV additionally accepts
+// {cmd:"led",off:true} to drop the override — sent automatically on disconnect.
+async function sendLedColor(conn: AdapterConnection | null, rgb: [number, number, number]) {
+  if (!conn) return;
+  const { RX } = getCharUuids();
+  const [r, g, b] = rgb;
+  try {
+    await writeUtf8(conn, RX, JSON.stringify({ cmd: "led", r, g, b }));
+  } catch (err) {
+    console.warn("[BLE] sendLedColor failed:", err);
+  }
+}
+
+// ─── OTA authorization (challenge-response) ──────────────────────────────────
+// Shared secret that must match the firmware's OTA_AUTH_KEY (same 32 bytes, as
+// hex). Override per-deployment via VITE_OTA_AUTH_SECRET. NOTE: a web bundle is
+// public, so this only gates *who can initiate* an OTA — it raises the bar above
+// "any BLE app in range" but is NOT image authenticity. The bootloader's signed-
+// image check (see firmware SECURITY.md) is what actually rejects malware.
+const OTA_AUTH_SECRET_HEX =
+  ((import.meta as any).env?.VITE_OTA_AUTH_SECRET as string | undefined)
+  ?? "5472656e636853706f7274732d4348414e47452d4d452d494e2d50524f442121"; // "TrenchSports-CHANGE-ME-IN-PROD!!"
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.trim();
+  const out = new Uint8Array(Math.floor(clean.length / 2));
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.substr(i * 2, 2), 16);
+  return out;
+}
+function bytesToHex(bytes: ArrayBuffer | Uint8Array): string {
+  const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  return Array.from(u8, b => b.toString(16).padStart(2, "0")).join("");
+}
+async function hmacSha256Hex(keyBytes: Uint8Array, msgBytes: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", keyBytes as BufferSource, { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, msgBytes as BufferSource);
+  return bytesToHex(sig);
+}
+
 const NUM_ROWS       = 12;
 const NUM_COLS       = 8;
 const FADE_TTL_MS    = 400;
@@ -1556,7 +1621,7 @@ function cellKey(r: number, c: number) { return `${r},${c}`; }
 
 // Split-screen row layout for the multi-bag matrix view. Mirrors the gamer
 // split-screen conventions the coach asked for:
-//   2 → [1,1] (top & bottom split)
+//   2 → [2]   (side by side — both tiles share one row)
 //   3 → [2,1] (two top, one bottom)
 //   4 → [2,2] (2×2)
 //   5 → [3,2] (three top, two bottom)
@@ -1566,7 +1631,7 @@ function matrixRowCounts(n: number): number[] {
   switch (n) {
     case 0: return [];
     case 1: return [1];
-    case 2: return [1, 1];
+    case 2: return [2];
     case 3: return [2, 1];
     case 4: return [2, 2];
     case 5: return [3, 2];
@@ -2983,6 +3048,12 @@ export default function Home() {
   const [otaError,    setOtaError]    = useState<string | null>(null);
   const [latestFw,    setLatestFw]    = useState<string | null>(null);
   const [latestFwFile, setLatestFwFile] = useState<string | null>(null); // model-specific path from manifest
+  const [otaMode,     setOtaMode]     = useState<"fast" | "slow">("fast"); // last/active transfer profile
+
+  // OTA auth handshake plumbing — resolvers the notify handler fires when the
+  // device answers our challenge. Lets runOta await the BLE round-trips.
+  const otaChalRef = useRef<((nonce: string | null) => void) | null>(null); // ← {type:"auth_chal"}
+  const otaAuthRef = useRef<((ok: boolean) => void) | null>(null);          // ← {type:"auth_ok"|"auth_err"}
 
   const connRef      = useRef<AdapterConnection | null>(null);  // active adapter connection
   const assemblerRef = useRef(new ChunkAssembler());
@@ -3463,6 +3534,17 @@ export default function Home() {
       console.warn(`[OTA] failed — ${obj.msg}`);
       return;
     }
+    // ── OTA auth handshake replies (model IV) ──────────────────────────────
+    if (obj.type === "auth_chal") {
+      otaChalRef.current?.(typeof obj.nonce === "string" ? obj.nonce : null);
+      otaChalRef.current = null;
+      return;
+    }
+    if (obj.type === "auth_ok" || obj.type === "auth_err") {
+      otaAuthRef.current?.(obj.type === "auth_ok");
+      otaAuthRef.current = null;
+      return;
+    }
 
     // ── Normalise both packet shapes into a list of { hits, t } frame objects ──
     // Model II  sends: { hits: [...], t: number }          → one frame per packet
@@ -3874,6 +3956,11 @@ export default function Home() {
       setBleStatus("connected");
       setConnectAttempt(0);
       setBleError(null);
+
+      // Push the primary bag's identity color (palette index 0) to its LED so
+      // the physical adapter matches the on-screen accent. Best-effort — older
+      // firmware ignores the unknown `led` command.
+      void sendLedColor(conn, bagAccent(0).rgb);
     } catch (err: any) {
       console.error("[BLE] connect error:", err);
       const msg = err?.message ?? "";
@@ -4003,6 +4090,12 @@ export default function Home() {
       const { TX } = getCharUuids();
       await adapterStartNotifications(conn, TX, (val) => handleSlotNotify(slotId, val));
       console.log(`[BLE/slot ${slotId}] connected to "${bleName}"`);
+
+      // Push this slot's identity color to its LED so the physical adapter
+      // matches the on-screen accent ring. Index = its position among slots + 1
+      // (primary holds index 0). Best-effort — older firmware ignores `led`.
+      const slotIndex = [...slotsRef.current.keys()].indexOf(slotId);
+      void sendLedColor(conn, bagAccent((slotIndex < 0 ? slotsRef.current.size - 1 : slotIndex) + 1).rgb);
     } catch (err: any) {
       console.error("[BLE/slot] connect error:", err);
       const msg = err?.message ?? "";
@@ -4097,44 +4190,112 @@ export default function Home() {
   // ── runOta — fetches firmware + drives sendOta with live progress ─────────────
   // Called by the "Confirm Update" button. Tracks chunk progress 0→95%, then
   // waits for the ota_ok/ota_err notify from the device to reach 100% or error.
-  const runOta = useCallback(async () => {
+  const runOta = useCallback(async (speed?: "fast" | "slow") => {
     if (!latestFw || !latestFwFile || !connRef.current) return;
+
+    // ── Transfer profile ──────────────────────────────────────────────────
+    // Writes are write-with-response, so each one is already paced by the BLE
+    // ACK (≈ one connection interval) — the old 30 ms sleep was pure overhead.
+    // FAST: bigger chunks + no extra delay. Safe on model IV (native C): it
+    //   drains a 16-deep command queue every 10 ms and decodes into a 512 B
+    //   buffer, and with-response writes can't outrun it. Tuned for the desktop
+    //   MTU (247) — the 241 B packet needs that, so a low-MTU link may reject it.
+    // SLOW: the original conservative, MTU-safe profile (128 B chunks, 30 ms).
+    //   Universal fallback the user can pick if FAST errors out.
+    // Default: FAST on model IV, SLOW on II/III (MicroPython — left untouched).
+    const mode: "fast" | "slow" = speed ?? (deviceInfo?.hw === "IV" ? "fast" : "slow");
+    const CHUNK_SIZE     = mode === "fast" ? 212 : 128;   // base64 chars (mult of 4)
+    const CHUNK_DELAY_MS = mode === "fast" ? 0   : 30;
+    setOtaMode(mode);
+
     setOtaState("updating");
     setOtaProgress(0);
     setOtaError(null);
 
     try {
-      // 1. Fetch the model-specific firmware file from the public folder
+      // 1. Fetch the model-specific firmware file from the public folder.
+      //    Read it as raw BYTES — never text(). The model IV image is a binary
+      //    .bin, and decoding it as UTF-8 mangles every non-ASCII byte (→ U+FFFD)
+      //    so the device rejects it on the esp_ota size/hash check. Reading bytes
+      //    is also correct for the II/III main.py (valid UTF-8), so one path
+      //    serves every model.
       const resp = await fetch(latestFwFile);
       if (!resp.ok) throw new Error(`Could not fetch firmware (${resp.status})`);
-      const content = await resp.text();
+      const bytes = new Uint8Array(await resp.arrayBuffer());
 
       // 2. Stream chunks with progress updates
       const { RX } = getCharUuids();
-      // Base64-encode so every chunk is pure ASCII — predictable 1 byte/char.
-      // 128 base64 chars + 26-byte JSON envelope = 154 bytes per write.
-      // Must be a multiple of 4 so each slice is self-contained valid base64.
-      const CHUNK_SIZE = 128;
-      const b64 = btoa(
-        Array.from(new TextEncoder().encode(content), b => String.fromCharCode(b)).join("")
-      );
+
+      // 2a. Authorize before touching the OTA partition. Ask the device for a
+      //     challenge: model IV replies {type:"auth_chal",nonce}; legacy II/III
+      //     firmware ignores it, so on timeout we proceed unauthenticated (those
+      //     models enforce nothing on their side). If the device DOES challenge,
+      //     a wrong/absent key aborts the update before any bytes are written.
+      const nonce = await new Promise<string | null>((resolve) => {
+        const timer = setTimeout(() => { otaChalRef.current = null; resolve(null); }, 1500);
+        otaChalRef.current = (n) => { clearTimeout(timer); resolve(n); };
+        writeUtf8(connRef.current!, RX, JSON.stringify({ cmd: "auth_begin" }))
+          .catch(() => { clearTimeout(timer); otaChalRef.current = null; resolve(null); });
+      });
+      if (nonce) {
+        const mac = await hmacSha256Hex(hexToBytes(OTA_AUTH_SECRET_HEX), hexToBytes(nonce));
+        const authed = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => { otaAuthRef.current = null; resolve(false); }, 2000);
+          otaAuthRef.current = (ok) => { clearTimeout(timer); resolve(ok); };
+          writeUtf8(connRef.current!, RX, JSON.stringify({ cmd: "auth", mac }))
+            .catch(() => { clearTimeout(timer); otaAuthRef.current = null; resolve(false); });
+        });
+        if (!authed) throw new Error("Device rejected the update key — unauthorized.");
+        console.log("[OTA] authorized");
+      }
+
+      // Base64-encode the raw bytes so every chunk is pure ASCII — predictable
+      // 1 byte/char. Chunk size + delay come from the profile above. Each slice
+      // must be a multiple of 4 so it's self-contained valid base64.
+      // Build the binary string in 32 KB slices to avoid blowing the call-stack
+      // arg limit on large .bin files.
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) {
+        bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      }
+      const b64 = btoa(bin);
       const totalChunks = Math.ceil(b64.length / CHUNK_SIZE);
 
+      // size MUST be the byte length: the model IV device checks recv == size.
+      const filename = latestFwFile.endsWith(".bin") ? "firmware.bin" : "main_new.py";
       await writeUtf8(connRef.current, RX, JSON.stringify({
-        cmd: "ota_start", filename: "main_new.py", size: content.length,
+        cmd: "ota_start", filename, size: bytes.length,
       }));
       await new Promise(r => setTimeout(r, 100));
 
+      // FAST pipelines chunks with write-without-response (no per-chunk ACK
+      // wait), with an acked "barrier" write every BARRIER_EVERY chunks for flow
+      // control — that ACK lets the device's 16-deep queue drain so a burst can't
+      // overflow it (overflow → device aborts with "BLE write dropped", which the
+      // user can recover from via slow mode). SLOW keeps the simple acked path.
+      const BARRIER_EVERY = 6;
+      let sinceBarrier = 0;
+      let lastPct = -1;
       for (let i = 0; i < b64.length; i += CHUNK_SIZE) {
         if (!connRef.current) throw new Error("BLE disconnected during update");
-        await writeUtf8(connRef.current, RX, JSON.stringify({
-          cmd: "ota_chunk",
-          data: b64.slice(i, i + CHUNK_SIZE),
-        }));
+        const payload = JSON.stringify({ cmd: "ota_chunk", data: b64.slice(i, i + CHUNK_SIZE) });
+
+        if (mode === "fast") {
+          sinceBarrier++;
+          const barrier = sinceBarrier >= BARRIER_EVERY;       // periodic acked write
+          await writeUtf8(connRef.current, RX, payload, { withoutResponse: !barrier });
+          if (barrier) sinceBarrier = 0;
+        } else {
+          await writeUtf8(connRef.current, RX, payload);
+          await new Promise(r => setTimeout(r, CHUNK_DELAY_MS));
+        }
+
+        // Throttle progress to whole-percent changes — calling setState on every
+        // chunk re-renders this large page thousands of times and itself slows
+        // the transfer. Reserve the last 5% for device write + NVS + reset.
         const sent = Math.floor(i / CHUNK_SIZE) + 1;
-        // Reserve last 5% for the device-side write + NVS update + reset signal
-        setOtaProgress(Math.round((sent / totalChunks) * 95));
-        await new Promise(r => setTimeout(r, 30));
+        const pct = Math.round((sent / totalChunks) * 95);
+        if (pct !== lastPct) { setOtaProgress(pct); lastPct = pct; }
       }
 
       await writeUtf8(connRef.current, RX, JSON.stringify({ cmd: "ota_end", fw: latestFw }));
@@ -4144,7 +4305,7 @@ export default function Home() {
       setOtaError(err.message ?? "Update failed");
       setOtaState("error");
     }
-  }, [latestFw]);
+  }, [latestFw, latestFwFile, deviceInfo]);
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
@@ -4671,6 +4832,8 @@ export default function Home() {
           hitCount:    feed.length,
           peakMv,
           status:      "connected" as const,
+          // Bag identity color (index 0) — mirrors the LED pushed on connect.
+          accent:      bagAccent(0),
           onAssign:    () => setAssignTarget({ kind: "primary" }),
         },
         ...slotList.map((s, i) => ({
@@ -4683,6 +4846,8 @@ export default function Home() {
           hitCount:    s.hitCount,
           peakMv:      s.peakMv,
           status:      s.status,
+          // Secondary slots take palette indices 1–4 (primary is 0).
+          accent:      bagAccent(i + 1),
           onAssign:    () => setAssignTarget({ kind: "slot", slotId: s.id }),
         })),
       ]
@@ -4957,7 +5122,7 @@ export default function Home() {
                           </div>
                         </div>
                         <button
-                          onClick={runOta}
+                          onClick={() => runOta()}
                           style={{
                             flexShrink: 0, padding: "5px 13px", borderRadius: 7,
                             fontWeight: 700, fontSize: 11, cursor: "pointer",
@@ -4978,7 +5143,7 @@ export default function Home() {
                     }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
                         <div style={{ fontSize: 11, fontWeight: 700, color: "#ffcc00" }}>
-                          Updating firmware…
+                          Updating firmware… {otaMode === "slow" ? "(compatibility mode)" : ""}
                         </div>
                         <div style={{ fontSize: 11, fontWeight: 800, color: "#ffcc00", fontVariantNumeric: "tabular-nums" }}>
                           {otaProgress}%
@@ -5027,16 +5192,33 @@ export default function Home() {
                           {otaError}
                         </div>
                       )}
-                      <button
-                        onClick={() => setOtaState("available")}
-                        style={{
-                          marginTop: 7, fontSize: 10, fontWeight: 700,
-                          color: "#ffcc00", background: "none", border: "none",
-                          cursor: "pointer", padding: 0,
-                        }}
-                      >
-                        Retry →
-                      </button>
+                      <div style={{ display: "flex", gap: 14, marginTop: 7, alignItems: "center" }}>
+                        <button
+                          onClick={() => runOta(otaMode)}
+                          style={{
+                            fontSize: 10, fontWeight: 700,
+                            color: "#ffcc00", background: "none", border: "none",
+                            cursor: "pointer", padding: 0,
+                          }}
+                        >
+                          Retry →
+                        </button>
+                        {/* Offer the slower, more-compatible profile after a fast
+                            attempt fails (e.g. a low-MTU link rejecting big writes). */}
+                        {otaMode === "fast" && (
+                          <button
+                            onClick={() => runOta("slow")}
+                            title="Smaller packets, slower — works on links that can't carry the fast profile"
+                            style={{
+                              fontSize: 10, fontWeight: 700,
+                              color: "var(--muted)", background: "none", border: "none",
+                              cursor: "pointer", padding: 0,
+                            }}
+                          >
+                            Retry in slow mode →
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
                 </>
@@ -5212,8 +5394,8 @@ export default function Home() {
                           athleteName={tile.athleteName}
                           hitCount={tile.hitCount}
                           peakMv={tile.peakMv}
-                          accentColor={MODE_META[sessionMode].color}
-                          accentGlow={MODE_META[sessionMode].glow}
+                          accentColor={tile.accent.color}
+                          accentGlow={tile.accent.glow}
                           connected={tile.status === "connected"}
                           status={tile.status}
                           sessionActive={sessionActive}

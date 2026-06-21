@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "trench_scan",
-    "project_version":    "e45d809-dirty",
+    "project_version":    "ba6e1a4-dirty",
     "project_path":       "/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C",
     "idf_path":           "/Users/jaylencoleman/esp/esp-idf",
     "build_dir":          "/Users/jaylencoleman/Trench-Sports-FrontEnd/public/firmware/model_IV/Everything-in-C/build",

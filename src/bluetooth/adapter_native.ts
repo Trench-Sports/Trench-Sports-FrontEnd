@@ -315,11 +315,18 @@ export async function writeUtf8Native(
   conn: NativeAdapterConnection,
   characteristicUuid: string,
   text: string,
+  opts?: { withoutResponse?: boolean },
 ) {
   await ensureInit();
 
   const u8 = new TextEncoder().encode(text);
   const dv = bytesToDataView(u8);
 
-  await BleClient.write(conn.deviceId, conn.serviceUuid, characteristicUuid, dv);
+  // Without-response pipelines chunks for fast OTA. Fall back to the acked
+  // write if the plugin build doesn't expose writeWithoutResponse.
+  if (opts?.withoutResponse && typeof (BleClient as any).writeWithoutResponse === "function") {
+    await (BleClient as any).writeWithoutResponse(conn.deviceId, conn.serviceUuid, characteristicUuid, dv);
+  } else {
+    await BleClient.write(conn.deviceId, conn.serviceUuid, characteristicUuid, dv);
+  }
 }
