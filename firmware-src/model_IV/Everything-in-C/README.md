@@ -22,7 +22,7 @@ was renamed from "Everything in C" to `Everything-in-C` for exactly that reason,
 you can build **in place** — no copy needed:
 
 ```bash
-cd ~/Trench-Sports-main/Components/Electronics/ESP32/Everything-in-C
+cd ~/Trench-Sports-FrontEnd/firmware-src/model_IV/Everything-in-C
 ```
 
 (If you ever move this project, keep the full path space-free.)
@@ -59,7 +59,7 @@ After this, `idf.py` is on your PATH. You must re-run `export.sh` in each new sh
 ## 2. Build
 
 ```bash
-cd ~/Trench-Sports-main/Components/Electronics/ESP32/Everything-in-C
+cd ~/Trench-Sports-FrontEnd/firmware-src/model_IV/Everything-in-C
 idf.py set-target esp32        # first build only
 idf.py build
 ```
