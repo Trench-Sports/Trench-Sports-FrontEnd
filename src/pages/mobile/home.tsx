@@ -13,6 +13,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
+import * as sessionOutbox from "../../storage/sessionOutbox";
 import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
@@ -798,175 +799,6 @@ function useIsTabletOrLarger(): boolean {
   return matches;
 }
 
-// ─── AssignModal ──────────────────────────────────────────────────────────────
-// Roster picker used by the multi-bag matrix "Assign" overlay. Renders a
-// centered dialog (portal) listing the athlete roster with a search box. Tapping
-// an athlete calls onPick; tapping the backdrop / Close calls onClose. The list
-// reuses the same Athlete shape + visual language as the left-sidebar roster.
-function AssignModal({
-  open,
-  athletes,
-  loading,
-  assignedId,
-  disabledIds,
-  title,
-  isDark,
-  onPick,
-  onClose,
-}: {
-  open: boolean;
-  athletes: Athlete[];
-  loading: boolean;
-  assignedId: string | null;
-  disabledIds: Set<string>;       // athletes already on another bag — not selectable
-  title: string;
-  isDark: boolean;
-  onPick: (a: Athlete) => void;
-  onClose: () => void;
-}) {
-  const [filter, setFilter] = useState("");
-  useEffect(() => { if (open) setFilter(""); }, [open]);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
-
-  if (!open) return null;
-
-  const q = filter.trim().toLowerCase();
-  const list = q
-    ? athletes.filter(a =>
-        `${a.first_name} ${a.last_name}`.toLowerCase().includes(q) ||
-        (a.position ?? "").toLowerCase().includes(q) ||
-        (a.sport ?? "").toLowerCase().includes(q))
-    : athletes;
-
-  return createPortal(
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      onClick={onClose}
-      style={{
-        position: "fixed", inset: 0, zIndex: 1000,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        background: "rgba(0,0,0,0.55)", backdropFilter: "blur(4px)",
-        padding: 20,
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          width: "min(420px, 100%)", maxHeight: "min(70vh, 600px)",
-          display: "flex", flexDirection: "column",
-          // Solid, theme-aware surface — --panel alone is a near-transparent
-          // overlay tint, so over the backdrop it reads dark in both themes.
-          // Layer it over the opaque --bg token so the modal adapts to light/dark.
-          background: "linear-gradient(var(--panel), var(--panel)), var(--bg)",
-          border: "1px solid var(--panel-border)",
-          borderRadius: 16, padding: 16,
-          boxShadow: "0 24px 60px -12px rgba(0,0,0,0.55)",
-          animation: "tsSlideUp 0.2s ease-out",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <div style={{ fontSize: 13, fontWeight: 800, letterSpacing: "0.04em", color: "var(--text)" }}>
-            {title}
-          </div>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            style={{
-              background: "none", border: "none", cursor: "pointer",
-              color: "var(--muted)", fontSize: 16, lineHeight: 1, padding: 4,
-            }}
-          >✕</button>
-        </div>
-
-        {/* Search */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.03)", marginBottom: 10 }}>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={{ opacity: 0.45, flexShrink: 0 }}>
-            <circle cx="7" cy="7" r="5.5" stroke="currentColor" strokeWidth="1.6" />
-            <path d="M11 11l3.5 3.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
-          <input
-            autoFocus
-            value={filter}
-            onChange={e => setFilter(e.target.value)}
-            placeholder="Search athletes…"
-            style={{ flex: 1, background: "none", border: "none", outline: "none", color: "var(--text)", fontSize: 13 }}
-          />
-        </div>
-
-        {/* List */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto", paddingRight: 2 }}>
-          {loading ? (
-            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>Loading…</div>
-          ) : list.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
-              {q ? "No results" : "No athletes found"}
-            </div>
-          ) : list.map(a => {
-            const sel = assignedId === a.id;
-            // Taken by another bag — show but block selection so no athlete is
-            // assigned twice.
-            const taken = disabledIds.has(a.id);
-            const initials = `${a.first_name[0] ?? ""}${a.last_name[0] ?? ""}`.toUpperCase();
-            return (
-              <button
-                key={a.id}
-                onClick={() => { if (!taken) onPick(a); }}
-                disabled={taken}
-                title={taken ? "Already assigned to another bag" : undefined}
-                aria-disabled={taken}
-                style={{
-                  display: "flex", alignItems: "center", gap: 10,
-                  padding: "0 11px", height: 52, flexShrink: 0,
-                  borderRadius: 11, cursor: taken ? "not-allowed" : "pointer", textAlign: "left",
-                  border: sel ? "1px solid rgba(180,0,255,0.50)" : isDark ? "1px solid rgba(255,255,255,0.06)" : "1px solid rgba(0,0,0,0.09)",
-                  background: sel ? (isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.07)") : isDark ? "rgba(255,255,255,0.02)" : "rgba(0,0,0,0.02)",
-                  color: "var(--text)",
-                  opacity: taken ? 0.4 : 1,
-                }}
-              >
-                <div style={{
-                  width: 32, height: 32, borderRadius: "50%", flexShrink: 0,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 12, fontWeight: 800,
-                  background: "linear-gradient(135deg, rgba(180,0,255,0.18), rgba(180,0,255,0.08))",
-                  border: "1px solid rgba(180,0,255,0.22)",
-                  color: "rgba(200,120,255,0.85)",
-                }}>{initials}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 14, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {a.first_name} {a.last_name}
-                  </div>
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 1 }}>
-                    {[a.position, a.sport].filter(Boolean).join(" · ") || "—"}
-                  </div>
-                </div>
-                {taken ? (
-                  <span style={{
-                    flexShrink: 0, fontSize: 9, fontWeight: 800, letterSpacing: "0.04em",
-                    textTransform: "uppercase", color: "var(--muted)",
-                    border: isDark ? "1px solid rgba(255,255,255,0.12)" : "1px solid rgba(0,0,0,0.15)",
-                    borderRadius: 999, padding: "2px 7px",
-                  }}>On a bag</span>
-                ) : sel ? (
-                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--accent)", flexShrink: 0, boxShadow: "0 0 6px 2px rgba(180,0,255,0.55)" }} />
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
 // ─── BagMatrix ─────────────────────────────────────────────────────────────────
 // One live "split-screen" matrix tile in the multi-bag view. Renders the same
 // heatmap grid as the primary bag (cells light by voltage with a fade tail +
@@ -978,28 +810,22 @@ function BagMatrix({
   grid,
   now,
   label,
-  athleteName,
   hitCount,
   peakMv,
   accentColor,
   accentGlow,
   connected,
   status,
-  sessionActive,
-  onAssign,
 }: {
   grid: GridState;
   now: number;
   label: string;
-  athleteName: string | null;
   hitCount: number;
   peakMv: number;
   accentColor: string;
   accentGlow: string;
   connected: boolean;
   status: "connected" | "disconnected" | "connecting" | "error";
-  sessionActive: boolean;
-  onAssign: () => void;
 }) {
   return (
     <div
@@ -1021,36 +847,6 @@ function BagMatrix({
       }}>
         {label}
       </div>
-
-      {/* Assign overlay button (top-left). Disabled while a session is running
-          so attribution can't change mid-recording. */}
-      <button
-        type="button"
-        onClick={onAssign}
-        disabled={sessionActive}
-        title={athleteName ? `Assigned: ${athleteName}` : "Assign athlete"}
-        style={{
-          position: "absolute", top: 7, left: 7, zIndex: 9,
-          maxWidth: "62%",
-          display: "inline-flex", alignItems: "center", gap: 5,
-          padding: "4px 8px", borderRadius: 7,
-          fontSize: 10, fontWeight: 700, letterSpacing: "0.02em",
-          cursor: sessionActive ? "default" : "pointer",
-          background: athleteName ? "rgba(180,0,255,0.18)" : "rgba(0,0,0,0.55)",
-          border: athleteName ? "1px solid rgba(180,0,255,0.45)" : "1px solid rgba(255,255,255,0.18)",
-          color: athleteName ? "rgba(220,150,255,1)" : "rgba(255,255,255,0.75)",
-          backdropFilter: "blur(8px)",
-          opacity: sessionActive ? 0.6 : 1,
-        }}
-      >
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
-          <circle cx="8" cy="5.2" r="2.8" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M3 13.5c0-2.5 2.2-4 5-4s5 1.5 5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
-        <span style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {athleteName ?? "Assign"}
-        </span>
-      </button>
 
       {/* Per-bag stat (top-right): hits + peak */}
       <div style={{
@@ -1590,10 +1386,6 @@ type SlotState = {
   grid:         GridState;                 // live heatmap cells for this bag
   peakMv:       number;                    // session peak voltage (mV) for this bag's stat tile
   hitCount:     number;                    // total cell-hits seen this session (for the stat tile)
-  // ── Per-bag athlete assignment ────────────────────────────────────────────
-  // Coach assigns one athlete per matrix via the Assign overlay. null falls
-  // back to the primary's selectedAthlete at save time.
-  athlete:      Athlete | null;
 };
 
 function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): SlotState {
@@ -1612,7 +1404,6 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     grid:         new Map(),
     peakMv:       0,
     hitCount:     0,
-    athlete:      null,
   };
 }
 
@@ -3074,13 +2865,6 @@ export default function Home() {
   // real estate for the matrix view, so the "Add bag" entry point is hidden.
   const isTabletOrLarger = useIsTabletOrLarger();
 
-  // Assign-athlete overlay target. `{ kind: "primary" }` reassigns the primary
-  // bag's athlete (= selectedAthlete); `{ kind: "slot", slotId }` sets that
-  // slot's per-bag athlete. null = modal closed.
-  const [assignTarget, setAssignTarget] = useState<
-    { kind: "primary" } | { kind: "slot"; slotId: SlotId } | null
-  >(null);
-
   useEffect(() => {
     if (!isNativeApp()) {
       const diag = getBluetoothDiagnostics();
@@ -4459,6 +4243,23 @@ export default function Home() {
     }
   };
 
+  // ── Drain the on-device outbox ──────────────────────────────────────────────
+  // Replays any sessions that were queued while offline. Triggered on mount,
+  // on the browser "online" event, after every save, and by a safety interval.
+  // No-op (and re-entrancy-guarded inside the outbox) when nothing is queued.
+  const flushOutbox = useCallback(async () => {
+    if (!supabase) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    try {
+      const res = await sessionOutbox.flush((payload) => uploadSession(payload));
+      if (res.uploaded > 0) {
+        console.log(`[outbox] synced ${res.uploaded} queued session(s); ${res.remaining} remaining`);
+      }
+    } catch (err: any) {
+      console.warn("[outbox] flush failed:", err?.message ?? err);
+    }
+  }, []);
+
   // ── Save to Supabase ──────────────────────────────────────────────────────────
   const saveSession = async () => {
     // MVP: no athlete / user / program. Anonymous rows are attributed by
@@ -4474,84 +4275,128 @@ export default function Home() {
     setSaveState("saving");
     setSaveError(null);
 
-    try {
-      // ── 1. Primary device ──────────────────────────────────────────────
-      if (primaryHasFrames) {
-        await uploadSession({
-          sessionId:   sessionIdRef.current,
-          // Anonymous MVP recording — no program / athlete / user.
-          programId:   null,
-          athleteId:   null,
-          coreTeamId:  null,
-          createdBy:   null,
-          deviceUid:   deviceUidRef.current || null,
-          location:    geoRef.current,
-          frames:      framesRef.current,
-          startedAtMs: startTimeRef.current ?? Date.now(),
-          endedAtMs:   Date.now(),
-          mode:        sessionMode,
-          // Derive hardware metadata from the hello packet — never hardcoded.
-          // Falls back to Model II defaults when deviceInfo is unavailable.
-          deviceModel:  deviceModelFor(deviceInfo?.hw),
-          samplingHz:   deviceInfo?.samplingHz   ?? 25,
-          scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-          // reaction live stats
-          rxBestMs:    rxBestMs,
-          rxAvgMs:     rxAvgMs,
-          rxAttempts:  rxAttemptsRef.current,
-          // accuracy live stats
-          accHitsCount: accHitsRef.current,
-          accScoreSum:  accSumRef.current,
-          // target live stats
-          // All target counters read from refs — never stale at save time
-          tgtAttempts:     tgtAttemptsRef.current,
-          tgtCorrectHits:  tgtHitsRef.current,
-          tgtCorrectSumMs: tgtCorrectSumMs.current,
-          tgtBestMs:           tgtBestAllMsRef.current,
-          tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
-          // physical device identity from hello packet
-          deviceId:    deviceInfo?.id,
-        });
-      }
+    const endedAt = Date.now();
 
-      // ── 2. Secondary slots — one Supabase row per slot ─────────────────
-      // Each slot uploads under the athlete assigned via the matrix Assign
-      // overlay (falling back to the primary's selected athlete). Mode stats
-      // are still primary-only in this phase (per-slot reaction/target/volume
-      // mutations remain future work — matrix tiles show the live heatmap).
-      if (secondarySlotsWithFrames.length > 0) {
-        const endedAt = Date.now();
-        const slotResults = await Promise.allSettled(
-          secondarySlotsWithFrames.map(slot => {
-            // MVP: secondary bags also save anonymously (no athlete attribution).
-            return uploadSession({
-            sessionId:   slot.sessionId,
-            programId:   null,
-            athleteId:   null,
-            coreTeamId:  null,
-            createdBy:   null,
-            deviceUid:   deviceUidRef.current || null,
-            location:    geoRef.current,
-            frames:      slot.frames,
-            startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
-            endedAtMs:   endedAt,
-            mode:        sessionMode,
-            deviceModel: deviceModelFor(slot.device?.hw),
-            samplingHz:   slot.device?.samplingHz   ?? 25,
-            scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-            deviceId:    slot.device?.id,
-            });
-          })
-        );
-        const failures = slotResults.filter(r => r.status === "rejected") as PromiseRejectedResult[];
-        if (failures.length > 0) {
-          console.warn(`[BLE/slots] ${failures.length}/${slotResults.length} slot uploads failed`,
-            failures.map(f => f.reason?.message ?? f.reason));
-          // Non-fatal: primary uploaded successfully (if it had frames). Surface in console for debugging.
+    // ── Build one upload payload per bag (primary + each secondary slot) ──
+    // Every bag is uploaded independently below, so one bag's network failure
+    // never aborts the others — each falls back to the on-device outbox.
+    const payloads: Array<{ sessionId: string } & Record<string, unknown>> = [];
+
+    if (primaryHasFrames) {
+      payloads.push({
+        sessionId:   sessionIdRef.current,
+        // Anonymous MVP recording — no program / athlete / user.
+        programId:   null,
+        athleteId:   null,
+        coreTeamId:  null,
+        createdBy:   null,
+        deviceUid:   deviceUidRef.current || null,
+        location:    geoRef.current,
+        frames:      framesRef.current,
+        startedAtMs: startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        // Derive hardware metadata from the hello packet — never hardcoded.
+        // Falls back to Model II defaults when deviceInfo is unavailable.
+        deviceModel:  deviceModelFor(deviceInfo?.hw),
+        samplingHz:   deviceInfo?.samplingHz   ?? 25,
+        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        // reaction live stats
+        rxBestMs:    rxBestMs,
+        rxAvgMs:     rxAvgMs,
+        rxAttempts:  rxAttemptsRef.current,
+        // accuracy live stats
+        accHitsCount: accHitsRef.current,
+        accScoreSum:  accSumRef.current,
+        // target live stats
+        // All target counters read from refs — never stale at save time
+        tgtAttempts:     tgtAttemptsRef.current,
+        tgtCorrectHits:  tgtHitsRef.current,
+        tgtCorrectSumMs: tgtCorrectSumMs.current,
+        tgtBestMs:           tgtBestAllMsRef.current,
+        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
+        // physical device identity from hello packet
+        deviceId:    deviceInfo?.id,
+      });
+    }
+
+    // Secondary slots — one Supabase row per slot. Mode stats are still
+    // primary-only in this phase (matrix tiles show the live heatmap).
+    for (const slot of secondarySlotsWithFrames) {
+      payloads.push({
+        sessionId:   slot.sessionId,
+        // MVP: secondary bags also save anonymously (no athlete attribution).
+        programId:   null,
+        athleteId:   null,
+        coreTeamId:  null,
+        createdBy:   null,
+        deviceUid:   deviceUidRef.current || null,
+        location:    geoRef.current,
+        frames:      slot.frames,
+        startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        deviceModel: deviceModelFor(slot.device?.hw),
+        samplingHz:   slot.device?.samplingHz   ?? 25,
+        scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        deviceId:    slot.device?.id,
+      });
+    }
+
+    // Try to upload each bag; on failure, persist it to the on-device outbox
+    // so the recording survives until wifi returns. Result is "uploaded" (hit
+    // Supabase), "queued" (saved offline, will auto-sync), or "lost" (couldn't
+    // even write to IndexedDB — a genuine error).
+    const saveOneBag = async (
+      payload: { sessionId: string } & Record<string, unknown>,
+    ): Promise<"uploaded" | "queued" | "lost"> => {
+      try {
+        await uploadSession(payload as any);
+        return "uploaded";
+      } catch (uploadErr: any) {
+        try {
+          await sessionOutbox.enqueue(payload.sessionId, payload);
+          console.warn(
+            `[outbox] queued session ${payload.sessionId} for later sync:`,
+            uploadErr?.message ?? uploadErr,
+          );
+          return "queued";
+        } catch (queueErr: any) {
+          console.error(
+            `[outbox] FAILED to queue session ${payload.sessionId}:`,
+            queueErr?.message ?? queueErr,
+          );
+          return "lost";
         }
       }
-      setSaveState("saved");
+    };
 
+    const outcomes = await Promise.all(payloads.map(saveOneBag));
+    const lost   = outcomes.filter(o => o === "lost").length;
+    const queued = outcomes.filter(o => o === "queued").length;
+
+    // Only a true failure (couldn't upload AND couldn't persist locally) is an
+    // error. Anything safely queued offline counts as saved — it will sync
+    // automatically once connectivity returns.
+    if (lost > 0) {
+      setSaveError(
+        `${lost} of ${outcomes.length} bag(s) could not be saved or queued.`,
+      );
+      setSaveState("error");
+      return;
+    }
+
+    if (queued > 0) {
+      console.log(`[outbox] ${queued} bag(s) saved offline — will sync when online.`);
+    }
+
+    setSaveState("saved");
+
+    // If we just saved while online, opportunistically drain any sessions that
+    // were queued during an earlier offline stretch.
+    if (queued === 0) void flushOutbox();
+
+    {
       // Capture a recap snapshot of the primary session for the Stats card.
       // Computed from the same frames we just uploaded (still in framesRef
       // until the next session starts or the user discards).
@@ -4583,12 +4428,25 @@ export default function Home() {
         setSelectedAthlete(next[0] ?? null);
         return next;
       });
-    } catch (err: any) {
-      console.error("Session save failed:", err);
-      setSaveError(err.message ?? "Unknown error");
-      setSaveState("error");
     }
   };
+
+  // ── Auto-sync queued (offline) sessions ─────────────────────────────────────
+  // Drains the on-device outbox whenever connectivity is (or becomes) available:
+  //   • once on mount (covers app relaunch with sessions still queued)
+  //   • on the browser "online" event (wifi/cellular came back)
+  //   • on a 30 s safety interval (catches flaky reconnects the event missed)
+  // Uploads happen silently in the background — no UI surface by design.
+  useEffect(() => {
+    void flushOutbox();
+    const onOnline = () => { void flushOutbox(); };
+    window.addEventListener("online", onOnline);
+    const iv = window.setInterval(() => { void flushOutbox(); }, 30_000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(iv);
+    };
+  }, [flushOutbox]);
 
   // ── Discard session — wipes accumulated frames without saving ─────────────────
   const discardSession = () => {
@@ -4779,76 +4637,29 @@ export default function Home() {
   const multiMatrix =
     MULTIBAG_ENABLED && isTabletOrLarger && bleStatus === "connected" && slotCount >= 1;
 
-  // Resolve the athlete *explicitly* assigned to the current assign target
-  // (no primary fallback here — the modal highlights only a real assignment so
-  // an unassigned bag shows nothing selected, prompting the coach to pick one).
-  const assignAssignedId =
-    assignTarget?.kind === "primary"
-      ? (selectedAthlete?.id ?? null)
-      : assignTarget?.kind === "slot"
-        ? (slotsRef.current.get(assignTarget.slotId)?.athlete?.id ?? null)
-        : null;
-
-  // Athletes already assigned to a *different* bag — disabled in the modal so an
-  // athlete can't be selected for more than one bag at a time. The athlete on
-  // the bag being edited stays selectable (so the coach can keep or swap them).
-  const assignDisabledIds = (() => {
-    const taken = new Set<string>();
-    if (!assignTarget) return taken;
-    // The primary bag holds selectedAthlete — block it for every other bag.
-    if (assignTarget.kind !== "primary" && selectedAthlete) taken.add(selectedAthlete.id);
-    for (const s of slotsRef.current.values()) {
-      if (assignTarget.kind === "slot" && assignTarget.slotId === s.id) continue; // the bag being edited
-      if (s.athlete) taken.add(s.athlete.id);
-    }
-    return taken;
-  })();
-
-  // Apply an athlete pick to whichever bag the Assign overlay was opened for.
-  const handleAssignPick = useCallback((a: Athlete) => {
-    setAssignTarget(prev => {
-      if (!prev) return null;
-      if (prev.kind === "primary") {
-        setSelectedAthlete(a);
-      } else {
-        const slot = slotsRef.current.get(prev.slotId);
-        if (slot) { slot.athlete = a; bumpSlots(); }
-      }
-      return null;   // close modal
-    });
-  }, [bumpSlots]);
-
   // Build the ordered list of matrix tiles (primary first, then slots) and the
   // adaptive split rows. Only computed when the matrix view is active.
-  const athleteName = (a: Athlete | null | undefined) =>
-    a ? `${a.first_name} ${a.last_name}` : null;
   const matrixTiles = multiMatrix
     ? [
         {
           key:         "primary",
           grid,
           label:       deviceInfo?.id ?? "Bag 1",
-          athleteName: athleteName(selectedAthlete),
           hitCount:    feed.length,
           peakMv,
           status:      "connected" as const,
           // Bag identity color (index 0) — mirrors the LED pushed on connect.
           accent:      bagAccent(0),
-          onAssign:    () => setAssignTarget({ kind: "primary" }),
         },
         ...slotList.map((s, i) => ({
           key:         s.id,
           grid:        s.grid,
           label:       s.device?.id ?? s.bleName ?? `Bag ${i + 2}`,
-          // Show only the bag's explicit assignment so each athlete maps to one
-          // bag. Unassigned bags show the "Assign" prompt.
-          athleteName: athleteName(s.athlete),
           hitCount:    s.hitCount,
           peakMv:      s.peakMv,
           status:      s.status,
           // Secondary slots take palette indices 1–4 (primary is 0).
           accent:      bagAccent(i + 1),
-          onAssign:    () => setAssignTarget({ kind: "slot", slotId: s.id }),
         })),
       ]
     : [];
@@ -4949,9 +4760,10 @@ export default function Home() {
             ? { gridTemplateColumns: "0px minmax(300px, 1fr) 0px" }
             : multiMatrix
               // Multi-bag: collapse to two columns — keep the Bag Connection
-              // sidebar, give everything else to the matrix split. The athlete
-              // card (left) and the stats/feed (right) are unmounted below.
-              ? { gridTemplateColumns: "300px minmax(0, 1fr)" }
+              // sidebar (narrowed to free up grid space), give everything else
+              // to the matrix split. The athlete card (left) and the stats/feed
+              // (right) are unmounted below.
+              ? { gridTemplateColumns: "230px minmax(0, 1fr)" }
               : undefined
         }
       >
@@ -4965,7 +4777,9 @@ export default function Home() {
             <div className={flowStep === 2 ? "ts-flow-ble" : undefined} style={{
               background: "var(--panel)",
               border: bleStatus === "connected" ? "1px solid rgba(0,255,136,0.28)" : "1px solid var(--panel-border)",
-              borderRadius: 16, padding: 16,
+              // Tighter padding in the multi-bag matrix view so the narrowed
+              // sidebar gives the grid as much room as possible.
+              borderRadius: 16, padding: multiMatrix ? 12 : 16,
               animation: flowStep === 2 ? undefined : "tsSlideUp 0.22s ease-out",
             }}>
               <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -5349,17 +5163,15 @@ export default function Home() {
                 ) : (
                   <button
                     onClick={startSession}
-                    disabled={!selectedAthlete}
-                    title={selectedAthlete ? "Start all bags" : "Assign an athlete first"}
+                    title="Start all bags"
                     style={{
                       height: 40, padding: "0 18px", borderRadius: 8,
                       fontWeight: 800, fontSize: 13, letterSpacing: "0.04em",
-                      cursor: selectedAthlete ? "pointer" : "not-allowed",
-                      background: selectedAthlete ? MODE_META[sessionMode].color : "rgba(255,255,255,0.06)",
-                      border: `1px solid ${selectedAthlete ? MODE_META[sessionMode].color : "rgba(255,255,255,0.12)"}`,
-                      color: selectedAthlete ? "#000" : "var(--muted)",
+                      cursor: "pointer",
+                      background: MODE_META[sessionMode].color,
+                      border: `1px solid ${MODE_META[sessionMode].color}`,
+                      color: "#000",
                       display: "inline-flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
-                      opacity: selectedAthlete ? 1 : 0.7,
                     }}
                   >
                     ▶ Start All
@@ -5391,15 +5203,12 @@ export default function Home() {
                           grid={tile.grid}
                           now={now}
                           label={tile.label}
-                          athleteName={tile.athleteName}
                           hitCount={tile.hitCount}
                           peakMv={tile.peakMv}
                           accentColor={tile.accent.color}
                           accentGlow={tile.accent.glow}
                           connected={tile.status === "connected"}
                           status={tile.status}
-                          sessionActive={sessionActive}
-                          onAssign={tile.onAssign}
                         />
                       </div>
                     ))}
@@ -6111,19 +5920,6 @@ export default function Home() {
         </div>
         )}
       </div>
-
-      {/* ── Assign-athlete modal (multi-bag matrix) ─────────────────────── */}
-      <AssignModal
-        open={assignTarget !== null}
-        athletes={athletes}
-        loading={athletesLoading}
-        assignedId={assignAssignedId}
-        disabledIds={assignDisabledIds}
-        title={assignTarget?.kind === "primary" ? "Assign athlete · Bag 1" : "Assign athlete to bag"}
-        isDark={isDark}
-        onPick={handleAssignPick}
-        onClose={() => setAssignTarget(null)}
-      />
 
       {/* ── Native BLE device picker sheet ──────────────────────────────── */}
       {pickerOpen && (
