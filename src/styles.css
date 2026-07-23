@@ -3170,9 +3170,18 @@ html.is-native .ts-webOnly {
 }
 
 .ts-howIcon {
-    font-size: 28px;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.16), rgba(0, 220, 255, 0.10));
+    border: 1px solid rgba(180, 0, 255, 0.24);
+    color: var(--accent);
     margin-bottom: 12px;
-    line-height: 1;
+    position: relative;
+    z-index: 1;
 }
 
 
@@ -3311,41 +3320,282 @@ html.is-native .ts-webOnly {
     opacity: 0.85;
 }
 
-.ts-mockupGrid {
+/* ── Platform feature visuals ──────────────────────────────────────────────── */
+
+.ts-pv-frame {
+    position: relative;
+}
+
+.ts-pv-grid {
     display: grid;
-    grid-template-columns: repeat(8, 1fr);
-    gap: 4px;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 3px;
     margin-bottom: 12px;
     padding: 8px;
     background: rgba(0, 0, 0, 0.18);
     border-radius: 14px;
+    position: relative;
+    overflow: hidden;
 }
 
-.ts-mockupCell {
+.ts-pv-cell {
     aspect-ratio: 1;
-    border-radius: 4px;
+    border-radius: 3px;
     background: rgba(255, 255, 255, 0.06);
     border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
-.ts-mockupCell--hot {
-    background: rgba(180, 0, 255, 0.45);
-    border-color: rgba(180, 0, 255, 0.40);
-    box-shadow: 0 0 8px rgba(180, 0, 255, 0.28);
+/* All Platform mockup animations stay paused until their card scrolls into
+   view — they loop forever, so an idle off-screen card shouldn't keep
+   repainting. */
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-cell--impact,
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-decayFill--impact,
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-readout--impact .ts-pv-readoutValue,
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-wave,
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-scanDot,
+.ts-pv-frame:not(.ts-pv-frame--visible) .ts-pv-liveDot {
+    animation-play-state: paused;
 }
 
-.ts-mockupBars {
+/* Software: impact ripple — per-cell delay + peak baked in via --pv-peak,
+   looped entirely by CSS (no JS timers driving 96 re-renders per second) */
+.ts-pv-cell--impact {
+    --pv-peak: 0;
+    animation: tsPvImpact 2.2s ease-out infinite;
+}
+
+@keyframes tsPvImpact {
+    0%   { background: rgba(180, 0, 255, 0.05); }
+    6%   { background: rgba(180, 0, 255, calc(0.05 + var(--pv-peak) * 0.55)); }
+    45%  { background: rgba(180, 0, 255, 0.05); }
+    100% { background: rgba(180, 0, 255, 0.05); }
+}
+
+/* Hardware: live data capture — sampling waveform + scanning read-out row */
+.ts-pv-captureHead {
     display: flex;
-    align-items: flex-end;
-    gap: 5px;
-    height: 48px;
-    padding: 0 4px;
+    align-items: center;
+    gap: 7px;
+    margin-bottom: 10px;
 }
 
-.ts-mockupBar {
+.ts-pv-liveDot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px 2px rgba(180, 0, 255, 0.6);
+    animation: tsPvPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes tsPvPulse {
+    0%, 100% { opacity: 1;   transform: scale(1); }
+    50%      { opacity: 0.4; transform: scale(0.7); }
+}
+
+.ts-pv-captureLabel {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.4px;
+    color: var(--text);
+}
+
+.ts-pv-captureHz {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    color: var(--accent);
+    background: rgba(180, 0, 255, 0.12);
+    border: 1px solid rgba(180, 0, 255, 0.28);
+    border-radius: 999px;
+    padding: 3px 8px;
+}
+
+.ts-pv-wave {
+    height: 44px;
+    border-radius: 12px;
+    background-color: rgba(0, 0, 0, 0.18);
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40"><path d="M0,20 L6,20 L8,10 L10,20 L18,20 L20,30 L22,20 L36,20 L38,6 L40,34 L42,20 L58,20 L68,20 L70,13 L72,20 L88,20 L100,20" fill="none" stroke="%23b400ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>');
+    background-repeat: repeat-x;
+    background-size: 100px 44px;
+    animation: tsPvWaveScroll 2.2s linear infinite;
+    margin-bottom: 10px;
+}
+
+@keyframes tsPvWaveScroll {
+    from { background-position-x: 0; }
+    to   { background-position-x: -100px; }
+}
+
+.ts-pv-scanRow {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.ts-pv-scanDot {
     flex: 1;
-    border-radius: 4px 4px 0 0;
-    background: linear-gradient(180deg, rgba(180, 0, 255, 0.70), rgba(180, 0, 255, 0.25));
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(180, 0, 255, 0.16);
+    animation: tsPvScanPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tsPvScanPulse {
+    0%, 100% { background: rgba(180, 0, 255, 0.16); box-shadow: none; }
+    50%      { background: rgba(180, 0, 255, 0.9); box-shadow: 0 0 6px 1px rgba(180, 0, 255, 0.5); }
+}
+
+.ts-pv-caption {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    letter-spacing: 0.2px;
+}
+
+/* Software: live impact readout */
+.ts-pv-readout {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 0 4px 8px;
+}
+
+.ts-pv-readoutLabel {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.ts-pv-readoutValue {
+    font-size: 15px;
+    font-weight: 900;
+    color: var(--accent);
+}
+
+.ts-pv-decayTrack {
+    flex: 1;
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.ts-pv-decayFill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #b400ff, #00dcff);
+}
+
+.ts-pv-decayFill--impact {
+    width: 0%;
+    animation: tsPvDecayFill 2.2s ease-out infinite;
+}
+
+@keyframes tsPvDecayFill {
+    0%   { width: 0%; }
+    6%   { width: 100%; }
+    45%  { width: 0%; }
+    100% { width: 0%; }
+}
+
+.ts-pv-readout--impact .ts-pv-readoutValue {
+    animation: tsPvReadoutPulse 2.2s ease-out infinite;
+}
+
+@keyframes tsPvReadoutPulse {
+    0%   { opacity: 0.35; }
+    6%   { opacity: 1; }
+    45%  { opacity: 0.35; }
+    100% { opacity: 0.35; }
+}
+
+/* Intelligence: AI insight widgets */
+.ts-pv-aiGrid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.ts-pv-aiCard {
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 10px 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 78px;
+}
+
+.ts-pv-aiHead {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    opacity: 0.9;
+}
+
+.ts-pv-aiBig {
+    font-size: 18px;
+    font-weight: 900;
+    color: var(--text);
+    line-height: 1;
+}
+
+.ts-pv-aiBig span {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+    margin-left: 2px;
+}
+
+.ts-pv-aiValue {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--muted);
+}
+
+.ts-pv-sparkline {
+    width: 100%;
+    height: 26px;
+}
+
+.ts-pv-splitBar {
+    display: flex;
+    height: 16px;
+    border-radius: 5px;
+    overflow: hidden;
+    font-size: 9px;
+    font-weight: 800;
+    color: rgba(0, 0, 0, 0.65);
+}
+
+.ts-pv-splitL {
+    background: #ff5c8a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ts-pv-splitR {
+    background: rgba(255, 92, 138, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text);
+}
+
+.ts-pv-angle {
+    width: 100%;
+    height: 40px;
 }
 
 
@@ -3396,15 +3646,18 @@ html.is-native .ts-webOnly {
 }
 
 .ts-impactValue {
+    display: inline-block;
     font-size: clamp(28px, 4vw, 44px);
     font-weight: 950;
     letter-spacing: -0.5px;
+    padding-right: 0.12em;
     background: linear-gradient(90deg, rgba(180, 0, 255, 1), rgba(0, 220, 255, 1));
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
     line-height: 1.1;
     margin-bottom: 8px;
+    margin-right: -0.12em;
 }
 
 .ts-impactLabel {
@@ -3449,7 +3702,17 @@ html.is-native .ts-webOnly {
     box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
 }
 
-.ts-useCaseIcon { font-size: 26px; line-height: 1; }
+.ts-useCaseIcon {
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(180, 0, 255, 0.16), rgba(0, 220, 255, 0.10));
+    border: 1px solid rgba(180, 0, 255, 0.24);
+    color: var(--accent);
+}
 
 .ts-useCaseLink {
     font-size: 13px;

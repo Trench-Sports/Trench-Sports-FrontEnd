@@ -17,6 +17,7 @@ import * as sessionOutbox from "../../storage/sessionOutbox";
 import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
+import tsLogoMark from "../../images/TS Logo Enhancement Set 2-01.png";
 import { useSignalAudio } from "../../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
 import {
@@ -5580,6 +5581,25 @@ export default function Home() {
                 tgtHits={tgtHits}
               />
             )}
+
+            {/* Watermark logo, centered behind the hit grid */}
+            <img
+              src={tsLogoMark}
+              alt=""
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: "50%",
+                transform: "translate(-50%, -50%)",
+                width: "85%",
+                maxWidth: 360,
+                opacity: 0.14,
+                pointerEvents: "none",
+                userSelect: "none",
+                zIndex: 0,
+              }}
+            />
 
             {/* Hit grid — fills the bag */}
             <div style={{ position: "absolute", inset: 0 }}>

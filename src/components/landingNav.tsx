@@ -15,7 +15,6 @@ export const LANDING_NAV_SECTIONS: NavSection[] = [
   { id: "stats",         label: "Performance"  },
   { id: "how-it-works",  label: "How It Works" },
   { id: "platform",      label: "Platform"     },
-  { id: "showcase",      label: "Analytics"    },
   { id: "proof",         label: "Results"      },
   { id: "use-cases",     label: "Use Cases"    },
   { id: "testimonials",  label: "Coaches Say"  },

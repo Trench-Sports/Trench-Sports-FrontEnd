@@ -1,5 +1,6 @@
 // src/components/hitSimulator.jsx
 import { useState, useEffect, useRef, useCallback } from "react";
+import tsLogoMark from "../images/TS Logo Enhancement Set 2-01.png";
 
 // ─── Types & Constants ────────────────────────────────────────────────────────
 
@@ -1303,6 +1304,25 @@ export default function HitSimulator() {
             style={{ boxShadow: `0 0 40px -10px ${accentColor}33, inset 0 0 60px -20px ${accentColor}11` }}
           >
             <div className="ts-sim-bagLabel">Heavy Bag — 96 Zones</div>
+
+            {/* Watermark logo, centered behind the hit grid */}
+            <img
+              src={tsLogoMark}
+              alt=""
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: "50%",
+                transform: "translate(-50%, -50%)",
+                width: "85%",
+                maxWidth: 360,
+                opacity: 0.14,
+                pointerEvents: "none",
+                userSelect: "none",
+                zIndex: 0,
+              }}
+            />
 
             {/* Accuracy rings */}
             {mode === "Accuracy" && (

@@ -3,6 +3,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import HitSimulator from "../components/hitSimulator";
 import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
+import { IconBarChart, IconCrosshair, IconDumbbell, IconFlask, IconGraduationCap, IconTrophy, IconZap } from "../components/icons";
+import { AIInsightVisual, DataCaptureVisual, ImpactPropagationVisual } from "../components/platformVisuals";
 
 // ── Request Demo Modal ────────────────────────────────────────────────────────
 function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -257,19 +259,19 @@ export default function Landing() {
       step: "01",
       title: "Set Up in Seconds",
       body: "Mount the 96-cell sensor pad to any standard training surface. Battery-powered, no wires, no calibration — just connect and go.",
-      icon: "⚡",
+      Icon: IconZap,
     },
     {
       step: "02",
       title: "Train Normally",
       body: "Athletes train at full intensity. Listen mode idles in the background and triggers Burst mode automatically on every significant impact.",
-      icon: "🏋️",
+      Icon: IconDumbbell,
     },
     {
       step: "03",
       title: "See the Data Instantly",
       body: "Force maps, velocity trends, and placement heatmaps appear live on the coach dashboard — no post-processing, no waiting.",
-      icon: "📊",
+      Icon: IconBarChart,
     },
   ];
 
@@ -280,6 +282,7 @@ export default function Landing() {
       title: "Sensor tech that disappears into the workflow.",
       body: "A 12×8 matrix pad — 96 pressure cells, burst sampling at 3,600 events/second, and sub-100ms feedback. Battery-powered, rack-mountable, and built for daily abuse in the weight room.",
       tags: ["3600 events/sec", "96 cells", "Battery-powered"],
+      Visual: DataCaptureVisual,
     },
     {
       num: "02",
@@ -287,6 +290,7 @@ export default function Landing() {
       title: "Live dashboards. Clean data. Zero friction.",
       body: "Trench Sports software delivers realtime force maps, velocity curves, and placement heatmaps the moment a rep finishes. Session history, athlete profiles, and trend analytics — all in one view.",
       tags: ["Live force maps", "Trend analytics", "Athlete profiles"],
+      Visual: ImpactPropagationVisual,
     },
     {
       num: "03",
@@ -294,6 +298,7 @@ export default function Landing() {
       title: "Patterns coaches couldn't see before.",
       body: "AI flags load asymmetry, tempo drift, and fatigue signatures across sessions. Get auto-generated session summaries and weekly performance reports your staff can act on immediately.",
       tags: ["Fatigue detection", "Load asymmetry", "Auto summaries"],
+      Visual: AIInsightVisual,
     },
   ];
 
@@ -320,22 +325,22 @@ export default function Landing() {
 
   const useCases = [
     {
-      icon: "🏈",
+      Icon: IconGraduationCap,
       title: "College Athletics",
       body: "Scale across your entire roster. Coach-ready dashboards, athlete profiles, and compliance tracking built for athletic departments.",
     },
     {
-      icon: "🏆",
+      Icon: IconTrophy,
       title: "Professional Teams",
       body: "Elite-grade data for elite programs. Integrate with your existing AMS stack or run Trench standalone — your call.",
     },
     {
-      icon: "🔬",
+      Icon: IconFlask,
       title: "Sports Science Staff",
       body: "Validated metrics for return-to-play, load management, and fatigue monitoring. Data you can take into the training room.",
     },
     {
-      icon: "🎯",
+      Icon: IconCrosshair,
       title: "Performance Facilities",
       body: "Offer your clients something no other facility has. Stand-alone sessions or integrated athlete management — fully flexible.",
     },
@@ -402,6 +407,7 @@ export default function Landing() {
       </section>
 
       {/* ── LOGO MARQUEE ─────────────────────────────────────────────── */}
+      {/*
       <section className="ts-marqueeSection">
         <div className="ts-marqueeLabel">Trusted by programs at every level</div>
         <div className="ts-marqueeTrack">
@@ -420,6 +426,7 @@ export default function Landing() {
           </div>
         </div>
       </section>
+      */}
 
       {/* ── STATS ─────────────────────────────────────────────────────── */}
       <section className="ts-section" id="stats">
@@ -456,7 +463,7 @@ export default function Landing() {
             {howItWorks.map((step) => (
               <div key={step.step} className="ts-howCard">
                 <div className="ts-howStep">{step.step}</div>
-                <div className="ts-howIcon">{step.icon}</div>
+                <div className="ts-howIcon"><step.Icon size={22} /></div>
                 <h3 className="ts-h3">{step.title}</h3>
                 <p className="ts-muted">{step.body}</p>
               </div>
@@ -501,21 +508,7 @@ export default function Landing() {
                         <div className="ts-featureMockupTitle">{f.kicker} View</div>
                         <div className="ts-glassBadge">LIVE</div>
                       </div>
-                      {/* Decorative grid visualization */}
-                      <div className="ts-mockupGrid">
-                        {Array.from({ length: 24 }).map((_, i) => (
-                          <div
-                            key={i}
-                            className={`ts-mockupCell ${Math.random() > 0.6 ? "ts-mockupCell--hot" : ""}`}
-                            style={{ opacity: 0.4 + Math.random() * 0.6 }}
-                          />
-                        ))}
-                      </div>
-                      <div className="ts-mockupBars">
-                        {[65, 82, 54, 90, 72, 88, 61].map((h, i) => (
-                          <div key={i} className="ts-mockupBar" style={{ height: `${h}%` }} />
-                        ))}
-                      </div>
+                      <f.Visual />
                     </div>
                   </div>
                 </div>
@@ -553,7 +546,7 @@ export default function Landing() {
           <div className="ts-useCaseGrid">
             {useCases.map((uc) => (
               <div key={uc.title} className="ts-useCaseCard">
-                <div className="ts-useCaseIcon">{uc.icon}</div>
+                <div className="ts-useCaseIcon"><uc.Icon size={22} /></div>
                 <h3 className="ts-h3">{uc.title}</h3>
                 <p className="ts-muted">{uc.body}</p>
                 <Link className="ts-useCaseLink" to="/signup">Learn more →</Link>
@@ -564,6 +557,7 @@ export default function Landing() {
       </section>
 
       {/* ── TESTIMONIALS ──────────────────────────────────────────────── */}
+      {/*
       <section className="ts-section" id="testimonials">
         <div className="ts-container">
           <div className="ts-sectionTitleRow" style={{ textAlign: "center", justifyItems: "center", marginBottom: 32 }}>
@@ -591,6 +585,7 @@ export default function Landing() {
           </div>
         </div>
       </section>
+      */}
 
       {/* ── FINAL CTA ─────────────────────────────────────────────────── */}
       <section className="ts-ctaBanner">
