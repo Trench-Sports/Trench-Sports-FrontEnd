@@ -4496,7 +4496,16 @@ export default function Home() {
     unsupported: { dot: "#ff4444",       label: "BLE Unsupported", color: "#ff4444" },
   }[bleStatus];
 
-  const canSave = !sessionActive && framesRef.current.length > 0 && saveState !== "saved";
+  // Enable Save whenever *any* bag has recorded frames — the primary device or
+  // any secondary multi-bag slot. saveSession() already uploads each bag as its
+  // own Supabase row; gating on framesRef alone hid the button for sessions
+  // where only secondary bags took hits. (Reads slotsRef directly — the render
+  // that flips sessionActive off also picks up the slots' final frame counts.)
+  const anySlotHasFrames = MULTIBAG_ENABLED &&
+    [...slotsRef.current.values()].some(s => s.frames.length > 0);
+  const canSave = !sessionActive &&
+    (framesRef.current.length > 0 || anySlotHasFrames) &&
+    saveState !== "saved";
 
   const saveBtnStyle: Record<SaveState, { bg: string; border: string; color: string; label: string }> = {
     idle:   { bg: "var(--accent)",           border: "rgba(180,0,255,0.55)", color: "#000",      label: "Save Session" },
