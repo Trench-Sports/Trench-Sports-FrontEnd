@@ -1,5 +1,6 @@
 // src/pages/landing.tsx
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
 import HitSimulator from "../components/hitSimulator";
 import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
@@ -167,8 +168,6 @@ function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => voi
   );
 }
 
-type Stat = { label: string; value: string; sub?: string };
-
 // ── Animated counter hook ─────────────────────────────────────────────────────
 function useCountUp(target: number, duration = 1800, started = false) {
   const [val, setVal] = useState(0);
@@ -205,14 +204,14 @@ function useInView(threshold = 0.2) {
 }
 
 // ── Impact counter card ───────────────────────────────────────────────────────
-function ImpactCounter({ value, suffix = "", label, started }: {
-  value: number; suffix?: string; label: string; started: boolean;
+function ImpactCounter({ value, prefix = "", suffix = "", label, started }: {
+  value: number; prefix?: string; suffix?: string; label: string; started: boolean;
 }) {
   const count = useCountUp(value, 1800, started);
   return (
     <div className="ts-impactCard">
       <div className="ts-impactValue">
-        {count.toLocaleString()}{suffix}
+        {prefix}{count.toLocaleString()}{suffix}
       </div>
       <div className="ts-impactLabel">{label}</div>
     </div>
@@ -220,16 +219,6 @@ function ImpactCounter({ value, suffix = "", label, started }: {
 }
 
 export default function Landing() {
-  const stats: Stat[] = useMemo(
-    () => [
-      { label: "Impact Events", value: "3600/sec", sub: "Burst-mode capture" },
-      { label: "Matrix Cells", value: "96", sub: "12×8 sensor grid" },
-      { label: "Latency", value: "<100ms", sub: "Realtime feedback loop" },
-      { label: "Modes", value: "Listen + Burst", sub: "Smart trigger switching" },
-    ],
-    []
-  );
-
   const { ref: impactRef, inView: impactInView } = useInView();
   const { ref: navRef, inView: _navInView } = useInView(0);
   const [scrolled, setScrolled] = useState(false);
@@ -304,22 +293,16 @@ export default function Landing() {
 
   const testimonials = [
     {
-      quote: "We've never had this level of objectivity in the weight room. Trench tells us things we couldn't see before — and does it without slowing anyone down.",
-      name: "Coach D. Harmon",
-      title: "Director of Strength & Conditioning",
-      org: "Division I Football Program",
+      quote: "Trench Sports is the new and improved way for athletes, especially football players, to train. The pad helps me learn and track how much force I'm applying and how accurate my punch is. Especially being a Defensive Lineman, this pad will help and elevate my game to the next level!",
+      name: "VJ",
+      title: "Defensive Lineman",
+      org: "",
     },
     {
-      quote: "Setup is 30 seconds. Athletes forget it's there. And the data we pull out of every session has completely changed how we program.",
-      name: "Marcus T.",
-      title: "Head S&C Coach",
-      org: "Professional Soccer Club",
-    },
-    {
-      quote: "The heatmaps alone are worth it. Seeing load distribution across every rep — that's a conversation-changer with medical staff and position coaches.",
-      name: "Dr. S. Okafor",
-      title: "Sports Science Lead",
-      org: "Elite Performance Facility",
+      quote: "Trench Sports' new pad is honestly really cool. What stood out to me most was being able to see where I hit and how hard I hit in real time — it adds a whole new level to training. It's not just reps anymore, it's feedback you can actually use. Definitely a game changer.",
+      name: "Tyshon Reed",
+      title: "Athlete",
+      org: "",
     },
   ];
 
@@ -428,26 +411,6 @@ export default function Landing() {
       </section>
       */}
 
-      {/* ── STATS ─────────────────────────────────────────────────────── */}
-      <section className="ts-section" id="stats">
-        <div className="ts-container">
-          <div className="ts-sectionTitleRow">
-            <h2 className="ts-h2">Performance-grade capture</h2>
-            <p className="ts-muted">Fast sampling + clean outputs. Built to scale from individual training to team use.</p>
-          </div>
-
-          <div className="ts-statGrid">
-            {stats.map((s) => (
-              <div key={s.label} className="ts-statCard">
-                <div className="ts-statLabel">{s.label}</div>
-                <div className="ts-statValue">{s.value}</div>
-                {s.sub ? <div className="ts-statSub">{s.sub}</div> : null}
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
       {/* ── HOW IT WORKS ──────────────────────────────────────────────── */}
       <section className="ts-section" id="how-it-works">
         <div className="ts-container">
@@ -529,7 +492,7 @@ export default function Landing() {
             <ImpactCounter value={2400000} suffix="+" label="Impact Events Logged" started={impactInView} />
             <ImpactCounter value={96} label="Sensor Cells Per Pad" started={impactInView} />
             <ImpactCounter value={3600} suffix="/sec" label="Max Sampling Rate" started={impactInView} />
-            <ImpactCounter value={120} suffix="+" label="Teams & Programs" started={impactInView} />
+            <ImpactCounter value={100} prefix="<" suffix="ms" label="Feedback Latency" started={impactInView} />
           </div>
         </div>
       </section>
@@ -557,12 +520,11 @@ export default function Landing() {
       </section>
 
       {/* ── TESTIMONIALS ──────────────────────────────────────────────── */}
-      {/*
       <section className="ts-section" id="testimonials">
         <div className="ts-container">
           <div className="ts-sectionTitleRow" style={{ textAlign: "center", justifyItems: "center", marginBottom: 32 }}>
-            <div className="ts-kicker">What Coaches Say</div>
-            <h2 className="ts-h2">Real results, from real programs.</h2>
+            <div className="ts-kicker">What Athletes Say</div>
+            <h2 className="ts-h2">Real feedback, from real athletes.</h2>
           </div>
 
           <div className="ts-testimonialGrid">
@@ -577,7 +539,7 @@ export default function Landing() {
                   <div>
                     <div className="ts-quoteName">{t.name}</div>
                     <div className="ts-quoteTitle">{t.title}</div>
-                    <div className="ts-quoteOrg">{t.org}</div>
+                    {t.org && <div className="ts-quoteOrg">{t.org}</div>}
                   </div>
                 </div>
               </div>
@@ -585,7 +547,6 @@ export default function Landing() {
           </div>
         </div>
       </section>
-      */}
 
       {/* ── FINAL CTA ─────────────────────────────────────────────────── */}
       <section className="ts-ctaBanner">
@@ -616,7 +577,7 @@ export default function Landing() {
       {/* ── FOOTER ────────────────────────────────────────────────────── */}
       <footer className="ts-footer">
         <div className="ts-container ts-footerRow">
-          <div className="ts-footerBrand">Trench Sports</div>
+          <div className="ts-footerBrand"><FooterLogo /></div>
           <div className="ts-footerLinks">
             <Link to="/signup">Signup</Link>
             <Link to="/dashboard">Dashboard</Link>

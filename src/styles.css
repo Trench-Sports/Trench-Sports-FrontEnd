@@ -1320,7 +1320,21 @@ code {
 .ts-footerBrand {
     font-weight: 950;
     letter-spacing: 0.2px;
+    display: flex;
+    align-items: center;
 }
+
+.ts-footerLogo {
+    height: 48px;
+    width: auto;
+    object-fit: contain;
+    display: block;
+}
+
+/* Default (dark) shows the dark logo; light theme swaps to the light logo. */
+.ts-footerLogo--light { display: none; }
+:root[data-theme="light"] .ts-footerLogo--dark { display: none; }
+:root[data-theme="light"] .ts-footerLogo--light { display: block; }
 
 .ts-footerLinks {
     display: flex;
@@ -3985,10 +3999,10 @@ html.is-native .ts-webOnly {
     list-style: none;
     margin: 0;
     /* Left padding clears the track line */
-    padding: 0 0 0 14px;
+    padding: 0 0 0 10px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 6px;
     align-items: flex-start;
 }
 
@@ -4001,9 +4015,13 @@ html.is-native .ts-webOnly {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 0;
-    border: none;
+    /* Balanced padding wraps the dot + label so the pill is centred on both. */
+    padding: 7px 14px 7px 10px;
+    border: 1px solid transparent;
+    border-radius: 999px;
     background: transparent;
+    /* Neutralise the leaked global <button> chrome (shadow ring / lift). */
+    box-shadow: none;
     color: var(--text);
     font-size: 12px;
     font-weight: 700;
@@ -4012,18 +4030,42 @@ html.is-native .ts-webOnly {
     opacity: 0.35;
     letter-spacing: 0.2px;
     transition:
-        opacity   180ms ease,
-        transform 180ms ease;
+        opacity    180ms ease,
+        transform  180ms ease,
+        background 180ms ease,
+        border-color 180ms ease,
+        box-shadow 180ms ease;
 }
 
 .lnav-item:hover {
     opacity: 0.80;
     transform: translateX(3px);
+    background: rgba(255, 255, 255, 0.05);
+    border-color: transparent;
+    box-shadow: none;
 }
 
-.lnav-item--active {
+.lnav-item:active {
+    box-shadow: none;
+}
+
+/* Keyboard focus: a ring that hugs the pill's own radius (no offset), so it
+   never bleeds into the neighbouring items or clips the dot. */
+.lnav-item:focus-visible {
+    outline: none;
+    border-color: rgba(180, 0, 255, 0.70);
+    box-shadow: 0 0 0 2px rgba(180, 0, 255, 0.30);
+}
+
+.lnav-item--active,
+.lnav-item--active:hover {
     opacity: 1;
     transform: translateX(4px);
+    background: rgba(180, 0, 255, 0.10);
+    border-color: rgba(180, 0, 255, 0.55);
+    box-shadow:
+        0 0 0 1px rgba(180, 0, 255, 0.15),
+        0 4px 16px rgba(180, 0, 255, 0.18);
 }
 
 

@@ -1,5 +1,6 @@
 // src/pages/contact.tsx
 import React, { useState } from "react";
+import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
 
 /* ─── Types ─────────────────────────────────────────────── */
@@ -360,7 +361,7 @@ export default function Contact() {
       {/* ── FOOTER ────────────────────────────────────────── */}
       <footer className="ts-footer">
         <div className="ts-container ts-footerRow">
-          <div className="ts-footerBrand">Trench Sports</div>
+          <div className="ts-footerBrand"><FooterLogo /></div>
           <div className="ts-footerLinks">
             <Link to="/">Home</Link>
             <Link to="/signup">Signup</Link>

@@ -11,8 +11,8 @@ import TopBar from "./topBar.js";
 import { initTheme, toggleTheme } from "../lib/themeManager.tsx";
 import { usePlatform } from "../hooks/usePlatform";
 
-import logoDark from "../images/TS.png";
-import logoLight from "../images/Trench Sports Logo Power Purple.png";
+import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
+import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 
 // ── Bottom nav tabs — point at the /m/* routes so native taps stay on the
 //    mobile pages even if the shell ever falls through to AppLayout.

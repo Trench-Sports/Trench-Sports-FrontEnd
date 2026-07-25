@@ -12,12 +12,11 @@ export type NavSection = {
 
 export const LANDING_NAV_SECTIONS: NavSection[] = [
   { id: "hero",          label: "Home"         },
-  { id: "stats",         label: "Performance"  },
   { id: "how-it-works",  label: "How It Works" },
   { id: "platform",      label: "Platform"     },
   { id: "proof",         label: "Results"      },
   { id: "use-cases",     label: "Use Cases"    },
-  { id: "testimonials",  label: "Coaches Say"  },
+  { id: "testimonials",  label: "Athletes Say" },
 ];
 
 type LandingNavProps = {

@@ -3,6 +3,9 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 
+import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
+import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
+
 type Role = "coach" | "admin";
 
 function getTheme(): "dark" | "light" {
@@ -34,8 +37,7 @@ export default function Signup() {
     return () => obs.disconnect();
   }, []);
 
-  const logoSrc =
-    theme === "dark" ? "/src/images/TS.png" : "/src/images/Trench Sports Logo Power Purple.png";
+  const logoSrc = theme === "dark" ? logoDark : logoLight;
 
   const [role, setRole] = useState<Role>("coach");
   const [firstName, setFirstName] = useState("");

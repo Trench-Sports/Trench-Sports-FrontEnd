@@ -969,6 +969,11 @@ export default function HitSimulator() {
 
         .ts-sim-modeTab {
           flex: 1;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
           padding: 10px 16px;
           border-radius: 10px;
           border: none;
@@ -979,6 +984,11 @@ export default function HitSimulator() {
           transition: all 200ms ease;
           background: transparent;
           color: var(--muted);
+        }
+
+        .ts-sim-modeTabIcon {
+          font-size: 18px;
+          line-height: 1;
         }
 
         @media (max-width: 560px) {
@@ -1291,7 +1301,8 @@ export default function HitSimulator() {
                   boxShadow: `0 0 0 1px ${MODE_META[m].color}55`,
                 } : {}}
               >
-                {MODE_META[m].icon} {m}
+                <span className="ts-sim-modeTabIcon">{MODE_META[m].icon}</span>
+                <span className="ts-sim-modeTabLabel">{m}</span>
               </button>
             ))}
           </div>
