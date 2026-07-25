@@ -2,11 +2,17 @@
 import React, { useState } from "react";
 import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
+import {
+  IconFileText, IconCheck, IconAlertTriangle, IconUser, IconClipboard,
+  IconSettings, IconBarChart, IconLock, IconCopyright, IconCreditCard,
+  IconScale, IconHandshake, IconPin, IconLogout, IconMail,
+  IconCrosshair, IconBan, IconKey, type IconProps,
+} from "../components/icons";
 
 /* ─── Section data ───────────────────────────────────────── */
 type Section = {
   id: string;
-  icon: string;
+  Icon: React.ComponentType<IconProps>;
   title: string;
   content: React.ReactNode;
 };
@@ -14,7 +20,7 @@ type Section = {
 const SECTIONS: Section[] = [
   {
     id: "agreement",
-    icon: "📄",
+    Icon: IconFileText,
     title: "Agreement to terms",
     content: (
       <>
@@ -40,7 +46,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "eligibility",
-    icon: "✅",
+    Icon: IconCheck,
     title: "Eligibility",
     content: (
       <>
@@ -54,13 +60,13 @@ const SECTIONS: Section[] = [
           If you are signing up on behalf of a team, program, or organization (a "Participating
           Organization"), you represent that you have the authority to bind that organization to
           these Terms. You agree to contact us at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-termsLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-termsLink">
+            calvin@trenchsports.ai
           </a>{" "}
           if you believe you've accepted these Terms in error.
         </p>
         <div className="ts-termsCallout">
-          <span className="ts-termsCalloutIcon">⚠️</span>
+          <span className="ts-termsCalloutIcon"><IconAlertTriangle size={18} /></span>
           <p>
             <strong>Health disclaimer:</strong> You are solely responsible for ensuring you are
             physically fit to use the Services and any associated equipment. Trench Sports is a
@@ -73,7 +79,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "accounts",
-    icon: "👤",
+    Icon: IconUser,
     title: "Accounts & user roles",
     content: (
       <>
@@ -102,8 +108,8 @@ const SECTIONS: Section[] = [
         <p>
           You are responsible for maintaining the confidentiality of your login credentials and for
           all activity that occurs under your account. You agree to notify us immediately at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-termsLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-termsLink">
+            calvin@trenchsports.ai
           </a>{" "}
           if you suspect unauthorized access.
         </p>
@@ -117,7 +123,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "use",
-    icon: "📋",
+    Icon: IconClipboard,
     title: "Acceptable use",
     content: (
       <>
@@ -144,7 +150,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "hardware",
-    icon: "🎛",
+    Icon: IconSettings,
     title: "Hardware & sensor devices",
     content: (
       <>
@@ -173,7 +179,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "data",
-    icon: "📊",
+    Icon: IconBarChart,
     title: "Your data & content",
     content: (
       <>
@@ -194,7 +200,7 @@ const SECTIONS: Section[] = [
           data on behalf of athlete users.
         </p>
         <div className="ts-termsCallout ts-termsCallout--purple">
-          <span className="ts-termsCalloutIcon">🔒</span>
+          <span className="ts-termsCalloutIcon"><IconLock size={18} /></span>
           <p>
             Data is encrypted in transit and at rest. Row-level security ensures no user can access
             another program's data. For full details on how we handle your data, see our{" "}
@@ -206,7 +212,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "ip",
-    icon: "©️",
+    Icon: IconCopyright,
     title: "Intellectual property",
     content: (
       <>
@@ -231,7 +237,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "subscriptions",
-    icon: "💳",
+    Icon: IconCreditCard,
     title: "Subscriptions & billing",
     content: (
       <>
@@ -262,8 +268,8 @@ const SECTIONS: Section[] = [
         </ul>
         <p>
           Questions about billing? Contact us at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-termsLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-termsLink">
+            calvin@trenchsports.ai
           </a>
           .
         </p>
@@ -272,7 +278,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "disclaimers",
-    icon: "⚖️",
+    Icon: IconScale,
     title: "Disclaimers & limitation of liability",
     content: (
       <>
@@ -297,7 +303,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "disputes",
-    icon: "🤝",
+    Icon: IconHandshake,
     title: "Disputes & governing law",
     content: (
       <>
@@ -306,13 +312,13 @@ const SECTIONS: Section[] = [
           conflict of law principles. You agree that any dispute arising out of or relating to
           these Terms or the Services will first be attempted to be resolved informally by
           contacting us at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-termsLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-termsLink">
+            calvin@trenchsports.ai
           </a>
           .
         </p>
         <div className="ts-termsCallout">
-          <span className="ts-termsCalloutIcon">📌</span>
+          <span className="ts-termsCalloutIcon"><IconPin size={18} /></span>
           <p>
             <strong>Arbitration:</strong> If informal resolution fails, disputes will be resolved
             through binding individual arbitration rather than in court. You have 30 days from first
@@ -329,7 +335,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "termination",
-    icon: "🚪",
+    Icon: IconLogout,
     title: "Termination",
     content: (
       <>
@@ -356,7 +362,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "contact",
-    icon: "✉️",
+    Icon: IconMail,
     title: "Contact & notices",
     content: (
       <>
@@ -366,8 +372,8 @@ const SECTIONS: Section[] = [
         <div className="ts-termsContactBlock">
           <div className="ts-termsContactRow">
             <span className="ts-termsContactLabel">Email</span>
-            <a href="mailto:jaylen@trenchsports.ai" className="ts-termsLink">
-              jaylen@trenchsports.ai
+            <a href="mailto:calvin@trenchsports.ai" className="ts-termsLink">
+              calvin@trenchsports.ai
             </a>
           </div>
           <div className="ts-termsContactRow">
@@ -451,29 +457,29 @@ export default function Terms() {
           <div className="ts-termsSummaryGrid">
             {[
               {
-                icon: "🎯",
+                Icon: IconCrosshair,
                 title: "You own your data",
                 body: "Performance data you generate is yours. We only use it to run your dashboard and — optionally — improve our AI.",
               },
               {
-                icon: "🚫",
+                Icon: IconBan,
                 title: "No selling your data",
                 body: "We don't monetize user data. No ads, no data brokers, no third-party sharing. Ever.",
               },
               {
-                icon: "🔑",
+                Icon: IconKey,
                 title: "You control your account",
                 body: "Cancel, export, or delete anytime. No lock-in contracts. Your access runs through the billing period.",
               },
               {
-                icon: "📋",
+                Icon: IconClipboard,
                 title: "Use it fairly",
                 body: "The platform is for athletic performance. Don't reverse-engineer it, scrape it, or use it to build a competitor.",
               },
             ].map((c) => (
               <div key={c.title} className="ts-termsSummaryCard">
                 <div className="ts-termsSummaryGlow" />
-                <span className="ts-termsSummaryIcon">{c.icon}</span>
+                <span className="ts-termsSummaryIcon"><c.Icon size={26} /></span>
                 <h3 className="ts-h3" style={{ margin: "10px 0 6px", fontSize: 15 }}>{c.title}</h3>
                 <p className="ts-muted" style={{ fontSize: 13, margin: 0 }}>{c.body}</p>
               </div>
@@ -498,7 +504,7 @@ export default function Terms() {
                     document.getElementById(`ts-term-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
                   }}
                 >
-                  <span>{s.icon}</span> {s.title}
+                  <s.Icon size={15} /> {s.title}
                 </button>
               ))}
             </div>
@@ -525,7 +531,7 @@ export default function Terms() {
                   >
                     <span className="ts-termsSectionLeft">
                       <span className="ts-termsSectionNum">{String(idx + 1).padStart(2, "0")}</span>
-                      <span className="ts-termsSectionEmoji">{sec.icon}</span>
+                      <span className="ts-termsSectionEmoji"><sec.Icon size={18} /></span>
                       <span className="ts-termsSectionTitle">{sec.title}</span>
                     </span>
                     <span className="ts-termsChevron" aria-hidden>
@@ -553,7 +559,7 @@ export default function Terms() {
           <div className="ts-termsCtaCard">
             <div className="ts-termsCtaGlow" />
             <div className="ts-termsCtaContent">
-              <span style={{ fontSize: 32, lineHeight: 1 }}>⚖️</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)", lineHeight: 1 }}><IconScale size={32} /></span>
               <div>
                 <h3 className="ts-h3" style={{ margin: "0 0 6px" }}>Questions about these terms?</h3>
                 <p className="ts-muted" style={{ margin: 0, fontSize: 14 }}>
@@ -563,7 +569,7 @@ export default function Terms() {
               </div>
             </div>
             <div className="ts-termsCtaActions">
-              <a href="mailto:jaylen@trenchsports.ai" className="ts-btnPrimary">
+              <a href="mailto:calvin@trenchsports.ai" className="ts-btnPrimary">
                 Email us
               </a>
               <Link to="/privacy" className="ts-btnSecondary">
@@ -656,7 +662,7 @@ export default function Terms() {
           background: radial-gradient(circle, rgba(180,0,255,0.14) 0%, transparent 70%);
           pointer-events: none;
         }
-        .ts-termsSummaryIcon { font-size: 26px; line-height: 1; }
+        .ts-termsSummaryIcon { display: inline-flex; align-items: center; color: var(--accent); line-height: 1; }
 
         /* ── TOC ── */
         .ts-termsToc {
@@ -755,7 +761,7 @@ export default function Terms() {
           opacity: 0.7;
           min-width: 20px;
         }
-        .ts-termsSectionEmoji { font-size: 18px; line-height: 1; flex-shrink: 0; }
+        .ts-termsSectionEmoji { display: inline-flex; align-items: center; color: var(--accent); line-height: 1; flex-shrink: 0; }
         .ts-termsSectionTitle { font-size: 15px; font-weight: 800; letter-spacing: 0.1px; }
         .ts-termsChevron {
           flex-shrink: 0;
@@ -837,7 +843,7 @@ export default function Terms() {
           margin: 0 !important;
           font-size: 13.5px !important;
         }
-        .ts-termsCalloutIcon { font-size: 18px; line-height: 1.4; flex-shrink: 0; }
+        .ts-termsCalloutIcon { display: inline-flex; align-items: center; color: var(--accent); line-height: 1.4; flex-shrink: 0; }
 
         /* Link */
         .ts-termsLink {

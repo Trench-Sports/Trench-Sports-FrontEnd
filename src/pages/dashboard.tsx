@@ -8,6 +8,8 @@ import EditProfileModal from "../components/editProfile";
 import ProgramModal from "../components/program";
 import ManageTeamModal from "../components/manageTeam";
 import ImportRosterModal from "../components/importRoster";
+import ExportSessionsModal from "../components/exportSessionsModal";
+import { IconDownload } from "../components/icons";
 import { supabase } from "../supabaseClient";
 import StrikeCompass from "../components/strikeCompass";
 
@@ -127,6 +129,7 @@ export default function Dashboard() {
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [showProgram, setShowProgram] = useState(false);
   const [showImportRoster, setShowImportRoster] = useState(false);
+  const [showExport, setShowExport] = useState(false);
 
   // ---------- profile ----------
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -1070,8 +1073,8 @@ export default function Dashboard() {
   }
 
   // ---------- Leaderboard ----------
-  type LeaderDateRange = 7 | 30 | 90 | "all";
-  const [leaderDateRange, setLeaderDateRange] = useState<LeaderDateRange>(30);
+  type LeaderDateRange = 30 | 90 | "all";
+  const [leaderDateRange, setLeaderDateRange] = useState<LeaderDateRange>("all");
   const leaderCutoff = useMemo<string | null>(() => {
     if (leaderDateRange === "all") return null;
     const d = new Date();
@@ -2537,6 +2540,15 @@ export default function Dashboard() {
           userId={currentUserId}
         />
       )}
+
+      <ExportSessionsModal
+        open={showExport}
+        onClose={() => setShowExport(false)}
+        programId={programId}
+        userRole={userRole}
+        coreTeamId={coreTeamId}
+        athletes={athletes}
+      />
 
       {/* PROFILE HEADER — null while fetching, populates once Supabase responds */}
       <ProfileHeader
@@ -5033,9 +5045,48 @@ export default function Dashboard() {
         const hasAnyData   = strengthRows.length > 0 || reactionRows.length > 0 || accuracyRows.length > 0;
         const ink          = isDark ? "255,255,255" : "20,20,40";
 
+        // ── DATE RANGE FILTER — shared across empty + populated states so it is
+        //    always visible (otherwise narrowing to a range with no data would
+        //    flip to the onboarding view and hide the control, trapping the user).
+        const dateRangeBar = (
+          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.45 }}>Date Range</span>
+              <span style={{ fontSize: 11, opacity: 0.32 }}>Applies to all leaderboards &amp; Most Improved</span>
+            </div>
+            <div style={{ display: "inline-flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="ts-btn ts-btnGhost"
+                onClick={() => setShowExport(true)}
+                style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12.5, height: 38 }}
+              >
+                <IconDownload size={15} /> Export CSV
+              </button>
+              <div style={{ display: "inline-flex", flexDirection: "column", gap: 4 }}>
+                <label className="ts-leaderLabel" htmlFor="leaderDateRange">Range</label>
+                <select
+                  id="leaderDateRange"
+                  className="ts-select"
+                  value={String(leaderDateRange)}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setLeaderDateRange(v === "all" ? "all" : (Number(v) as LeaderDateRange));
+                  }}
+                >
+                  <option value="all">All time</option>
+                  <option value="90">Last 90 days</option>
+                  <option value="30">Last 30 days</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        );
+
         // ── Full onboarding state — shown while loading finishes or when truly no data ──
         if (!isLoadingAny && !hasAnyData) return (
           <div className="ts-dashGrid ts-dashMain">
+            {dateRangeBar}
             <div style={{ gridColumn: "1 / -1" }}>
 
               {/* Hero prompt */}
@@ -5162,51 +5213,7 @@ export default function Dashboard() {
         <div className="ts-dashGrid ts-dashMain">
 
           {/* ── DATE RANGE FILTER — controls all leaderboards + most improved ── */}
-          <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-              <span style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.07em", textTransform: "uppercase", opacity: 0.45 }}>Date Range</span>
-              <span style={{ fontSize: 11, opacity: 0.32 }}>Applies to all leaderboards &amp; Most Improved</span>
-            </div>
-            <div style={{
-              display: "inline-flex",
-              background: isDark ? "rgba(255,255,255,0.04)" : "rgba(20,20,40,0.04)",
-              border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`,
-              borderRadius: 10, padding: 3, gap: 2,
-            }}>
-              {([7, 30, 90, "all"] as LeaderDateRange[]).map(r => {
-                const isActive = leaderDateRange === r;
-                const ink = isDark ? "255,255,255" : "20,20,40";
-                return (
-                  <button
-                    key={String(r)}
-                    type="button"
-                    onClick={() => setLeaderDateRange(r)}
-                    style={{
-                      padding: "6px 14px",
-                      borderRadius: 7,
-                      border: isActive
-                        ? isDark ? "1px solid rgba(180,0,255,0.55)" : `1px solid rgba(${ink},0.28)`
-                        : "1px solid transparent",
-                      background: isActive
-                        ? isDark ? "rgba(180,0,255,0.18)" : `rgba(${ink},0.09)`
-                        : "transparent",
-                      color: isActive
-                        ? isDark ? "rgba(210,140,255,0.96)" : `rgba(${ink},0.92)`
-                        : `rgba(${ink},0.45)`,
-                      font: "inherit",
-                      fontSize: 12,
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      transition: "all 140ms ease",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {r === "all" ? "All time" : `${r}d`}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          {dateRangeBar}
 
           {/* ── ATHLETE SECTION HEADER ── */}
           <div className="ts-span2" style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingBottom: 4 }}>

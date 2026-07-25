@@ -2,16 +2,20 @@
 import React, { useState } from "react";
 import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
+import {
+  IconMessage, IconWrench, IconHandshake, IconNewspaper, IconZap,
+  IconMail, IconCheck, type IconProps,
+} from "../components/icons";
 
 /* ─── Types ─────────────────────────────────────────────── */
 type InquiryType = "general" | "support" | "partnership" | "press" | "feedback";
 
-const INQUIRY_OPTIONS: { value: InquiryType; label: string; emoji: string }[] = [
-  { value: "general",     label: "General Inquiry",  emoji: "💬" },
-  { value: "support",     label: "Technical Support", emoji: "🛠" },
-  { value: "partnership", label: "Partnership",       emoji: "🤝" },
-  { value: "press",       label: "Press / Media",     emoji: "📰" },
-  { value: "feedback",    label: "Product Feedback",  emoji: "⚡" },
+const INQUIRY_OPTIONS: { value: InquiryType; label: string; Icon: React.ComponentType<IconProps> }[] = [
+  { value: "general",     label: "General Inquiry",   Icon: IconMessage },
+  { value: "support",     label: "Technical Support", Icon: IconWrench },
+  { value: "partnership", label: "Partnership",       Icon: IconHandshake },
+  { value: "press",       label: "Press / Media",     Icon: IconNewspaper },
+  { value: "feedback",    label: "Product Feedback",  Icon: IconZap },
 ];
 
 type FAQ = { q: string; a: string };
@@ -47,7 +51,7 @@ const FAQS: FAQ[] = [
   },
   {
     q: "How do I report a bug or request a feature?",
-    a: "Use the contact form on this page and select “Product Feedback” as the inquiry type. Our team reviews every submission. For urgent bugs, email jaylen@trenchsports.ai directly with 'BUG' in the subject line for faster triage.",
+    a: "Use the contact form on this page and select “Product Feedback” as the inquiry type. Our team reviews every submission. For urgent bugs, email calvin@trenchsports.ai directly with 'BUG' in the subject line for faster triage.",
   },
 ];
 
@@ -74,7 +78,7 @@ export default function Contact() {
     const body = encodeURIComponent(
       `Name: ${name}\nEmail: ${email}\nInquiry: ${inquiry}\n\n${message}`
     );
-    window.location.href = `mailto:jaylen@trenchsports.ai?subject=${sub}&body=${body}`;
+    window.location.href = `mailto:calvin@trenchsports.ai?subject=${sub}&body=${body}`;
     setSent(true);
   }
 
@@ -111,11 +115,11 @@ export default function Contact() {
 
           {/* Quick-contact pills */}
           <div className="ts-contactQuickRow">
-            <a className="ts-contactQuickPill" href="mailto:jaylen@trenchsports.ai">
+            <a className="ts-contactQuickPill" href="mailto:calvin@trenchsports.ai">
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
               </svg>
-              jaylen@trenchsports.ai
+              calvin@trenchsports.ai
             </a>
             <div className="ts-contactQuickPill ts-contactQuickPill--neutral">
               <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -150,7 +154,7 @@ export default function Contact() {
 
               {sent ? (
                 <div className="ts-contactSuccess">
-                  <div className="ts-contactSuccessIcon">✓</div>
+                  <div className="ts-contactSuccessIcon"><IconCheck size={26} /></div>
                   <p className="ts-h3" style={{ margin: "0 0 6px" }}>Message launched.</p>
                   <p className="ts-muted" style={{ margin: 0, fontSize: 14 }}>
                     Your email client should open with the message pre-filled.
@@ -177,7 +181,7 @@ export default function Contact() {
                           className={`ts-inquiryPill ${inquiry === opt.value ? "active" : ""}`}
                           onClick={() => setInquiry(opt.value)}
                         >
-                          <span>{opt.emoji}</span> {opt.label}
+                          <opt.Icon size={15} />{opt.label}
                         </button>
                       ))}
                     </div>
@@ -240,7 +244,7 @@ export default function Contact() {
               <div className="ts-newsCard">
                 <div className="ts-newsGlow" />
                 <div className="ts-newsTop">
-                  <span className="ts-newsIcon">⚡</span>
+                  <span className="ts-newsIcon"><IconZap size={22} /></span>
                   <div>
                     <p className="ts-newsTitle">Stay in the loop</p>
                     <p className="ts-muted" style={{ fontSize: 13, margin: 0 }}>
@@ -251,7 +255,7 @@ export default function Contact() {
 
                 {subscribed ? (
                   <div className="ts-newsSuccess">
-                    <span>✓</span> You're subscribed — welcome to the grind.
+                    <IconCheck size={16} /> You're subscribed — welcome to the grind.
                   </div>
                 ) : (
                   <form className="ts-newsForm" onSubmit={handleSubscribe}>
@@ -276,7 +280,7 @@ export default function Contact() {
 
               {/* Info cards */}
               <div className="ts-contactInfoCard">
-                <div className="ts-contactInfoIcon">🛠</div>
+                <div className="ts-contactInfoIcon"><IconWrench size={20} /></div>
                 <div>
                   <p className="ts-contactInfoTitle">Technical Support</p>
                   <p className="ts-muted" style={{ fontSize: 13, margin: 0 }}>
@@ -286,7 +290,7 @@ export default function Contact() {
               </div>
 
               <div className="ts-contactInfoCard">
-                <div className="ts-contactInfoIcon">🤝</div>
+                <div className="ts-contactInfoIcon"><IconHandshake size={20} /></div>
                 <div>
                   <p className="ts-contactInfoTitle">Partnerships & Programs</p>
                   <p className="ts-muted" style={{ fontSize: 13, margin: 0 }}>
@@ -296,14 +300,14 @@ export default function Contact() {
               </div>
 
               <div className="ts-contactInfoCard">
-                <div className="ts-contactInfoIcon">📬</div>
+                <div className="ts-contactInfoIcon"><IconMail size={20} /></div>
                 <div>
                   <p className="ts-contactInfoTitle">Direct line</p>
                   <a
-                    href="mailto:jaylen@trenchsports.ai"
+                    href="mailto:calvin@trenchsports.ai"
                     className="ts-contactDirectEmail"
                   >
-                    jaylen@trenchsports.ai
+                    calvin@trenchsports.ai
                   </a>
                 </div>
               </div>
@@ -320,8 +324,8 @@ export default function Contact() {
             <h2 className="ts-h2">Frequently asked questions</h2>
             <p className="ts-muted">
               Can't find the answer? Hit us at{" "}
-              <a href="mailto:jaylen@trenchsports.ai" style={{ color: "var(--accent)" }}>
-                jaylen@trenchsports.ai
+              <a href="mailto:calvin@trenchsports.ai" style={{ color: "var(--accent)" }}>
+                calvin@trenchsports.ai
               </a>
             </p>
           </div>
@@ -586,7 +590,9 @@ export default function Contact() {
           margin-bottom: 16px;
         }
         .ts-newsIcon {
-          font-size: 22px;
+          display: inline-flex;
+          align-items: center;
+          color: var(--accent);
           line-height: 1;
           flex-shrink: 0;
           margin-top: 1px;
@@ -637,7 +643,7 @@ export default function Contact() {
           border-color: rgba(180,0,255,0.28);
           transform: translateY(-1px);
         }
-        .ts-contactInfoIcon { font-size: 20px; flex-shrink: 0; line-height: 1; margin-top: 2px; }
+        .ts-contactInfoIcon { display: inline-flex; align-items: center; color: var(--accent); flex-shrink: 0; line-height: 1; margin-top: 2px; }
         .ts-contactInfoTitle { font-weight: 900; font-size: 14px; margin: 0 0 3px; }
         .ts-contactDirectEmail {
           font-size: 13px;

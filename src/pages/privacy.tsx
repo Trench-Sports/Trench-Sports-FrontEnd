@@ -2,11 +2,16 @@
 import React, { useState } from "react";
 import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
+import {
+  IconActivity, IconSettings, IconLock, IconShield, IconSparkles, IconZap,
+  IconUserCheck, IconCalendar, IconClipboard, IconKey, IconDatabase,
+  IconLayers, IconSearch, IconMail, type IconProps,
+} from "../components/icons";
 
 /* ─── Section data ───────────────────────────────────────── */
 type Section = {
   id: string;
-  icon: string;
+  Icon: React.ComponentType<IconProps>;
   title: string;
   content: React.ReactNode;
 };
@@ -14,7 +19,7 @@ type Section = {
 const SECTIONS: Section[] = [
   {
     id: "collect",
-    icon: "📡",
+    Icon: IconActivity,
     title: "What we collect",
     content: (
       <>
@@ -38,7 +43,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "use",
-    icon: "⚙️",
+    Icon: IconSettings,
     title: "How we use your data",
     content: (
       <>
@@ -62,12 +67,12 @@ const SECTIONS: Section[] = [
   },
   {
     id: "sharing",
-    icon: "🔒",
+    Icon: IconLock,
     title: "No third-party sharing",
     content: (
       <>
         <div className="ts-privacyCallout">
-          <span className="ts-privacyCalloutIcon">🛡</span>
+          <span className="ts-privacyCalloutIcon"><IconShield size={18} /></span>
           <p>
             <strong>Trench Sports does not sell, rent, license, or share your personal data
             with any third party</strong> — full stop. Your performance data belongs to you
@@ -102,7 +107,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "security",
-    icon: "🔐",
+    Icon: IconShield,
     title: "How we secure your data",
     content: (
       <>
@@ -114,13 +119,13 @@ const SECTIONS: Section[] = [
         </p>
         <div className="ts-privacySecurityGrid">
           {[
-            { icon: "🔑", label: "TLS 1.2+", sub: "Encryption in transit" },
-            { icon: "🗄", label: "AES-256", sub: "Encryption at rest" },
-            { icon: "🧱", label: "Row-level security", sub: "Per-account data isolation" },
-            { icon: "🔍", label: "Access logging", sub: "Audit trails on all reads" },
+            { Icon: IconKey, label: "TLS 1.2+", sub: "Encryption in transit" },
+            { Icon: IconDatabase, label: "AES-256", sub: "Encryption at rest" },
+            { Icon: IconLayers, label: "Row-level security", sub: "Per-account data isolation" },
+            { Icon: IconSearch, label: "Access logging", sub: "Audit trails on all reads" },
           ].map((item) => (
             <div className="ts-privacySecCard" key={item.label}>
-              <span className="ts-privacySecIcon">{item.icon}</span>
+              <span className="ts-privacySecIcon"><item.Icon size={20} /></span>
               <strong>{item.label}</strong>
               <span className="ts-muted" style={{ fontSize: 12 }}>{item.sub}</span>
             </div>
@@ -134,8 +139,8 @@ const SECTIONS: Section[] = [
         <p>
           If you believe you've discovered a security vulnerability, please report it
           directly to{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-privacyLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-privacyLink">
+            calvin@trenchsports.ai
           </a>{" "}
           with "SECURITY" in the subject line. We take all reports seriously and respond
           within 48 hours.
@@ -145,7 +150,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "ai",
-    icon: "🤖",
+    Icon: IconSparkles,
     title: "AI model training & your opt-out",
     content: (
       <>
@@ -156,7 +161,7 @@ const SECTIONS: Section[] = [
           aggregated session data to train these models.
         </p>
         <div className="ts-privacyCallout ts-privacyCallout--purple">
-          <span className="ts-privacyCalloutIcon">⚡</span>
+          <span className="ts-privacyCalloutIcon"><IconZap size={18} /></span>
           <p>
             <strong>Participation in AI model training is optional.</strong> You can opt out
             at any time from your account settings under{" "}
@@ -179,7 +184,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "rights",
-    icon: "✋",
+    Icon: IconUserCheck,
     title: "Your rights & controls",
     content: (
       <>
@@ -200,8 +205,8 @@ const SECTIONS: Section[] = [
         </ul>
         <p>
           To exercise any of these rights, visit your account settings or contact us at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-privacyLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-privacyLink">
+            calvin@trenchsports.ai
           </a>
           . We will respond within 30 days. Requests are free of charge.
         </p>
@@ -210,7 +215,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "retention",
-    icon: "🗓",
+    Icon: IconCalendar,
     title: "Data retention",
     content: (
       <>
@@ -229,7 +234,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "updates",
-    icon: "📋",
+    Icon: IconClipboard,
     title: "Policy updates",
     content: (
       <>
@@ -245,8 +250,8 @@ const SECTIONS: Section[] = [
         </p>
         <p>
           Questions about a specific change? Reach out at{" "}
-          <a href="mailto:jaylen@trenchsports.ai" className="ts-privacyLink">
-            jaylen@trenchsports.ai
+          <a href="mailto:calvin@trenchsports.ai" className="ts-privacyLink">
+            calvin@trenchsports.ai
           </a>
           .
         </p>
@@ -312,24 +317,24 @@ export default function Privacy() {
           <div className="ts-privacyCommitGrid">
             {[
               {
-                icon: "🛡",
+                Icon: IconShield,
                 title: "Zero third-party sharing",
                 body: "Your performance data is never sold, licensed, or shared with advertisers, data brokers, or any external party.",
               },
               {
-                icon: "🔐",
+                Icon: IconLock,
                 title: "Enterprise-grade security",
                 body: "AES-256 at rest, TLS in transit, row-level isolation, and access audit logs — protecting every byte we hold.",
               },
               {
-                icon: "⚡",
+                Icon: IconZap,
                 title: "AI training is opt-in",
                 body: "Contributing your data to improve our AI models is always your choice. Opt out anytime from your account settings.",
               },
             ].map((c) => (
               <div key={c.title} className="ts-privacyCommitCard">
                 <div className="ts-privacyCommitGlow" />
-                <span className="ts-privacyCommitIcon">{c.icon}</span>
+                <span className="ts-privacyCommitIcon"><c.Icon size={28} /></span>
                 <h3 className="ts-h3" style={{ margin: "10px 0 6px", fontSize: 16 }}>{c.title}</h3>
                 <p className="ts-muted" style={{ fontSize: 13, margin: 0 }}>{c.body}</p>
               </div>
@@ -360,7 +365,7 @@ export default function Privacy() {
                     aria-expanded={isOpen}
                   >
                     <span className="ts-privacySectionLeft">
-                      <span className="ts-privacySectionEmoji">{sec.icon}</span>
+                      <span className="ts-privacySectionEmoji"><sec.Icon size={20} /></span>
                       <span className="ts-privacySectionTitle">{sec.title}</span>
                     </span>
                     <span className="ts-privacyChevron" aria-hidden>
@@ -388,7 +393,7 @@ export default function Privacy() {
           <div className="ts-privacyCtaCard">
             <div className="ts-privacyCtaGlow" />
             <div className="ts-privacyCtaContent">
-              <span style={{ fontSize: 32, lineHeight: 1 }}>✉️</span>
+              <span style={{ display: "inline-flex", color: "var(--accent)", lineHeight: 1 }}><IconMail size={32} /></span>
               <div>
                 <h3 className="ts-h3" style={{ margin: "0 0 6px" }}>Questions about your privacy?</h3>
                 <p className="ts-muted" style={{ margin: 0, fontSize: 14 }}>
@@ -398,7 +403,7 @@ export default function Privacy() {
               </div>
             </div>
             <div className="ts-privacyCtaActions">
-              <a href="mailto:jaylen@trenchsports.ai" className="ts-btnPrimary">
+              <a href="mailto:calvin@trenchsports.ai" className="ts-btnPrimary">
                 Email us
               </a>
               <Link to="/contact" className="ts-btnSecondary">
@@ -491,7 +496,9 @@ export default function Privacy() {
           pointer-events: none;
         }
         .ts-privacyCommitIcon {
-          font-size: 28px;
+          display: inline-flex;
+          align-items: center;
+          color: var(--accent);
           line-height: 1;
         }
 
@@ -536,7 +543,9 @@ export default function Privacy() {
           gap: 12px;
         }
         .ts-privacySectionEmoji {
-          font-size: 20px;
+          display: inline-flex;
+          align-items: center;
+          color: var(--accent);
           line-height: 1;
           flex-shrink: 0;
         }
@@ -636,7 +645,9 @@ export default function Privacy() {
           font-size: 13.5px !important;
         }
         .ts-privacyCalloutIcon {
-          font-size: 18px;
+          display: inline-flex;
+          align-items: center;
+          color: var(--accent);
           line-height: 1.4;
           flex-shrink: 0;
         }
@@ -668,7 +679,9 @@ export default function Privacy() {
           border-color: rgba(180,0,255,0.28);
         }
         .ts-privacySecIcon {
-          font-size: 20px;
+          display: inline-flex;
+          align-items: center;
+          color: var(--accent);
           line-height: 1;
           margin-bottom: 2px;
         }

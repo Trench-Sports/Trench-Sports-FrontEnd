@@ -25,7 +25,7 @@ function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => voi
 
     setStatus("sending");
     try {
-      await fetch("https://formsubmit.co/ajax/jaylen@trenchsports.ai", {
+      await fetch("https://formsubmit.co/ajax/calvin@trenchsports.ai", {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({
@@ -295,13 +295,13 @@ export default function Landing() {
     {
       quote: "Trench Sports is the new and improved way for athletes, especially football players, to train. The pad helps me learn and track how much force I'm applying and how accurate my punch is. Especially being a Defensive Lineman, this pad will help and elevate my game to the next level!",
       name: "VJ",
-      title: "Defensive Lineman",
+      title: "Professional Football Player",
       org: "",
     },
     {
       quote: "Trench Sports' new pad is honestly really cool. What stood out to me most was being able to see where I hit and how hard I hit in real time — it adds a whole new level to training. It's not just reps anymore, it's feedback you can actually use. Definitely a game changer.",
       name: "Tyshon Reed",
-      title: "Athlete",
+      title: "D1 Football Player",
       org: "",
     },
   ];
@@ -512,7 +512,7 @@ export default function Landing() {
                 <div className="ts-useCaseIcon"><uc.Icon size={22} /></div>
                 <h3 className="ts-h3">{uc.title}</h3>
                 <p className="ts-muted">{uc.body}</p>
-                <Link className="ts-useCaseLink" to="/signup">Learn more →</Link>
+                <Link className="ts-useCaseLink" to="/contact">Learn more →</Link>
               </div>
             ))}
           </div>
