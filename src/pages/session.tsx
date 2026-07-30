@@ -5,6 +5,19 @@ import { supabase } from "../supabaseClient";
 import { initTheme } from "../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../lib/sessionSettings";
 import SessionSettingsModal from "../components/sessionSettings";
+import * as sessionOutbox from "../storage/sessionOutbox";
+import {
+  sessionStarted,
+  sessionStopped,
+  sessionDiscarded,
+  sessionUploadStarted,
+  sessionUploadStageFailed,
+  sessionUploadSucceeded,
+  bleConnectAttempted,
+  bleConnectSucceeded,
+  bleConnectFailed,
+  bleDisconnected,
+} from "../lib/telemetryEvents";
 import { useSignalAudio } from "../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../hooks/signalAudio";
 import {
@@ -1062,6 +1075,14 @@ async function uploadSession(opts: {
 
   const CHUNK = 500;
 
+  // Telemetry (finding A): track upload start + per-stage failure so partial
+  // writes are visible instead of silent. total_ms/raw_bytes also feed Panel 2.
+  const _uploadT0 = Date.now();
+  const _rawArr = frames.map(f => f.raw);
+  let _rawBytes: number | undefined;
+  try { _rawBytes = JSON.stringify(_rawArr).length; } catch { _rawBytes = undefined; }
+  sessionUploadStarted({ session_id: sessionId, event_count: frames.length, raw_bytes: _rawBytes });
+
   // ── 1. sessions ────────────────────────────────────────────────────────────
   const { error: sessErr } = await supabase.from("sessions").insert({
     id:            sessionId,
@@ -1076,10 +1097,13 @@ async function uploadSession(opts: {
     device_model:  deviceModel,
     sampling_hz:   samplingHz,
     mode,
-    raw:           frames.map(f => f.raw),
+    raw:           _rawArr,
     ...(deviceId ? { device_id: deviceId } : {}),
   });
-  if (sessErr) throw new Error(`sessions: ${sessErr.message}`);
+  if (sessErr) {
+    sessionUploadStageFailed({ session_id: sessionId, stage: "sessions", error_code: sessErr.message?.slice(0, 64) });
+    throw new Error(`sessions: ${sessErr.message}`);
+  }
   if (frames.length === 0) return;
 
   // ── 2. events — enriched ──────────────────────────────────────────────────
@@ -1184,7 +1208,10 @@ async function uploadSession(opts: {
 
   for (let i = 0; i < eventRows.length; i += CHUNK) {
     const { error } = await supabase.from("events").insert(eventRows.slice(i, i + CHUNK));
-    if (error) throw new Error(`events (chunk ${i}): ${error.message}`);
+    if (error) {
+      sessionUploadStageFailed({ session_id: sessionId, stage: "events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
+      throw new Error(`events (chunk ${i}): ${error.message}`);
+    }
   }
 
   // ── 3. event_cells ─────────────────────────────────────────────────────────
@@ -1205,7 +1232,10 @@ async function uploadSession(opts: {
   }
   for (let i = 0; i < cellRows.length; i += CHUNK) {
     const { error } = await supabase.from("event_cells").insert(cellRows.slice(i, i + CHUNK));
-    if (error) throw new Error(`event_cells (chunk ${i}): ${error.message}`);
+    if (error) {
+      sessionUploadStageFailed({ session_id: sessionId, stage: "event_cells", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
+      throw new Error(`event_cells (chunk ${i}): ${error.message}`);
+    }
   }
 
   // ── 4. session_summaries ───────────────────────────────────────────────────
@@ -1482,7 +1512,18 @@ async function uploadSession(opts: {
       decay_time_ms: decayVals.length ? statSummary(decayVals) : null,
     },
   });
-  if (sumErr) throw new Error(`session_summaries: ${sumErr.message}`);
+  if (sumErr) {
+    sessionUploadStageFailed({ session_id: sessionId, stage: "session_summaries", error_code: sumErr.message?.slice(0, 64) });
+    throw new Error(`session_summaries: ${sumErr.message}`);
+  }
+
+  sessionUploadSucceeded({
+    session_id:  sessionId,
+    total_ms:    Date.now() - _uploadT0,
+    raw_bytes:   _rawBytes,
+    event_count: frames.length,
+    cell_count:  cellRows.length,
+  });
 }
 
 // ─── ImpactRipple (identical to hitSimulator) ────────────────────────────────
@@ -2157,7 +2198,7 @@ export default function Session() {
       // Hard cap — auto-stop at the user-selected duration (30 / 45 / 60 s)
       if (elapsed >= sessionMaxMs) {
         clearInterval(id);
-        stopSession();
+        stopSession("auto_timeout");
       }
     }, 250);
     return () => clearInterval(id);
@@ -2579,6 +2620,8 @@ export default function Session() {
     if (!bleSupported) return;
     setBleStatus("scanning");
     setBleError(null);
+    const _bleT0 = Date.now();
+    bleConnectAttempted(isNativeApp() ? "ios" : "web", 0);
     try {
       let conn: AdapterConnection;
 
@@ -2607,6 +2650,11 @@ export default function Session() {
           device: picked,
           serviceUuid: NUS_SERVICE_UUID,
           onDisconnect: () => {
+            bleDisconnected({
+              during_session: captureRef.current,
+              session_elapsed_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+              slot: 0,
+            });
             setBleStatus("disconnected");
             setDeviceInfo(null);
             captureRef.current = false;
@@ -2632,6 +2680,11 @@ export default function Session() {
         // a single connect button press without requiring a second OS dialog.
         const { primary: webPrimary, legacy: webLegacy } = getBleNamePrefixes();
         const onDisc = () => {
+          bleDisconnected({
+            during_session: captureRef.current,
+            session_elapsed_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+            slot: 0,
+          });
           setBleStatus("disconnected");
           setDeviceInfo(null);
           captureRef.current = false;
@@ -2657,6 +2710,12 @@ export default function Session() {
       await adapterStartNotifications(conn, TX, handleNotify);
 
       setBleStatus("connected");
+      bleConnectSucceeded({
+        duration_ms: Date.now() - _bleT0,
+        device_model: deviceInfoRef.current?.hw === "III" ? "TSIII" : "TSII",
+        attempt_n: connectAttempt + 1,
+        slot: 0,
+      });
       setConnectAttempt(0);
       setBleError(null);
     } catch (err: any) {
@@ -2670,11 +2729,19 @@ export default function Session() {
         msg.includes("chooser");
 
       if (userCancelled) {
+        bleConnectFailed({ error_class: "cancel", attempt_n: connectAttempt + 1, slot: 0 });
         setBleStatus("idle");
         setBleError(null);
         return;
       }
 
+      bleConnectFailed({
+        error_class: (msg.includes("GATT") || msg.includes("gatt")) ? "gatt"
+          : (msg.includes("Bluetooth") || msg.includes("adapter")) ? "adapter"
+          : "unknown",
+        attempt_n: connectAttempt + 1,
+        slot: 0,
+      });
       setConnectAttempt(n => n + 1);
       setBleStatus("disconnected");
 
@@ -2686,7 +2753,7 @@ export default function Session() {
         setBleError("Could not connect. Make sure the bag is powered on and no other device is already connected to it.");
       }
     }
-  }, [bleSupported, handleNotify, openNativePicker]);
+  }, [bleSupported, handleNotify, openNativePicker, connectAttempt]);
 
   const disconnectBle = useCallback(async () => {
     captureRef.current = false;
@@ -2952,6 +3019,11 @@ export default function Session() {
     startTimeRef.current = Date.now();
     captureRef.current   = true;
     setSessionActive(true);
+    sessionStarted({
+      mode: sessionMode,
+      num_bags: 1 + (MULTIBAG_ENABLED ? slotsRef.current.size : 0),
+      session_id: sessionIdRef.current,
+    });
 
     // ── Multi-bag: assign a fresh sessionId + reset buffer for every slot ──
     // Each slot uploads as its own Supabase session row (one athlete-less
@@ -3018,8 +3090,14 @@ export default function Session() {
     }
   };
 
-  const stopSession = async () => {
+  const stopSession = async (reason: "user" | "auto_timeout" | "disconnect" | "error" = "user") => {
     captureRef.current = false;
+    sessionStopped({
+      duration_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+      event_count: framesRef.current.length,
+      reason,
+      session_id: sessionIdRef.current,
+    });
     if (rxTimer.current) clearTimeout(rxTimer.current);
     if (tgtTimer.current) clearTimeout(tgtTimer.current);
     if (volTimer.current) clearTimeout(volTimer.current);
@@ -3048,6 +3126,36 @@ export default function Session() {
     }
   };
 
+  // ── Drain the on-device outbox ──────────────────────────────────────────────
+  // Replays sessions that were queued on a failed upload. Triggered on mount,
+  // on the browser "online" event, after a save, and by a safety interval.
+  // Re-entrancy is guarded inside the outbox module.
+  const flushOutbox = useCallback(async () => {
+    if (!supabase) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    try {
+      const res = await sessionOutbox.flush((payload) => uploadSession(payload));
+      if (res.uploaded > 0) {
+        console.log(`[outbox] synced ${res.uploaded} queued session(s); ${res.remaining} remaining`);
+      }
+    } catch (err: any) {
+      console.warn("[outbox] flush failed:", err?.message ?? err);
+    }
+  }, []);
+
+  // Auto-sync queued (offline) sessions on mount, on reconnect, and on a 30s
+  // safety interval. Uploads happen silently in the background.
+  useEffect(() => {
+    void flushOutbox();
+    const onOnline = () => { void flushOutbox(); };
+    window.addEventListener("online", onOnline);
+    const iv = window.setInterval(() => { void flushOutbox(); }, 30_000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(iv);
+    };
+  }, [flushOutbox]);
+
   // ── Save to Supabase ──────────────────────────────────────────────────────────
   const saveSession = async () => {
     if (!supabase || !selectedAthlete || !userId || !programId) return;
@@ -3061,84 +3169,116 @@ export default function Session() {
     setSaveState("saving");
     setSaveError(null);
 
-    try {
-      // ── 1. Primary device ──────────────────────────────────────────────
-      if (primaryHasFrames) {
-        await uploadSession({
-          sessionId:   sessionIdRef.current,
-          programId,
-          athleteId:   selectedAthlete.id,
-          coreTeamId:  selectedAthlete.core_team_id ?? null,
-          createdBy:   userId,
-          frames:      framesRef.current,
-          startedAtMs: startTimeRef.current ?? Date.now(),
-          endedAtMs:   Date.now(),
-          mode:        sessionMode,
-          // Derive hardware metadata from the hello packet — never hardcoded.
-          // Falls back to Model II defaults when deviceInfo is unavailable.
-          deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
-          samplingHz:   deviceInfo?.samplingHz   ?? 25,
-          scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-          // reaction live stats
-          rxBestMs:    rxBestMs,
-          rxAvgMs:     rxAvgMs,
-          rxAttempts:  rxAttemptsRef.current,
-          // accuracy live stats
-          accHitsCount: accHitsRef.current,
-          accScoreSum:  accSumRef.current,
-          // target live stats
-          // All target counters read from refs — never stale at save time
-          tgtAttempts:     tgtAttemptsRef.current,
-          tgtCorrectHits:  tgtHitsRef.current,
-          tgtCorrectSumMs: tgtCorrectSumMs.current,
-          tgtBestMs:           tgtBestAllMsRef.current,
-          tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
-          // physical device identity from hello packet
-          deviceId:    deviceInfo?.id,
-        });
-      }
+    const endedAt = Date.now();
 
-      // ── 2. Secondary slots — one Supabase row per slot ─────────────────
-      // MVP attribution: all slots share the primary's selected athlete.
-      // Per-bag athlete assignment ships in the device-manager-panel phase.
-      // Mode stats are not collected for secondary slots in MVP (Phase 3
-      // adds per-slot reaction/target/volume/accuracy mutations).
-      if (secondarySlotsWithFrames.length > 0) {
-        const endedAt = Date.now();
-        const slotResults = await Promise.allSettled(
-          secondarySlotsWithFrames.map(slot => uploadSession({
-            sessionId:   slot.sessionId,
-            programId,
-            athleteId:   selectedAthlete.id,                        // shared in MVP
-            coreTeamId:  selectedAthlete.core_team_id ?? null,
-            createdBy:   userId,
-            frames:      slot.frames,
-            startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
-            endedAtMs:   endedAt,
-            mode:        sessionMode,
-            deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
-            samplingHz:   slot.device?.samplingHz   ?? 25,
-            scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-            deviceId:    slot.device?.id,
-          }))
-        );
-        const failures = slotResults.filter(r => r.status === "rejected") as PromiseRejectedResult[];
-        if (failures.length > 0) {
-          console.warn(`[BLE/slots] ${failures.length}/${slotResults.length} slot uploads failed`,
-            failures.map(f => f.reason?.message ?? f.reason));
-          // Non-fatal: primary uploaded successfully (if it had frames). Surface in console for debugging.
+    // Build one upload payload per bag (primary + each secondary slot). Each is
+    // uploaded independently below, and every failure falls back to the
+    // on-device outbox (finding D) — so a refresh, navigation, or discard no
+    // longer loses the recording. Previously an upload failure only set
+    // saveState="error" and kept framesRef, which was lost on any navigation.
+    type UploadOpts = Parameters<typeof uploadSession>[0];
+    const payloads: UploadOpts[] = [];
+
+    if (primaryHasFrames) {
+      payloads.push({
+        sessionId:   sessionIdRef.current,
+        programId,
+        athleteId:   selectedAthlete.id,
+        coreTeamId:  selectedAthlete.core_team_id ?? null,
+        createdBy:   userId,
+        frames:      framesRef.current,
+        startedAtMs: startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        // Derive hardware metadata from the hello packet — never hardcoded.
+        // Falls back to Model II defaults when deviceInfo is unavailable.
+        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   deviceInfo?.samplingHz   ?? 25,
+        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        // reaction live stats
+        rxBestMs:    rxBestMs,
+        rxAvgMs:     rxAvgMs,
+        rxAttempts:  rxAttemptsRef.current,
+        // accuracy live stats
+        accHitsCount: accHitsRef.current,
+        accScoreSum:  accSumRef.current,
+        // target live stats — all read from refs so they're never stale at save
+        tgtAttempts:     tgtAttemptsRef.current,
+        tgtCorrectHits:  tgtHitsRef.current,
+        tgtCorrectSumMs: tgtCorrectSumMs.current,
+        tgtBestMs:           tgtBestAllMsRef.current,
+        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
+        // physical device identity from hello packet
+        deviceId:    deviceInfo?.id,
+      });
+    }
+
+    // Secondary slots — one Supabase row per slot. MVP attribution: all slots
+    // share the primary's selected athlete.
+    for (const slot of secondarySlotsWithFrames) {
+      payloads.push({
+        sessionId:   slot.sessionId,
+        programId,
+        athleteId:   selectedAthlete.id,                        // shared in MVP
+        coreTeamId:  selectedAthlete.core_team_id ?? null,
+        createdBy:   userId,
+        frames:      slot.frames,
+        startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   slot.device?.samplingHz   ?? 25,
+        scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        deviceId:    slot.device?.id,
+      });
+    }
+
+    // Try to upload each bag; on failure persist it to the on-device outbox so
+    // the recording survives until connectivity returns. "queued" counts as
+    // saved (it will auto-sync); "lost" means we couldn't even write IndexedDB.
+    const saveOneBag = async (payload: UploadOpts): Promise<"uploaded" | "queued" | "lost"> => {
+      try {
+        await uploadSession(payload);
+        return "uploaded";
+      } catch (uploadErr: any) {
+        try {
+          await sessionOutbox.enqueue(payload.sessionId, payload);
+          console.warn(`[outbox] queued session ${payload.sessionId} for later sync:`, uploadErr?.message ?? uploadErr);
+          return "queued";
+        } catch (queueErr: any) {
+          console.error(`[outbox] FAILED to queue session ${payload.sessionId}:`, queueErr?.message ?? queueErr);
+          return "lost";
         }
       }
-      setSaveState("saved");
-    } catch (err: any) {
-      console.error("Session save failed:", err);
-      setSaveError(err.message ?? "Unknown error");
+    };
+
+    const outcomes = await Promise.all(payloads.map(saveOneBag));
+    const lost   = outcomes.filter(o => o === "lost").length;
+    const queued = outcomes.filter(o => o === "queued").length;
+
+    // A true failure is couldn't-upload AND couldn't-persist. Anything queued
+    // offline counts as saved — it syncs automatically once online.
+    if (lost > 0) {
+      setSaveError(`${lost} of ${outcomes.length} bag(s) could not be saved or queued.`);
       setSaveState("error");
+      return;
     }
+
+    if (queued > 0) {
+      console.log(`[outbox] ${queued} bag(s) saved offline — will sync when online.`);
+    }
+
+    setSaveState("saved");
+    // If we saved while online, opportunistically drain anything queued earlier.
+    if (queued === 0) void flushOutbox();
   };
 
   // ── Discard session — wipes accumulated frames without saving ─────────────────
   const discardSession = () => {
+    sessionDiscarded({
+      duration_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+      session_id: sessionIdRef.current,
+    });
     framesRef.current  = [];
     frameIndex.current = 0;
     feedCounter.current = 0;
@@ -3930,7 +4070,7 @@ export default function Session() {
                     the arc rescales with the user-selected 30/45/60 s timer. */}
                 <ArcTimer elapsedMs={elapsedMs} maxMs={sessionMaxMs} warnMs={sessionWarnMs} />
                 <button
-                  onClick={stopSession}
+                  onClick={() => stopSession("user")}
                   style={{
                     padding: "6px 14px", borderRadius: 8, fontWeight: 700, fontSize: 11,
                     background: "rgba(255,80,80,0.18)", border: "1px solid rgba(255,80,80,0.35)",

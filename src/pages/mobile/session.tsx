@@ -6,6 +6,7 @@ import { supabase } from "../../supabaseClient";
 import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
+import * as sessionOutbox from "../../storage/sessionOutbox";
 import { useSignalAudio } from "../../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
 import {
@@ -4047,6 +4048,36 @@ export default function Session() {
   };
 
   // ── Save to Supabase ──────────────────────────────────────────────────────────
+  // ── Drain the on-device outbox ──────────────────────────────────────────────
+  // Replays sessions that were queued on a failed upload. Triggered on mount,
+  // on the browser "online" event, after a save, and by a safety interval.
+  // Re-entrancy is guarded inside the outbox module.
+  const flushOutbox = useCallback(async () => {
+    if (!supabase) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    try {
+      const res = await sessionOutbox.flush((payload) => uploadSession(payload));
+      if (res.uploaded > 0) {
+        console.log(`[outbox] synced ${res.uploaded} queued session(s); ${res.remaining} remaining`);
+      }
+    } catch (err: any) {
+      console.warn("[outbox] flush failed:", err?.message ?? err);
+    }
+  }, []);
+
+  // Auto-sync queued (offline) sessions on mount, on reconnect, and on a 30s
+  // safety interval. Uploads happen silently in the background.
+  useEffect(() => {
+    void flushOutbox();
+    const onOnline = () => { void flushOutbox(); };
+    window.addEventListener("online", onOnline);
+    const iv = window.setInterval(() => { void flushOutbox(); }, 30_000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(iv);
+    };
+  }, [flushOutbox]);
+
   const saveSession = async () => {
     if (!supabase || !selectedAthlete || !userId || !programId) return;
     // Allow save if primary OR any secondary slot has frames
@@ -4059,93 +4090,117 @@ export default function Session() {
     setSaveState("saving");
     setSaveError(null);
 
-    try {
-      // ── 1. Primary device ──────────────────────────────────────────────
-      if (primaryHasFrames) {
-        await uploadSession({
-          sessionId:   sessionIdRef.current,
-          programId,
-          athleteId:   selectedAthlete.id,
-          coreTeamId:  selectedAthlete.core_team_id ?? null,
-          createdBy:   userId,
-          frames:      framesRef.current,
-          startedAtMs: startTimeRef.current ?? Date.now(),
-          endedAtMs:   Date.now(),
-          mode:        sessionMode,
-          // Derive hardware metadata from the hello packet — never hardcoded.
-          // Falls back to Model II defaults when deviceInfo is unavailable.
-          deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
-          samplingHz:   deviceInfo?.samplingHz   ?? 25,
-          scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-          // reaction live stats
-          rxBestMs:    rxBestMs,
-          rxAvgMs:     rxAvgMs,
-          rxAttempts:  rxAttemptsRef.current,
-          // accuracy live stats
-          accHitsCount: accHitsRef.current,
-          accScoreSum:  accSumRef.current,
-          // target live stats
-          // All target counters read from refs — never stale at save time
-          tgtAttempts:     tgtAttemptsRef.current,
-          tgtCorrectHits:  tgtHitsRef.current,
-          tgtCorrectSumMs: tgtCorrectSumMs.current,
-          tgtBestMs:           tgtBestAllMsRef.current,
-          tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
-          // physical device identity from hello packet
-          deviceId:    deviceInfo?.id,
-        });
-      }
+    const endedAt = Date.now();
 
-      // ── 2. Secondary slots — one Supabase row per slot ─────────────────
-      // Each slot uploads under the athlete assigned via the matrix Assign
-      // overlay (falling back to the primary's selected athlete). Mode stats
-      // are still primary-only in this phase (per-slot reaction/target/volume
-      // mutations remain future work — matrix tiles show the live heatmap).
-      if (secondarySlotsWithFrames.length > 0) {
-        const endedAt = Date.now();
-        const slotResults = await Promise.allSettled(
-          secondarySlotsWithFrames.map(slot => {
-            // Per-bag attribution: each slot uploads under its assigned athlete
-            // (set via the matrix Assign overlay). Falls back to the primary's
-            // selected athlete when a coach hasn't reassigned that bag.
-            const slotAthlete = slot.athlete ?? selectedAthlete;
-            return uploadSession({
-            sessionId:   slot.sessionId,
-            programId,
-            athleteId:   slotAthlete.id,
-            coreTeamId:  slotAthlete.core_team_id ?? null,
-            createdBy:   userId,
-            frames:      slot.frames,
-            startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
-            endedAtMs:   endedAt,
-            mode:        sessionMode,
-            deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
-            samplingHz:   slot.device?.samplingHz   ?? 25,
-            scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
-            deviceId:    slot.device?.id,
-            });
-          })
-        );
-        const failures = slotResults.filter(r => r.status === "rejected") as PromiseRejectedResult[];
-        if (failures.length > 0) {
-          console.warn(`[BLE/slots] ${failures.length}/${slotResults.length} slot uploads failed`,
-            failures.map(f => f.reason?.message ?? f.reason));
-          // Non-fatal: primary uploaded successfully (if it had frames). Surface in console for debugging.
+    // Build one upload payload per bag (primary + each secondary slot). Each is
+    // uploaded independently below, and every failure falls back to the
+    // on-device outbox (finding D) — so a refresh, navigation, or discard no
+    // longer loses the recording. Previously an upload failure only set
+    // saveState="error" and kept framesRef, which was lost on any navigation.
+    type UploadOpts = Parameters<typeof uploadSession>[0];
+    const payloads: UploadOpts[] = [];
+
+    if (primaryHasFrames) {
+      payloads.push({
+        sessionId:   sessionIdRef.current,
+        programId,
+        athleteId:   selectedAthlete.id,
+        coreTeamId:  selectedAthlete.core_team_id ?? null,
+        createdBy:   userId,
+        frames:      framesRef.current,
+        startedAtMs: startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        // Derive hardware metadata from the hello packet — never hardcoded.
+        // Falls back to Model II defaults when deviceInfo is unavailable.
+        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   deviceInfo?.samplingHz   ?? 25,
+        scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        // reaction live stats
+        rxBestMs:    rxBestMs,
+        rxAvgMs:     rxAvgMs,
+        rxAttempts:  rxAttemptsRef.current,
+        // accuracy live stats
+        accHitsCount: accHitsRef.current,
+        accScoreSum:  accSumRef.current,
+        // target live stats — all read from refs so they're never stale at save
+        tgtAttempts:     tgtAttemptsRef.current,
+        tgtCorrectHits:  tgtHitsRef.current,
+        tgtCorrectSumMs: tgtCorrectSumMs.current,
+        tgtBestMs:           tgtBestAllMsRef.current,
+        tgtBestCorrectMs:    tgtBestCorrectMsRef.current,
+        // physical device identity from hello packet
+        deviceId:    deviceInfo?.id,
+      });
+    }
+
+    // Secondary slots — one row per slot. Per-bag attribution: each slot
+    // uploads under its assigned athlete (set via the matrix Assign overlay),
+    // falling back to the primary's selected athlete.
+    for (const slot of secondarySlotsWithFrames) {
+      const slotAthlete = slot.athlete ?? selectedAthlete;
+      payloads.push({
+        sessionId:   slot.sessionId,
+        programId,
+        athleteId:   slotAthlete.id,
+        coreTeamId:  slotAthlete.core_team_id ?? null,
+        createdBy:   userId,
+        frames:      slot.frames,
+        startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
+        endedAtMs:   endedAt,
+        mode:        sessionMode,
+        deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
+        samplingHz:   slot.device?.samplingHz   ?? 25,
+        scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
+        deviceId:    slot.device?.id,
+      });
+    }
+
+    // Try to upload each bag; on failure persist it to the on-device outbox so
+    // the recording survives until connectivity returns. "queued" counts as
+    // saved (it will auto-sync); "lost" means we couldn't even write IndexedDB.
+    const saveOneBag = async (payload: UploadOpts): Promise<"uploaded" | "queued" | "lost"> => {
+      try {
+        await uploadSession(payload);
+        return "uploaded";
+      } catch (uploadErr: any) {
+        try {
+          await sessionOutbox.enqueue(payload.sessionId, payload);
+          console.warn(`[outbox] queued session ${payload.sessionId} for later sync:`, uploadErr?.message ?? uploadErr);
+          return "queued";
+        } catch (queueErr: any) {
+          console.error(`[outbox] FAILED to queue session ${payload.sessionId}:`, queueErr?.message ?? queueErr);
+          return "lost";
         }
       }
-      setSaveState("saved");
-      // Advance queue: pop the athlete we just saved and select the next one.
-      setQueue(q => {
-        if (q.length === 0) return q;
-        const next = q.slice(1);
-        setSelectedAthlete(next[0] ?? null);
-        return next;
-      });
-    } catch (err: any) {
-      console.error("Session save failed:", err);
-      setSaveError(err.message ?? "Unknown error");
+    };
+
+    const outcomes = await Promise.all(payloads.map(saveOneBag));
+    const lost   = outcomes.filter(o => o === "lost").length;
+    const queued = outcomes.filter(o => o === "queued").length;
+
+    // A true failure is couldn't-upload AND couldn't-persist. Anything queued
+    // offline counts as saved — it syncs automatically once online.
+    if (lost > 0) {
+      setSaveError(`${lost} of ${outcomes.length} bag(s) could not be saved or queued.`);
       setSaveState("error");
+      return;
     }
+
+    if (queued > 0) {
+      console.log(`[outbox] ${queued} bag(s) saved offline — will sync when online.`);
+    }
+
+    setSaveState("saved");
+    // Advance queue: pop the athlete we just saved and select the next one.
+    setQueue(q => {
+      if (q.length === 0) return q;
+      const next = q.slice(1);
+      setSelectedAthlete(next[0] ?? null);
+      return next;
+    });
+    // If we saved while online, opportunistically drain anything queued earlier.
+    if (queued === 0) void flushOutbox();
   };
 
   // ── Discard session — wipes accumulated frames without saving ─────────────────

@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
+import { onboardingStepCompleted } from "../lib/telemetryEvents";
 
 type Role = "coach" | "admin";
 type Step = 0 | 1;
@@ -320,6 +321,7 @@ export default function Onboarding() {
         if (tmErr) throw tmErr;
       }
 
+      onboardingStepCompleted("complete", "coach");
       navigate("/dashboard", { replace: true });
     } catch (e: any) {
       setError(e?.message || "Failed to complete onboarding.");
@@ -369,6 +371,7 @@ export default function Onboarding() {
 
       if (upsertErr) throw upsertErr;
 
+      onboardingStepCompleted("complete", "admin-join");
       navigate("/dashboard", { replace: true });
     } catch (e: any) {
       setError(e?.message || "Failed to join program.");
@@ -451,6 +454,7 @@ export default function Onboarding() {
       });
       if (tmErr) throw tmErr;
 
+      onboardingStepCompleted("complete", "admin-create");
       navigate("/dashboard", { replace: true });
     } catch (e: any) {
       setError(e?.message || "Failed to create program.");

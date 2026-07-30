@@ -315,7 +315,7 @@ export default function Landing() {
     {
       Icon: IconTrophy,
       title: "Professional Teams",
-      body: "Elite-grade data for elite programs. Integrate with your existing AMS stack or run Trench standalone — your call.",
+      body: "Elite-grade data for elite programs. Integrate with your existing AMS stack or run our custom AI-powered analytics Dashboard.",
     },
     {
       Icon: IconFlask,
@@ -325,7 +325,7 @@ export default function Landing() {
     {
       Icon: IconCrosshair,
       title: "Performance Facilities",
-      body: "Offer your clients something no other facility has. Stand-alone sessions or integrated athlete management — fully flexible.",
+      body: "Offer your clients something no other facility has. Independent sessions or integrated athlete management.",
     },
   ];
 

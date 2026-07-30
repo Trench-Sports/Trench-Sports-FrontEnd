@@ -16,6 +16,8 @@
 //
 // Mirrors the IndexedDB conventions already used by rawRecorder.ts.
 
+import * as ev from "../lib/telemetryEvents";
+
 const DB_NAME = "trench_outbox";
 const DB_VERSION = 1;
 const STORE_SESSIONS = "sessions";
@@ -84,6 +86,8 @@ export async function enqueue(sessionId: string, payload: any): Promise<void> {
   };
   store.put(item);
   await txDone(tx);
+  // Telemetry: outbox depth is a reliability signal (finding D/§1.1).
+  try { ev.outboxEnqueued(await safeCount()); } catch { /* never break enqueue */ }
 }
 
 /** All currently-queued items, oldest first. */
@@ -158,19 +162,27 @@ export async function flush(
   let failed = 0;
   try {
     const items = await list();
+    let remaining = items.length;
     for (const item of items) {
       // Bail out the moment we go offline mid-drain — keep the rest queued.
       if (typeof navigator !== "undefined" && navigator.onLine === false) {
         failed += 1;
         continue;
       }
+      const ageMs = Date.now() - item.enqueued_at;
       try {
         await uploader(item.payload);
         await remove(item.session_id);
         uploaded += 1;
+        remaining -= 1;
+        try { ev.outboxFlushSucceeded({ attempt_n: item.attempts + 1, age_ms: ageMs, queue_depth: remaining }); } catch { /* noop */ }
       } catch (err: any) {
         failed += 1;
-        await bumpAttempt(item, err?.message ?? String(err));
+        const msg = err?.message ?? String(err);
+        await bumpAttempt(item, msg);
+        try {
+          ev.outboxFlushFailed({ attempt_n: item.attempts + 1, age_ms: ageMs, queue_depth: remaining, error_code: String(msg).slice(0, 64) });
+        } catch { /* noop */ }
       }
     }
   } finally {

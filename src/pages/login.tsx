@@ -2,6 +2,7 @@
 import React, { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
+import { authLoginSucceeded, authLoginFailed } from "../lib/telemetryEvents";
 
 type LoginForm = {
   email: string;
@@ -39,6 +40,10 @@ export default function LoginPage() {
       setErr("Please enter your email and password.");
       return;
     }
+    if (!supabase) {
+      setErr("Supabase is not configured.");
+      return;
+    }
 
     setBusy(true);
     try {
@@ -55,6 +60,7 @@ export default function LoginPage() {
           msg.toLowerCase().includes("user not found") ||
           error.status === 400;
 
+        authLoginFailed(isInvalidCreds ? "invalid_credentials" : (error.status ? `http_${error.status}` : "unknown"));
         if (isInvalidCreds) {
           setNoAccount(true);
           setErr("No account found with that email.");
@@ -66,10 +72,12 @@ export default function LoginPage() {
       }
 
       if (!data.session) {
+        authLoginFailed("no_session");
         setErr("Signed in, but no session was returned.");
         return;
       }
 
+      authLoginSucceeded();
       nav(redirectTo);
     } catch (e: any) {
       setErr(e?.message || "Something went wrong.");
@@ -83,6 +91,10 @@ export default function LoginPage() {
     const email = form.email.trim();
     if (!email) {
       setErr("Enter your email first, then click Forgot password.");
+      return;
+    }
+    if (!supabase) {
+      setErr("Supabase is not configured.");
       return;
     }
 

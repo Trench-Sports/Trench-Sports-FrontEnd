@@ -97,7 +97,7 @@ BEGIN
   RETURNING programs.id INTO v_id;
 
   RETURN QUERY
-    SELECT p.id, p.name, p.location, p.onboarding_code
+    SELECT p.id, p.name, p.location, p.onboarding_code::text
     FROM public.programs p
     WHERE p.id = v_id;
 END;

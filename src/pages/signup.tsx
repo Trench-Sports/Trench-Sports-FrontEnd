@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
+import { authSignupSucceeded, authSignupFailed } from "../lib/telemetryEvents";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -76,6 +77,7 @@ export default function Signup() {
         password: pw,
       });
       if (signErr) throw signErr;
+      authSignupSucceeded();
 
       // If email confirmations are enabled, user might be null until confirmed.
       // We still send them to onboarding, but only upsert profile if we have user id now.
@@ -101,6 +103,7 @@ export default function Signup() {
       // 3) Go to onboarding to finish remaining required fields + program code
       navigate("/onboarding", { replace: true });
     } catch (err: any) {
+      authSignupFailed(err?.status ? `http_${err.status}` : (err?.code ?? "unknown"));
       setError(err?.message || "Signup failed. Please try again.");
     } finally {
       setBusy(false);

@@ -13,6 +13,10 @@ import Privacy from "./pages/privacy";
 import Terms from "./pages/terms";
 import Session from "./pages/session";
 
+// Internal-only observability dashboard. Lazy-loaded so its code (and any
+// future charting lib) never ships to coaches' bundles. Not linked in nav.
+const Admin = React.lazy(() => import("./pages/admin"));
+
 // ── Mobile (iOS / phone) page variants ──────────────────────────────────────
 import MobileLogin from "./pages/mobile/login";
 import MobileHome from "./pages/mobile/home";
@@ -20,6 +24,7 @@ import MobileSwipeDeck from "./components/mobileSwipeDeck";
 
 import { supabase } from "./supabaseClient";
 import { platform } from "./platform";
+import { track } from "./lib/telemetry";
 
 const REQUIRED_FIELDS = ["first_name", "last_name", "position", "city", "state", "date_of_birth"] as const;
 
@@ -52,20 +57,38 @@ function RequireOnboarding({
     let alive = true;
 
     async function run() {
+      if (!supabase) {
+        if (alive) setReady(true);
+        return;
+      }
+
+      // ── Establish the session ──────────────────────────────────────────
+      // A thrown getUser() (or a null user) means we couldn't authenticate —
+      // that's a login problem, NOT an onboarding drop-off. Send to login.
+      let user;
       try {
-        if (!supabase) {
-          if (alive) setReady(true);
-          return;
-        }
+        const { data: userData, error: authErr } = await supabase.auth.getUser();
+        if (authErr) throw authErr;
+        user = userData.user;
+      } catch (e) {
+        console.warn("[onboarding-guard] auth check failed → login", e);
+        navigate(loginPath, { replace: true });
+        return;
+      }
+      if (!user) {
+        navigate(loginPath, { replace: true });
+        return;
+      }
 
-        const { data: userData } = await supabase.auth.getUser();
-        const user = userData.user;
-
-        if (!user) {
-          navigate(loginPath, { replace: true });
-          return;
-        }
-
+      // ── Load the profile ───────────────────────────────────────────────
+      // Finding F: previously ANY thrown error here (network blip, RLS
+      // denial, expired token) was swallowed and redirected to /onboarding —
+      // indistinguishable in the funnel from a genuine drop-off, and it traps
+      // a fully-onboarded user in the onboarding flow. We now separate the two:
+      // a real profile that's incomplete → /onboarding; a fetch error → log it
+      // and bounce to login (a stale session is the dominant real cause).
+      // (Phase 1 attaches an `onboarding.guard_failed` telemetry event here.)
+      try {
         const { data: profile, error } = await supabase
           .from("profiles")
           .select("program_id, first_name, last_name, position, city, state, date_of_birth")
@@ -80,8 +103,12 @@ function RequireOnboarding({
         }
 
         if (alive) setReady(true);
-      } catch {
-        navigate(onboardingPath, { replace: true });
+      } catch (e: any) {
+        console.error("[onboarding-guard] profile load failed → login (not a drop-off)", e);
+        // Finding F: record this distinctly so the onboarding funnel isn't
+        // polluted by errors masquerading as genuine drop-offs.
+        track("onboarding.guard_failed", { reason: e?.message ?? String(e), ok: false });
+        navigate(loginPath, { replace: true });
       }
     }
 
@@ -127,6 +154,17 @@ export const router = createBrowserRouter([
       { path: "/contact",    element: <Contact /> },
       { path: "/privacy",    element: <Privacy /> },
       { path: "/terms",      element: <Terms /> },
+      {
+        // Internal analytics. Gating happens inside the page (renders a
+        // 404-equivalent for non-internal users), so we don't wrap it in
+        // RequireOnboarding — an internal admin may not have a full profile.
+        path: "/admin",
+        element: (
+          <React.Suspense fallback={null}>
+            <Admin />
+          </React.Suspense>
+        ),
+      },
       {
         path: "/dashboard",
         element: platform.isNative
