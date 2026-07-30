@@ -14,6 +14,18 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
 import * as sessionOutbox from "../../storage/sessionOutbox";
+import {
+  sessionStarted,
+  sessionStopped,
+  sessionDiscarded,
+  sessionUploadStarted,
+  sessionUploadStageFailed,
+  sessionUploadSucceeded,
+  bleConnectAttempted,
+  bleConnectSucceeded,
+  bleConnectFailed,
+  bleDisconnected,
+} from "../../lib/telemetryEvents";
 import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
@@ -1815,6 +1827,14 @@ async function uploadSession(opts: {
 
   const CHUNK = 500;
 
+  // Telemetry (finding A): track upload start + per-stage failure so partial
+  // writes are visible instead of silent. total_ms/raw_bytes also feed Panel 2.
+  const _uploadT0 = Date.now();
+  const _rawArr = frames.map(f => f.raw);
+  let _rawBytes: number | undefined;
+  try { _rawBytes = JSON.stringify(_rawArr).length; } catch { _rawBytes = undefined; }
+  sessionUploadStarted({ session_id: sessionId, event_count: frames.length, raw_bytes: _rawBytes });
+
   // ── 1. sessions ────────────────────────────────────────────────────────────
   const { error: sessErr } = await supabase.from("sessions").insert({
     id:            sessionId,
@@ -1829,12 +1849,15 @@ async function uploadSession(opts: {
     device_model:  deviceModel,
     sampling_hz:   samplingHz,
     mode,
-    raw:           frames.map(f => f.raw),
+    raw:           _rawArr,
     ...(deviceId ? { device_id: deviceId } : {}),
     ...(deviceUid ? { device_uid: deviceUid } : {}),
     ...(location  ? { location } : {}),
   });
-  if (sessErr) throw new Error(`sessions: ${sessErr.message}`);
+  if (sessErr) {
+    sessionUploadStageFailed({ session_id: sessionId, stage: "sessions", error_code: sessErr.message?.slice(0, 64) });
+    throw new Error(`sessions: ${sessErr.message}`);
+  }
   if (frames.length === 0) return;
 
   // ── 2. events — enriched ──────────────────────────────────────────────────
@@ -1944,7 +1967,10 @@ async function uploadSession(opts: {
 
   for (let i = 0; i < eventRows.length; i += CHUNK) {
     const { error } = await supabase.from("events").insert(eventRows.slice(i, i + CHUNK));
-    if (error) throw new Error(`events (chunk ${i}): ${error.message}`);
+    if (error) {
+      sessionUploadStageFailed({ session_id: sessionId, stage: "events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
+      throw new Error(`events (chunk ${i}): ${error.message}`);
+    }
   }
 
   // ── 3. event_cells ─────────────────────────────────────────────────────────
@@ -1965,7 +1991,10 @@ async function uploadSession(opts: {
   }
   for (let i = 0; i < cellRows.length; i += CHUNK) {
     const { error } = await supabase.from("event_cells").insert(cellRows.slice(i, i + CHUNK));
-    if (error) throw new Error(`event_cells (chunk ${i}): ${error.message}`);
+    if (error) {
+      sessionUploadStageFailed({ session_id: sessionId, stage: "event_cells", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
+      throw new Error(`event_cells (chunk ${i}): ${error.message}`);
+    }
   }
 
   // ── 4. session_summaries ───────────────────────────────────────────────────
@@ -2241,7 +2270,18 @@ async function uploadSession(opts: {
       decay_time_ms: decayVals.length ? statSummary(decayVals) : null,
     },
   });
-  if (sumErr) throw new Error(`session_summaries: ${sumErr.message}`);
+  if (sumErr) {
+    sessionUploadStageFailed({ session_id: sessionId, stage: "session_summaries", error_code: sumErr.message?.slice(0, 64) });
+    throw new Error(`session_summaries: ${sumErr.message}`);
+  }
+
+  sessionUploadSucceeded({
+    session_id:  sessionId,
+    total_ms:    Date.now() - _uploadT0,
+    raw_bytes:   _rawBytes,
+    event_count: frames.length,
+    cell_count:  cellRows.length,
+  });
 }
 
 // ─── ImpactRipple (identical to hitSimulator) ────────────────────────────────
@@ -3176,7 +3216,7 @@ export default function Home() {
       // Hard cap — auto-stop at the user-selected duration (30 / 45 / 60 s)
       if (elapsed >= sessionMaxMs) {
         clearInterval(id);
-        stopSession();
+        stopSession("auto_timeout");
       }
     }, 250);
     return () => clearInterval(id);
@@ -3661,6 +3701,8 @@ export default function Home() {
     if (!bleSupported) return;
     setBleStatus("scanning");
     setBleError(null);
+    const _bleT0 = Date.now();
+    bleConnectAttempted(isNativeApp() ? "ios" : "web", 0);
     try {
       let conn: AdapterConnection;
 
@@ -3689,6 +3731,11 @@ export default function Home() {
           device: picked,
           serviceUuid: NUS_SERVICE_UUID,
           onDisconnect: () => {
+            bleDisconnected({
+              during_session: captureRef.current,
+              session_elapsed_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+              slot: 0,
+            });
             setBleStatus("disconnected");
             setDeviceInfo(null);
             captureRef.current = false;
@@ -3714,6 +3761,11 @@ export default function Home() {
         // a single connect button press without requiring a second OS dialog.
         const { primary: webPrimary, legacy: webLegacy } = getBleNamePrefixes();
         const onDisc = () => {
+          bleDisconnected({
+            during_session: captureRef.current,
+            session_elapsed_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+            slot: 0,
+          });
           setBleStatus("disconnected");
           setDeviceInfo(null);
           captureRef.current = false;
@@ -3739,6 +3791,12 @@ export default function Home() {
       await adapterStartNotifications(conn, TX, handleNotify);
 
       setBleStatus("connected");
+      bleConnectSucceeded({
+        duration_ms: Date.now() - _bleT0,
+        device_model: deviceInfoRef.current?.hw === "III" ? "TSIII" : "TSII",
+        attempt_n: connectAttempt + 1,
+        slot: 0,
+      });
       setConnectAttempt(0);
       setBleError(null);
 
@@ -3757,11 +3815,19 @@ export default function Home() {
         msg.includes("chooser");
 
       if (userCancelled) {
+        bleConnectFailed({ error_class: "cancel", attempt_n: connectAttempt + 1, slot: 0 });
         setBleStatus("idle");
         setBleError(null);
         return;
       }
 
+      bleConnectFailed({
+        error_class: (msg.includes("GATT") || msg.includes("gatt")) ? "gatt"
+          : (msg.includes("Bluetooth") || msg.includes("adapter")) ? "adapter"
+          : "unknown",
+        attempt_n: connectAttempt + 1,
+        slot: 0,
+      });
       setConnectAttempt(n => n + 1);
       setBleStatus("disconnected");
 
@@ -3773,7 +3839,7 @@ export default function Home() {
         setBleError("Could not connect. Make sure the bag is powered on and no other device is already connected to it.");
       }
     }
-  }, [bleSupported, handleNotify, openNativePicker]);
+  }, [bleSupported, handleNotify, openNativePicker, connectAttempt]);
 
   const disconnectBle = useCallback(async () => {
     captureRef.current = false;
@@ -4144,6 +4210,11 @@ export default function Home() {
     startTimeRef.current = Date.now();
     captureRef.current   = true;
     setSessionActive(true);
+    sessionStarted({
+      mode: sessionMode,
+      num_bags: 1 + (MULTIBAG_ENABLED ? slotsRef.current.size : 0),
+      session_id: sessionIdRef.current,
+    });
 
     // ── Multi-bag: assign a fresh sessionId + reset buffer for every slot ──
     // Each slot uploads as its own Supabase session row (one athlete-less
@@ -4214,8 +4285,14 @@ export default function Home() {
     }
   };
 
-  const stopSession = async () => {
+  const stopSession = async (reason: "user" | "auto_timeout" | "disconnect" | "error" = "user") => {
     captureRef.current = false;
+    sessionStopped({
+      duration_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+      event_count: framesRef.current.length,
+      reason,
+      session_id: sessionIdRef.current,
+    });
     if (rxTimer.current) clearTimeout(rxTimer.current);
     if (tgtTimer.current) clearTimeout(tgtTimer.current);
     if (volTimer.current) clearTimeout(volTimer.current);
@@ -4451,6 +4528,10 @@ export default function Home() {
 
   // ── Discard session — wipes accumulated frames without saving ─────────────────
   const discardSession = () => {
+    sessionDiscarded({
+      duration_ms: startTimeRef.current ? Date.now() - startTimeRef.current : undefined,
+      session_id: sessionIdRef.current,
+    });
     framesRef.current  = [];
     frameIndex.current = 0;
     feedCounter.current = 0;
@@ -5158,7 +5239,7 @@ export default function Home() {
                   <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                     <ArcTimer elapsedMs={elapsedMs} maxMs={sessionMaxMs} warnMs={sessionWarnMs} size={40} />
                     <button
-                      onClick={stopSession}
+                      onClick={() => stopSession("user")}
                       style={{
                         height: 40, padding: "0 18px", borderRadius: 8,
                         fontWeight: 700, fontSize: 13,
@@ -5401,7 +5482,7 @@ export default function Home() {
                     the arc rescales with the user-selected 30/45/60 s timer. */}
                 <ArcTimer elapsedMs={elapsedMs} maxMs={sessionMaxMs} warnMs={sessionWarnMs} size={40} />
                 <button
-                  onClick={stopSession}
+                  onClick={() => stopSession("user")}
                   style={{
                     height: 40, padding: "0 14px", borderRadius: 8,
                     fontWeight: 700, fontSize: 12,
