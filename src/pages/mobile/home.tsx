@@ -30,6 +30,7 @@ import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
 import tsLogoMark from "../../images/TS Logo Enhancement Set 2-01.png";
+import tsPowerBolt from "../../images/TS Logomark Power Bolt-01.png";
 import { useSignalAudio } from "../../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
 import {
@@ -2470,7 +2471,9 @@ function BlePickerSheet({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 17, background: iconBg, border: iconBorder,
                 }}>
-                  {isBag ? "🥊" : "📶"}
+                  {isBag
+                    ? <img src={tsPowerBolt} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />
+                    : "📶"}
                 </div>
 
                 {/* Name + ID */}
@@ -4894,9 +4897,9 @@ export default function Home() {
                     marginLeft: "auto",
                     display: "inline-flex", alignItems: "center", gap: 5,
                     padding: "2px 9px", borderRadius: 7,
-                    background: "rgba(180,0,255,0.10)",
-                    border: "1px solid rgba(180,0,255,0.25)",
-                    fontSize: 11, fontWeight: 700, color: "#b400ff",
+                    background: isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.08)",
+                    border: isDark ? "1px solid rgba(180,0,255,0.25)" : "1px solid rgba(180,0,255,0.45)",
+                    fontSize: 11, fontWeight: 700, color: isDark ? "#b400ff" : "#8a00c2",
                   }}>
                     {deviceInfo.id}
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
@@ -4908,16 +4911,18 @@ export default function Home() {
                       // accent to stand apart from the green Model III, and shows its live
                       // reported scan rate (from the hello "hz" field, nominal 400).
                       const badge = deviceInfo.hw === "IV"
-                        ? { rgb: "0,224,255",  label: `IV · ${Math.round(deviceInfo.samplingHz)}Hz` }
+                        ? { rgb: "0,224,255",  ink: "#0091b3", label: `IV · ${Math.round(deviceInfo.samplingHz)}Hz` }
                         : deviceInfo.hw === "III"
-                        ? { rgb: "0,255,136",  label: "III · 120Hz" }
-                        : { rgb: "180,0,255",  label: "II · 27Hz" };
+                        ? { rgb: "0,255,136",  ink: "#00965a", label: "III · 120Hz" }
+                        : { rgb: "180,0,255",  ink: "#8a00c2", label: "II · 27Hz" };
+                      // Light mode: the neon rgb reads fine on dark but washes out on
+                      // white, so use a darker ink + stronger fill/border for contrast.
                       return (
                         <span style={{
                           fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                          color: `rgb(${badge.rgb})`,
-                          background: `rgba(${badge.rgb},0.12)`,
-                          border: `1px solid rgba(${badge.rgb},0.30)`,
+                          color: isDark ? `rgb(${badge.rgb})` : badge.ink,
+                          background: isDark ? `rgba(${badge.rgb},0.12)` : `rgba(${badge.rgb},0.18)`,
+                          border: isDark ? `1px solid rgba(${badge.rgb},0.30)` : `1px solid rgba(${badge.rgb},0.55)`,
                           borderRadius: 4, padding: "1px 5px",
                         }}>
                           {badge.label}
@@ -5161,7 +5166,7 @@ export default function Home() {
                   style={{
                     width: "100%", padding: "10px 0", borderRadius: 11,
                     fontWeight: 700, fontSize: 13, cursor: "pointer",
-                    background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)",
+                    background: "var(--btn-bg)", border: "1px solid var(--btn-border)",
                     color: "var(--text)", transition: "all 160ms ease",
                   }}
                 >

@@ -4251,6 +4251,36 @@ html.is-native .ts-webOnly {
     box-shadow: 0 0 6px rgba(180, 0, 255, 0.45);
 }
 
+/* ── Light-mode overrides for the narrow-window pill + drawer ────────────────
+   The pill/drawer surfaces are hardcoded dark; in light mode the dark
+   var(--text) would render on a dark surface and disappear. Flip the
+   surfaces to light so the dark text stays legible.                          */
+
+:root[data-theme="light"] .lnav-mobilePill {
+    background: rgba(247, 247, 251, 0.88);
+    border-color: rgba(180, 0, 255, 0.30);
+    box-shadow:
+        0 8px 28px rgba(20, 20, 40, 0.14),
+        0 0 0 1px rgba(180, 0, 255, 0.06);
+}
+
+:root[data-theme="light"] .lnav-mobilePill:hover {
+    border-color: rgba(180, 0, 255, 0.55);
+    box-shadow:
+        0 10px 32px rgba(20, 20, 40, 0.18),
+        0 0 0 2px rgba(180, 0, 255, 0.12);
+}
+
+:root[data-theme="light"] .lnav-mobileDrawer {
+    background: rgba(247, 247, 251, 0.94);
+    border-color: rgba(20, 20, 40, 0.12);
+    box-shadow: 0 16px 48px rgba(20, 20, 40, 0.20);
+}
+
+:root[data-theme="light"] .lnav-mobileItem:hover {
+    background: rgba(20, 20, 40, 0.05);
+}
+
 /* ── Request Demo Modal ──────────────────────────────────────────────────────
    Add these styles to your existing CSS file (e.g. landing.css / global.css)
    ─────────────────────────────────────────────────────────────────────────── */
