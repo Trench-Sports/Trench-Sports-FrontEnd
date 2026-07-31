@@ -13,7 +13,8 @@
     "jsx": "react-jsx",
 
     "strict": true,
-    "types": ["vite/client"]
+    "types": ["vite/client", "web-bluetooth"]
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/App_old.tsx"]
 }

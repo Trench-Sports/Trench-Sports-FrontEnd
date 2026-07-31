@@ -394,13 +394,13 @@ export default function Dashboard() {
 
         for (const [athleteId, modes] of byAthlete) {
           // Pick the metric with the most sessions that has ≥4 data points
-          const candidates: { metric: "strength" | "accuracy" | "reaction" | "targetAccuracy" | "targetReaction"; vals: number[]; unit: string; lowerIsBetter: boolean }[] = [
+          const candidates = ([
             { metric: "strength",       vals: modes.strength,       unit: "pts", lowerIsBetter: false },
             { metric: "accuracy",       vals: modes.accuracy,       unit: "%",   lowerIsBetter: false },
             { metric: "reaction",       vals: modes.reaction,       unit: "ms",  lowerIsBetter: true  },
             { metric: "targetAccuracy", vals: modes.targetAccuracy, unit: "%",   lowerIsBetter: false },
             { metric: "targetReaction", vals: modes.targetReaction, unit: "ms",  lowerIsBetter: true  },
-          ].filter(c => c.vals.length >= 4).sort((a, b) => b.vals.length - a.vals.length);
+          ] as { metric: "strength" | "accuracy" | "reaction" | "targetAccuracy" | "targetReaction"; vals: number[]; unit: string; lowerIsBetter: boolean }[]).filter(c => c.vals.length >= 4).sort((a, b) => b.vals.length - a.vals.length);
 
           if (candidates.length === 0) continue;
 
@@ -2030,8 +2030,8 @@ export default function Dashboard() {
     let active = false;
 
     function onTouchStart(e: TouchEvent) {
-      // Only activate when scrolled to very top
-      if (el.scrollTop > 2) return;
+      // Only activate when scrolled to very top (el is guarded non-null above)
+      if (el!.scrollTop > 2) return;
       startY = e.touches[0].clientY;
       active = true;
     }
@@ -2627,7 +2627,7 @@ export default function Dashboard() {
       <CreateAthleteModal
         open={showCreateAthlete}
         onClose={closeCreateAthlete}
-        onCreated={(athlete) => {
+        onCreated={(athlete: any) => {
           console.log("[dashboard] Athlete created:", athlete);
           // Append to the list immediately if the athletes tab is active
           setAthletes((prev) => [...prev, athlete as Athlete].sort((a, b) =>
@@ -2640,14 +2640,14 @@ export default function Dashboard() {
         open={Boolean(editAthleteTarget)}
         athlete={editAthleteTarget}
         onClose={closeEditAthlete}
-        onSaved={(updated) => {
+        onSaved={(updated: any) => {
           // Merge the updated fields back into the athletes list in place
           setAthletes((prev) =>
             prev.map((a) => (a.id === updated.id ? { ...a, ...updated } : a))
           );
           setEditAthleteTarget(null);
         }}
-        onDeleted={(deletedId) => {
+        onDeleted={(deletedId: any) => {
           // Drop the athlete from local state. Team member counts will
           // refresh on the next teams fetch (they're derived from a join).
           setAthletes((prev) => prev.filter((a) => a.id !== deletedId));
@@ -2659,7 +2659,7 @@ export default function Dashboard() {
         open={showCreateTeam || Boolean(selectedTeam)}
         onClose={closeManageTeam}
         team={selectedTeam}
-        onSaved={(saved) => {
+        onSaved={(saved: any) => {
           if (selectedTeam) {
             // Update in place
             setTeams((prev) => prev.map((t) => t.id === saved.id ? { ...t, ...saved, member_count: t.member_count } : t));
@@ -2788,7 +2788,7 @@ export default function Dashboard() {
       <EditProfileModal
         open={showEditProfile}
         onClose={() => setShowEditProfile(false)}
-        onSaved={(updated) => setProfile(updated)}
+        onSaved={(updated: any) => setProfile(updated)}
       />
 
       <ProgramModal

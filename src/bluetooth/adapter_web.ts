@@ -101,6 +101,10 @@ export async function connectToAdapterWeb(args: {
     device = await navAny.bluetooth.requestDevice(fallback);
   }
 
+  // requestDevice returns `any` (navAny), so the reassignment above doesn't
+  // narrow `device` off null — assert it explicitly before use.
+  if (!device) throw new Error("No Bluetooth device was selected.");
+
   if (!device.gatt) throw new Error("Selected device has no GATT.");
 
   device.addEventListener("gattserverdisconnected", () => args.onDisconnect?.());
@@ -133,7 +137,7 @@ export async function startNotificationsWeb(
   const ch = await conn.service.getCharacteristic(characteristicUuid);
   await ch.startNotifications();
 
-  ch.addEventListener("characteristicvaluechanged", (ev) => {
+  ch.addEventListener("characteristicvaluechanged", (ev: Event) => {
     const t = ev.target as BluetoothRemoteGATTCharacteristic;
     if (t?.value) onValue(t.value);
   });

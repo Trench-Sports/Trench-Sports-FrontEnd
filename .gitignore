@@ -13,3 +13,6 @@ tools/.env.*
 firmware-src/**/build/
 **/build/esp-idf/
 sdkconfig.old
+
+# Local audit-agent output
+.audit/

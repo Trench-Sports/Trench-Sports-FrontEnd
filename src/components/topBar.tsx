@@ -25,6 +25,7 @@ function AuthActionButton(): JSX.Element {
 
   useEffect(() => {
     let alive = true;
+    if (!supabase) return;
 
     supabase.auth.getSession().then(({ data, error }) => {
       if (!alive) return;
@@ -61,7 +62,7 @@ function AuthActionButton(): JSX.Element {
       return {
         label: "Logout",
         onClick: async () => {
-          const { error } = await supabase.auth.signOut();
+          const { error } = await supabase!.auth.signOut();
           if (error) console.warn("[auth] signOut error:", error);
           nav("/");
         },

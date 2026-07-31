@@ -39,6 +39,10 @@ export default function LoginPage() {
       setErr("Please enter your email and password.");
       return;
     }
+    if (!supabase) {
+      setErr("Supabase is not configured.");
+      return;
+    }
 
     setBusy(true);
     try {
@@ -83,6 +87,10 @@ export default function LoginPage() {
     const email = form.email.trim();
     if (!email) {
       setErr("Enter your email first, then click Forgot password.");
+      return;
+    }
+    if (!supabase) {
+      setErr("Supabase is not configured.");
       return;
     }
 

@@ -58,6 +58,32 @@ const AGENTS = [
     triggers: (files) =>
       files.some((f) => /src\/pages\/session\.tsx$/.test(f) || /src\/pages\/mobile\/(session|home)\.tsx$/.test(f)),
   },
+  {
+    file: "ble-state-machine-auditor.md",
+    label: "ble-state-machine",
+    triggers: (files, diff) =>
+      files.some((f) => f.startsWith("src/bluetooth/")) ||
+      /connectBle|disconnectBle|connectAdditionalBag|disconnectSlot|startNotifications/.test(diff),
+  },
+  {
+    file: "payload-load-auditor.md",
+    label: "payload-load",
+    triggers: (files, diff) =>
+      /\.insert\(|\bjsonb\b|select\(\s*['"]\*['"]|\bevent_cells\b|raw:\s/.test(diff) ||
+      files.some((f) => /pages\/(mobile\/)?(session|home)\.tsx$/.test(f) || (f.startsWith("supabase/") && f.endsWith(".sql"))),
+  },
+  {
+    file: "migration-hygiene-auditor.md",
+    label: "migration-hygiene",
+    triggers: (files) => files.some((f) => f.startsWith("supabase/") && f.endsWith(".sql")),
+  },
+  {
+    file: "telemetry-pii-auditor.md",
+    label: "telemetry-pii",
+    triggers: (files, diff) =>
+      /\btrack\(|telemetryEvents/.test(diff) ||
+      files.some((f) => /src\/lib\/telemetry(Events)?\.ts$/.test(f)),
+  },
 ];
 
 // ── Shared preamble given to every agent (§2.3) ──────────────────────────────
@@ -174,12 +200,23 @@ async function main() {
     return 0;
   }
 
-  const base = getDiffBase();
-  const files = sh("git", ["diff", "--name-only", `${base}...HEAD`]).split("\n").filter(Boolean);
-  const diff = sh("git", ["diff", `${base}...HEAD`]);
+  // Mode: default reviews what a push adds (origin/main...HEAD). `--working`
+  // reviews uncommitted tracked changes, for an on-demand check before committing.
+  const working = process.argv.includes("--working");
+  let files, diff, scopeLabel;
+  if (working) {
+    files = sh("git", ["diff", "--name-only", "HEAD"]).split("\n").filter(Boolean);
+    diff = sh("git", ["diff", "HEAD"]);
+    scopeLabel = "uncommitted changes (working tree)";
+  } else {
+    const base = getDiffBase();
+    files = sh("git", ["diff", "--name-only", `${base}...HEAD`]).split("\n").filter(Boolean);
+    diff = sh("git", ["diff", `${base}...HEAD`]);
+    scopeLabel = `origin/main...HEAD (base ${base.slice(0, 8)})`;
+  }
 
   if (!diff || files.length === 0) {
-    console.log("[audit] No diff vs origin/main — nothing to review.");
+    console.log(`[audit] No diff in ${scopeLabel} — nothing to review.`);
     return 0;
   }
 
@@ -201,6 +238,7 @@ async function main() {
     return 0;
   }
 
+  console.log(`[audit] Scope: ${scopeLabel}`);
   console.log(`[audit] Reviewing ${files.length} changed file(s) with ${selected.length} agent(s): ${selected.map((a) => a.label).join(", ")}`);
 
   const results = await Promise.all(selected.map((a) => runAgent(claudeBin, a, diff)));

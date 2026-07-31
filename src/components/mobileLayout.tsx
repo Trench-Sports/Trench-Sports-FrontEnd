@@ -6,7 +6,7 @@
 import React, { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 
-import { initTheme, toggleTheme } from "../lib/themeManager.tsx";
+import { initTheme, toggleTheme } from "../lib/themeManager";
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 

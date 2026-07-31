@@ -76,7 +76,7 @@ function bytesToDataView(u8: Uint8Array) {
 //   ALL nearby BLE devices (or filter client-side) regardless of cache state.
 //
 // Scan strategy:
-//   - ScanMode.LOW_LATENCY for fast discovery (acceptable battery cost for a
+//   - ScanMode.SCAN_MODE_LOW_LATENCY for fast discovery (acceptable battery cost for a
 //     short manual scan).
 //   - No service-UUID filter in the scan call — we collect everything and let
 //     the UI label TS bags distinctly. This also catches old firmware units
@@ -132,7 +132,7 @@ export async function scanForDevices(opts: {
   const emit = () => onUpdate(Array.from(seen.values()));
 
   await BleClient.requestLEScan(
-    { scanMode: ScanMode.LOW_LATENCY },
+    { scanMode: ScanMode.SCAN_MODE_LOW_LATENCY },
     (result: ScanResult) => {
       const id   = result.device.deviceId;
       const name = result.device.name?.trim() ||
@@ -224,7 +224,7 @@ export async function connectToAdapterNative(args: {
         services: [args.serviceUuid],
         namePrefix: p,
         optionalServices: [args.serviceUuid],
-        scanMode: ScanMode.LOW_LATENCY,
+        scanMode: ScanMode.SCAN_MODE_LOW_LATENCY,
       } as any);
     } catch (e: any) {
       if (isUserCancel(e?.message ?? "")) throw e;
@@ -238,7 +238,7 @@ export async function connectToAdapterNative(args: {
       dev = await BleClient.requestDevice({
         services: [args.serviceUuid],
         optionalServices: [args.serviceUuid],
-        scanMode: ScanMode.LOW_LATENCY,
+        scanMode: ScanMode.SCAN_MODE_LOW_LATENCY,
       } as any);
     } catch (e: any) {
       if (isUserCancel(e?.message ?? "")) throw e;
@@ -250,7 +250,7 @@ export async function connectToAdapterNative(args: {
   if (!dev) {
     for (const prefix of [...prefixList, ""]) {
       const p = prefix.trim();
-      const opts: any = { optionalServices: [args.serviceUuid], scanMode: ScanMode.LOW_LATENCY };
+      const opts: any = { optionalServices: [args.serviceUuid], scanMode: ScanMode.SCAN_MODE_LOW_LATENCY };
       if (p) opts.namePrefix = p;
       try {
         dev = await BleClient.requestDevice(opts);

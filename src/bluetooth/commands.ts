@@ -6,6 +6,11 @@ export async function getCharacteristic(
   conn: AdapterConnection,
   uuid: string
 ): Promise<BluetoothRemoteGATTCharacteristic> {
+  // `service` exists only on the Web Bluetooth adapter connection; the native
+  // adapter writes through its own path. Narrow the union before accessing it.
+  if (conn.kind !== "web") {
+    throw new Error("getCharacteristic is only supported on the Web Bluetooth adapter.");
+  }
   return await conn.service.getCharacteristic(uuid);
 }
 

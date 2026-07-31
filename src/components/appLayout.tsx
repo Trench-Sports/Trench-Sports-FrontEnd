@@ -8,7 +8,7 @@ import React, { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 
 import TopBar from "./topBar.js";
-import { initTheme, toggleTheme } from "../lib/themeManager.tsx";
+import { initTheme, toggleTheme } from "../lib/themeManager";
 import { usePlatform } from "../hooks/usePlatform";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
