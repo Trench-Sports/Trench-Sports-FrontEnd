@@ -1304,6 +1304,20 @@ type DeviceInfo = {
   samplingHz:   number;        // 400 (IV, or live "hz") | 120 (III) | 25 (II)
 } | null;
 
+// Extract a battery percentage (0–100) from any device frame. Firmware does not
+// report battery today, so the exact field name is not yet fixed — accept the
+// common candidates (`batt` / `battery` / `soc` / `batt_pct`) so whichever key
+// the firmware ships lights up the indicator with no further frontend change.
+// Returns null when no recognized field is present or the value isn't a finite
+// number, which keeps the UI in its "no reading" (hidden) state.
+function parseBatteryPct(obj: any): number | null {
+  if (!obj || typeof obj !== "object") return null;
+  const raw = obj.batt ?? obj.battery ?? obj.soc ?? obj.batt_pct ?? obj.battery_pct;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return null;
+  return Math.max(0, Math.min(100, Math.round(n)));
+}
+
 type Athlete = {
   id: string;
   first_name: string;
@@ -2875,6 +2889,11 @@ export default function Home() {
   const [bleStatus,    setBleStatus]    = useState<BleStatus>("idle");
   const [bleSupported, setBleSupported] = useState(true);
   const [deviceInfo,   setDeviceInfo]   = useState<DeviceInfo>(null);
+  // Primary bag battery, 0–100. null = no reading yet (firmware hasn't reported
+  // one this connection), so the UI hides the indicator rather than showing a
+  // fake number. Populated by parseBatteryPct() from the hello packet or a
+  // periodic {type:"batt"} frame; cleared on every disconnect.
+  const [batteryPct,   setBatteryPct]   = useState<number | null>(null);
 
   // ── OTA ───────────────────────────────────────────────────────────────────────
   type OtaState = "idle" | "available" | "updating" | "done" | "error";
@@ -3295,6 +3314,11 @@ export default function Home() {
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
+      // Some firmware may embed battery in the hello packet. Only apply when
+      // actually present so a batt-less hello doesn't wipe a reading that a
+      // periodic {type:"batt"} frame already delivered.
+      const helloBatt = parseBatteryPct(obj);
+      if (helloBatt != null) setBatteryPct(helloBatt);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
@@ -3316,6 +3340,7 @@ export default function Home() {
           if (existing?.program_id && existing.program_id !== myProgramId) {
             console.warn(`[devices] ${deviceId} is claimed by another program — blocking`);
             setDeviceInfo(null);
+            setBatteryPct(null);
             deviceInfoRef.current = null;
             setBleStatus("disconnected");
             setBleError("This device is registered to a different program and can't be used here.");
@@ -3371,6 +3396,15 @@ export default function Home() {
     if (obj.type === "auth_ok" || obj.type === "auth_err") {
       otaAuthRef.current?.(obj.type === "auth_ok");
       otaAuthRef.current = null;
+      return;
+    }
+    // ── Battery telemetry ──────────────────────────────────────────────────
+    // Dedicated periodic frame, e.g. { type:"batt", batt:83 }. Firmware does
+    // not send this yet; when it does, the indicator updates live with no
+    // further change here. Ignore malformed values (parseBatteryPct → null).
+    if (obj.type === "batt" || obj.type === "battery") {
+      const pct = parseBatteryPct(obj);
+      if (pct != null) setBatteryPct(pct);
       return;
     }
 
@@ -3741,6 +3775,7 @@ export default function Home() {
             });
             setBleStatus("disconnected");
             setDeviceInfo(null);
+            setBatteryPct(null);
             captureRef.current = false;
             connRef.current    = null;
             setSessionActive(false);
@@ -3771,6 +3806,7 @@ export default function Home() {
           });
           setBleStatus("disconnected");
           setDeviceInfo(null);
+          setBatteryPct(null);
           captureRef.current = false;
           connRef.current    = null;
           setSessionActive(false);
@@ -3854,6 +3890,7 @@ export default function Home() {
     // the next connection if a different hardware generation reconnects
     // before its hello packet arrives.
     setDeviceInfo(null);
+    setBatteryPct(null);
     deviceInfoRef.current = null;
     setBleStatus("disconnected");
   }, []);
@@ -4926,6 +4963,45 @@ export default function Home() {
                           borderRadius: 4, padding: "1px 5px",
                         }}>
                           {badge.label}
+                        </span>
+                      );
+                    })()}
+                    {/* Battery — only when the device has reported a level this  */}
+                    {/* connection. Hidden (not zeroed) when no reading exists.    */}
+                    {batteryPct != null && (() => {
+                      // Green ≥50, amber 20–49, red <20.
+                      const c = batteryPct >= 50 ? { rgb: "0,255,136", ink: "#00965a" }
+                              : batteryPct >= 20 ? { rgb: "255,200,0", ink: "#a67c00" }
+                              :                     { rgb: "255,68,68", ink: "#c0392b" };
+                      return (
+                        <span
+                          title={`Bag battery: ${batteryPct}%`}
+                          style={{
+                            display: "inline-flex", alignItems: "center", gap: 4,
+                            fontSize: 9, fontWeight: 800, letterSpacing: "0.04em",
+                            color: isDark ? `rgb(${c.rgb})` : c.ink,
+                            background: isDark ? `rgba(${c.rgb},0.12)` : `rgba(${c.rgb},0.18)`,
+                            border: isDark ? `1px solid rgba(${c.rgb},0.30)` : `1px solid rgba(${c.rgb},0.55)`,
+                            borderRadius: 4, padding: "1px 5px",
+                          }}
+                        >
+                          {/* Battery glyph: body + proportional fill + terminal nub */}
+                          <span style={{
+                            position: "relative", width: 16, height: 8,
+                            border: "1px solid currentColor", borderRadius: 2,
+                            display: "inline-block", boxSizing: "border-box",
+                          }}>
+                            <span style={{
+                              position: "absolute", top: 1, left: 1, bottom: 1,
+                              width: `calc(${batteryPct}% - 2px)`, minWidth: 1,
+                              background: "currentColor", borderRadius: 1,
+                            }} />
+                            <span style={{
+                              position: "absolute", right: -3, top: 2, bottom: 2,
+                              width: 2, background: "currentColor", borderRadius: 1,
+                            }} />
+                          </span>
+                          {batteryPct}%
                         </span>
                       );
                     })()}

@@ -1,17 +1,38 @@
 // src/pages/login.tsx
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { authLoginSucceeded, authLoginFailed } from "../lib/telemetryEvents";
+
+import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
+import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 
 type LoginForm = {
   email: string;
   password: string;
 };
 
+function getTheme(): "dark" | "light" {
+  const root = document.documentElement;
+  const ds = (root.dataset.theme || "").toLowerCase();
+  if (ds === "dark" || ds === "light") return ds as "dark" | "light";
+  if (root.classList.contains("dark")) return "dark";
+  return "light";
+}
+
 export default function LoginPage() {
   const nav = useNavigate();
   const loc = useLocation();
+
+  const [theme, setTheme] = useState<"dark" | "light">(() => getTheme());
+  useEffect(() => {
+    const root = document.documentElement;
+    const obs = new MutationObserver(() => setTheme(getTheme()));
+    obs.observe(root, { attributes: true, attributeFilter: ["class", "data-theme"] });
+    return () => obs.disconnect();
+  }, []);
+
+  const logoSrc = theme === "dark" ? logoDark : logoLight;
 
   const redirectTo = useMemo(() => {
     const sp = new URLSearchParams(loc.search);
@@ -117,100 +138,84 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="ts-publicGlow">
-      <div style={{ width: "min(520px, 100%)" }}>
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontWeight: 950, fontSize: 28, letterSpacing: "-0.02em" }}>Welcome back</div>
-          <div style={{ opacity: 0.75, marginTop: 6 }}>Log in to view your dashboard and sessions.</div>
-        </div>
-
-        {noAccount ? (
-          <div className="ts-error">
-            No account found with that email.{" "}
-            <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
-              Create one now →
-            </Link>
-            <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Redirecting you to sign up…</div>
-          </div>
-        ) : err ? (
-          <div className="ts-error">{err}</div>
-        ) : null}
-
-        <form onSubmit={onSubmit} style={{ display: "grid", gap: 12, marginTop: 12 }}>
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 900, fontSize: 13, opacity: 0.9 }}>Email</label>
-            <input
-              value={form.email}
-              onChange={(e) => update("email", e.target.value)}
-              type="email"
-              autoComplete="email"
-              placeholder="you@team.com"
-              style={{
-                padding: "12px 14px",
-                borderRadius: 16,
-                border: "1px solid rgba(255,255,255,0.14)",
-                background: "rgba(255,255,255,0.06)",
-                color: "inherit",
-                outline: "none",
-              }}
-            />
+    <div className="ts-signupPage">
+      <section className="ts-signupWrap">
+        <div className="ts-signupCard">
+          <div className="ts-signupHeader">
+            <img className="ts-signupLogo" src={logoSrc} alt="Trench Sports" />
+            <div className="ts-signupTitleRow">
+              <h1 className="ts-signupTitle">Welcome back</h1>
+              <p className="ts-signupSub">Log in to view your dashboard and sessions.</p>
+            </div>
           </div>
 
-          <div style={{ display: "grid", gap: 6 }}>
-            <label style={{ fontWeight: 900, fontSize: 13, opacity: 0.9 }}>Password</label>
+          {noAccount ? (
+            <div className="ts-error">
+              No account found with that email.{" "}
+              <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
+                Create one now →
+              </Link>
+              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Redirecting you to sign up…</div>
+            </div>
+          ) : null}
 
-            <div className="ts-inputRow">
+          <form onSubmit={onSubmit} className="ts-signupForm">
+            <label className="ts-field">
+              <span>Email</span>
               <input
-                value={form.password}
-                onChange={(e) => update("password", e.target.value)}
-                type={showPw ? "text" : "password"}
-                autoComplete="current-password"
-                placeholder="••••••••"
-                style={{
-                  flex: 1,
-                  padding: "12px 14px",
-                  borderRadius: 16,
-                  border: "1px solid rgba(255,255,255,0.14)",
-                  background: "rgba(255,255,255,0.06)",
-                  color: "inherit",
-                  outline: "none",
-                }}
+                value={form.email}
+                onChange={(e) => update("email", e.target.value)}
+                type="email"
+                autoComplete="email"
+                placeholder="you@team.com"
               />
-              <button
-                type="button"
-                className="ts-miniBtn"
-                onClick={() => setShowPw((s) => !s)}
-                aria-label={showPw ? "Hide password" : "Show password"}
-              >
-                {showPw ? "Hide" : "Show"}
-              </button>
-            </div>
+            </label>
 
-            <div className="ts-inputRow" style={{ justifyContent: "space-between" }}>
-              <button type="button" className="ts-miniBtn" onClick={onForgotPassword} disabled={busy}>
-                Forgot password
-              </button>
-
-              <div style={{ display: "flex", gap: 10, alignItems: "center", opacity: 0.9, fontSize: 13 }}>
-                <span>New here?</span>
-                <Link className="ts-linkish" to="/signup">
-                  Create account
-                </Link>
+            <label className="ts-field">
+              <span>Password</span>
+              <div className="ts-inputRow">
+                <input
+                  value={form.password}
+                  onChange={(e) => update("password", e.target.value)}
+                  type={showPw ? "text" : "password"}
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  className="ts-miniBtn"
+                  onClick={() => setShowPw((s) => !s)}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                >
+                  {showPw ? "Hide" : "Show"}
+                </button>
               </div>
+
+              <div className="ts-inputRow" style={{ justifyContent: "flex-end" }}>
+                <button type="button" className="ts-miniBtn" onClick={onForgotPassword} disabled={busy}>
+                  Forgot password
+                </button>
+              </div>
+            </label>
+
+            {!noAccount && err ? <div className="ts-error">{err}</div> : null}
+
+            <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
+              {busy ? "Logging in…" : "Login"}
+            </button>
+
+            <div className="ts-signupFooter">
+              <span>New here?</span> <Link to="/signup">Create account</Link>
             </div>
-          </div>
 
-          <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
-            {busy ? "Logging in…" : "Login"}
-          </button>
-
-          <div style={{ textAlign: "center", opacity: 0.8, fontSize: 13 }}>
-            <Link className="ts-linkish" to="/">
-              Back to landing
-            </Link>
-          </div>
-        </form>
-      </div>
+            <div className="ts-backRow">
+              <Link to="/" className="ts-backLink">
+                ← Back to landing
+              </Link>
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   );
 }

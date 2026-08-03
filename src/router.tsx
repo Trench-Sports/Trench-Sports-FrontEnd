@@ -12,6 +12,7 @@ import Contact from "./pages/contact";
 import Privacy from "./pages/privacy";
 import Terms from "./pages/terms";
 import Session from "./pages/session";
+import Dummy from "./pages/dummy";
 
 // Internal-only observability dashboard. Lazy-loaded so its code (and any
 // future charting lib) never ships to coaches' bundles. Not linked in nav.
@@ -151,6 +152,7 @@ export const router = createBrowserRouter([
           : <Login />,
       },
       { path: "/onboarding", element: <Onboarding /> },
+      { path: "/dummy",      element: <Dummy /> },
       { path: "/contact",    element: <Contact /> },
       { path: "/privacy",    element: <Privacy /> },
       { path: "/terms",      element: <Terms /> },

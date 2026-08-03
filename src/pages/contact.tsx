@@ -4,14 +4,15 @@ import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
 import {
   IconMessage, IconWrench, IconHandshake, IconNewspaper, IconZap,
-  IconMail, IconCheck, type IconProps,
+  IconMail, IconCheck, IconTrendUp, type IconProps,
 } from "../components/icons";
 
 /* ─── Types ─────────────────────────────────────────────── */
-type InquiryType = "general" | "support" | "partnership" | "press" | "feedback";
+type InquiryType = "general" | "sales" | "support" | "partnership" | "press" | "feedback";
 
 const INQUIRY_OPTIONS: { value: InquiryType; label: string; Icon: React.ComponentType<IconProps> }[] = [
   { value: "general",     label: "General Inquiry",   Icon: IconMessage },
+  { value: "sales",       label: "Sales",             Icon: IconTrendUp },
   { value: "support",     label: "Technical Support", Icon: IconWrench },
   { value: "partnership", label: "Partnership",       Icon: IconHandshake },
   { value: "press",       label: "Press / Media",     Icon: IconNewspaper },
