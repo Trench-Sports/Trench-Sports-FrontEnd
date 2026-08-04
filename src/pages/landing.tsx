@@ -294,7 +294,7 @@ export default function Landing() {
   const testimonials = [
     {
       quote: "Trench Sports is the new and improved way for athletes, especially football players, to train. The pad helps me learn and track how much force I'm applying and how accurate my punch is. Especially being a Defensive Lineman, this pad will help and elevate my game to the next level!",
-      name: "VJ",
+      name: "Vincent Anthony Jr.",
       title: "Professional Football Player",
       org: "",
     },
@@ -302,6 +302,18 @@ export default function Landing() {
       quote: "Trench Sports' new pad is honestly really cool. What stood out to me most was being able to see where I hit and how hard I hit in real time — it adds a whole new level to training. It's not just reps anymore, it's feedback you can actually use. Definitely a game changer.",
       name: "Tyshon Reed",
       title: "D1 Football Player",
+      org: "",
+    },
+    {
+      quote: "I really like what Trench Sports is doing because it gives you data you can actually use. Instead of just feeling like you're getting better, you can see it. I think it can be a huge asset during the season for staying sharp and just as valuable in the offseason for tracking progress and getting the most out of every workout.",
+      name: "Wes Williams",
+      title: "Professional Football Player",
+      org: "",
+    },
+    {
+      quote: "As a defensive back, every rep matters. Trench Sports brings a new level of measurable data to player development that helps athletes and coaches see progress they couldn't quantify before. It's exciting to see technology like this pushing football training forward, and I think it has the potential to change how players develop at every level.",
+      name: "Brandon Johnson",
+      title: "Professional Football Player",
       org: "",
     },
   ];
