@@ -290,6 +290,27 @@ export function getClientIdValue(): string {
   return CLIENT_ID;
 }
 
+// Resolve the signed-in user's program from their profile and attach it to the
+// auto-context, so every subsequent event carries program_id (populates
+// app_events_program_ts_idx / per-program telemetry). Best-effort and never
+// throws — a failure just leaves program_id null, exactly as before.
+async function resolveProgramContext(userId: string | null): Promise<void> {
+  try {
+    if (!supabase || !userId) {
+      setTelemetryContext({ programId: null });
+      return;
+    }
+    const { data } = await supabase
+      .from("profiles")
+      .select("program_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    setTelemetryContext({ programId: (data as { program_id?: string | null } | null)?.program_id ?? null });
+  } catch {
+    /* leave program_id as-is; telemetry must never throw */
+  }
+}
+
 // ── Install listeners once ─────────────────────────────────────────────────
 let installed = false;
 export function initTelemetry(): void {
@@ -302,11 +323,15 @@ export function initTelemetry(): void {
   try {
     supabase?.auth.getSession().then(({ data }) => {
       accessToken = data.session?.access_token ?? null;
-      if (data.session?.user?.id) setTelemetryContext({ userId: data.session.user.id });
+      const uid = data.session?.user?.id ?? null;
+      if (uid) setTelemetryContext({ userId: uid });
+      void resolveProgramContext(uid);
     });
     supabase?.auth.onAuthStateChange((_evt, session) => {
       accessToken = session?.access_token ?? null;
-      setTelemetryContext({ userId: session?.user?.id ?? null });
+      const uid = session?.user?.id ?? null;
+      setTelemetryContext({ userId: uid });
+      void resolveProgramContext(uid);
     });
   } catch {
     /* ignore */

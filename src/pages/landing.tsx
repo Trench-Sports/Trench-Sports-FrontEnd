@@ -6,7 +6,7 @@ import HitSimulator from "../components/hitSimulator";
 import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
 import { IconBarChart, IconCrosshair, IconDumbbell, IconFlask, IconGraduationCap, IconTrophy, IconZap } from "../components/icons";
 import { AIInsightVisual, DataCaptureVisual, ImpactPropagationVisual } from "../components/platformVisuals";
-import { TESTIMONIALS } from "../content/testimonials";
+import { TESTIMONIALS, type Testimonial } from "../content/testimonials";
 
 // ── Request Demo Modal ────────────────────────────────────────────────────────
 function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -219,6 +219,40 @@ function ImpactCounter({ value, prefix = "", suffix = "", label, started }: {
   );
 }
 
+// ── Testimonial Marquee ───────────────────────────────────────────────────────
+// A row of quotes revolving endlessly right-to-left. The set is rendered twice so
+// the loop is seamless (CSS scrolls one full set, then the copy takes over with no
+// visible jump). Hovering anywhere over the row pauses the scroll.
+function TestimonialMarquee({ items }: { items: Testimonial[] }) {
+  const row = [...items, ...items]; // duplicate for a seamless loop
+
+  return (
+    <div className="ts-quoteMarquee">
+      <div className="ts-quoteTrack">
+        {row.map((t, i) => (
+          <div
+            key={i}
+            className="ts-testimonialCard ts-quoteCardRow"
+            aria-hidden={i >= items.length ? true : undefined}
+          >
+            <div className="ts-quoteMarks">"</div>
+            <p className="ts-quoteBody">{t.quote}</p>
+            <div className="ts-quoteMeta">
+              <div className="ts-quoteAvatar">
+                {t.name.split(" ").map((n) => n[0]).join("").slice(0, 2)}
+              </div>
+              <div>
+                <div className="ts-quoteName">{t.name}</div>
+                <div className="ts-quoteTitle">{t.title}</div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Landing() {
   const { ref: impactRef, inView: impactInView } = useInView();
   const { ref: navRef, inView: _navInView } = useInView(0);
@@ -311,13 +345,13 @@ export default function Landing() {
       Icon: IconFlask,
       title: "Sports Science Staff",
       body: "Standardized, repeatable contact metrics — consistency, symmetry, and output. Data you can take into the training room.",
-      to: "/contact", // TODO: repoint to /sports-science when that page ships
+      to: "/sports-science",
     },
     {
       Icon: IconCrosshair,
       title: "Performance Facilities",
       body: "Offer your clients something no other facility has. Independent sessions or integrated athlete management.",
-      to: "/contact", // TODO: repoint to /facilities when that page ships
+      to: "/facilities",
     },
   ];
 
@@ -519,23 +553,7 @@ export default function Landing() {
             <h2 className="ts-h2">Real feedback, from real athletes.</h2>
           </div>
 
-          <div className="ts-testimonialGrid">
-            {testimonials.map((t) => (
-              <div key={t.name} className="ts-testimonialCard">
-                <div className="ts-quoteMarks">"</div>
-                <p className="ts-quoteBody">{t.quote}</p>
-                <div className="ts-quoteMeta">
-                  <div className="ts-quoteAvatar">
-                    {t.name.split(" ").map((n) => n[0]).join("").slice(0, 2)}
-                  </div>
-                  <div>
-                    <div className="ts-quoteName">{t.name}</div>
-                    <div className="ts-quoteTitle">{t.title}</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
+          <TestimonialMarquee items={testimonials} />
         </div>
       </section>
 

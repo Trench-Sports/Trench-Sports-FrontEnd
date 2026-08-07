@@ -32,7 +32,7 @@ export const TESTIMONIALS: Testimonial[] = [
   },
   {
     name: "Jon Gullette",
-    title: "D1 Football Player · Campbell University",
+    title: "D1 Football Player",
     quote:
       "What I like about Trench Sports is that it gives you real feedback on the work you're putting in. Every rep matters, and being able to see the data behind your performance helps you understand where you're improving and what you need to keep working on. I think it's something athletes at every level can benefit from.",
   },

@@ -3743,19 +3743,45 @@ html.is-native .ts-webOnly {
 
 /* ── Testimonials ────────────────────────────────────────────────────────────── */
 
-.ts-testimonialGrid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 16px;
+/* Marquee: a row of quotes revolving endlessly right-to-left. The track holds
+   two copies of the set and scrolls exactly one set-width, so when it snaps back
+   the copy is already in place and the loop looks continuous. */
+.ts-quoteMarquee {
+    position: relative;
+    overflow: hidden;
+    /* Vertical breathing room so a card's hover lift isn't clipped by
+       overflow: hidden (which we need to hide the off-screen cards). */
+    padding-block: 14px;
+    /* Fade the quotes out at both edges instead of a hard clip. */
+    -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+    mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
 }
 
-@media (max-width: 860px) {
-    .ts-testimonialGrid { grid-template-columns: 1fr; }
+.ts-quoteTrack {
+    display: flex;
+    gap: 16px;
+    width: max-content;
+    animation: ts-marquee 60s linear infinite;
+}
+
+/* Pause the revolve while the pointer is over the row. */
+.ts-quoteMarquee:hover .ts-quoteTrack {
+    animation-play-state: paused;
+}
+
+@keyframes ts-marquee {
+    /* Offset by half the gap (8px) so the seam between the two sets is exact. */
+    from { transform: translateX(0); }
+    to   { transform: translateX(calc(-50% - 8px)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ts-quoteTrack { animation: none; }
 }
 
 .ts-testimonialCard {
     position: relative;
-    padding: 24px 22px;
+    padding: 28px 26px;
     border-radius: 22px;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.09);
@@ -3765,6 +3791,12 @@ html.is-native .ts-webOnly {
     gap: 14px;
     transition: transform 200ms ease, border-color 200ms ease;
     overflow: hidden;
+}
+
+/* Row cards get a fixed width so the marquee reads as an even stream; the row's
+   align-stretch keeps them all the height of the tallest quote. */
+.ts-quoteCardRow {
+    flex: 0 0 clamp(300px, 30vw, 380px);
 }
 
 .ts-testimonialCard::before {
@@ -4791,9 +4823,10 @@ html.is-native .ts-webOnly {
 }
 .ts-uc-profileCardHead { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 6px; }
 .ts-uc-spark { width: 100%; height: 40px; display: block; }
-.ts-uc-sparkLine { stroke: var(--accent); stroke-dasharray: 260; stroke-dashoffset: 260; }
-.ts-uc-sparkLine.is-drawn { animation: ts-uc-draw 1.4s ease forwards; }
-@keyframes ts-uc-draw { to { stroke-dashoffset: 0; } }
+/* Plain full line — reliable in static shots. (A dash-draw effect mis-rendered
+   under the non-uniform preserveAspectRatio="none" scaling, so we keep it static;
+   .is-drawn just fades it in.) */
+.ts-uc-sparkLine { stroke: var(--accent); fill: none; opacity: 1; transition: opacity 600ms ease; }
 .ts-uc-profileHistory { display: flex; flex-direction: column; gap: 3px; }
 .ts-uc-profileRow {
   display: flex;

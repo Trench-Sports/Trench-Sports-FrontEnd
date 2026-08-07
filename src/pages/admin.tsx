@@ -75,6 +75,22 @@ type ProgramRow = {
 
 type Gate = "checking" | "denied" | "allowed";
 
+// Subscription tiers, in order. `value` is what programs.plan stores (see
+// supabase/admin_set_program_plan.sql); `label` is what admins see.
+const PLAN_OPTIONS: { value: string; label: string; note: string }[] = [
+  { value: "trial", label: "Trial", note: "Evaluation" },
+  { value: "I", label: "Tier I", note: "Foundation" },
+  { value: "II", label: "Tier II", note: "Analysis" },
+  { value: "III", label: "Tier III", note: "Intelligence" },
+];
+const PLAN_LABEL: Record<string, string> = PLAN_OPTIONS.reduce(
+  (acc, o) => ((acc[o.value] = o.label), acc),
+  {} as Record<string, string>
+);
+function planLabel(plan: string): string {
+  return PLAN_LABEL[plan] ?? plan;
+}
+
 // ── Small presentational helpers ────────────────────────────────────────────
 const muted = "var(--muted)";
 const border = "var(--panel-border)";
@@ -225,6 +241,32 @@ export default function Admin() {
   const [tele, setTele] = useState<TelemetryPulse | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
+
+  // Staged tier change awaiting explicit confirmation (see confirm modal).
+  const [pendingPlan, setPendingPlan] = useState<{ program: ProgramRow; next: string } | null>(null);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [planErr, setPlanErr] = useState<string | null>(null);
+
+  async function applyPlanChange() {
+    if (!pendingPlan || !supabase) return;
+    setSavingPlan(true);
+    setPlanErr(null);
+    const { program, next } = pendingPlan;
+    const { data, error } = await supabase.rpc("admin_set_program_plan", {
+      p_program_id: program.id,
+      p_new_plan: next,
+    });
+    if (error) {
+      setPlanErr(error.message || "Failed to change tier.");
+      setSavingPlan(false);
+      return;
+    }
+    // Optimistically reflect the confirmed change in the table.
+    const confirmed = (data as { new_plan?: string } | null)?.new_plan ?? next;
+    setPrograms((rows) => rows.map((r) => (r.id === program.id ? { ...r, plan: confirmed } : r)));
+    setSavingPlan(false);
+    setPendingPlan(null);
+  }
 
   async function loadAll() {
     if (!supabase) return;
@@ -484,7 +526,37 @@ export default function Admin() {
                   return (
                     <tr key={p.id} style={{ borderBottom: `1px solid ${border}` }}>
                       <td style={{ padding: "10px", fontWeight: 700 }}>{p.name}</td>
-                      <td style={{ padding: "10px" }}>{p.plan}</td>
+                      <td style={{ padding: "10px" }}>
+                        <select
+                          value={p.plan}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            if (next !== p.plan) setPendingPlan({ program: p, next });
+                          }}
+                          title="Change subscription tier"
+                          style={{
+                            appearance: "none",
+                            background: "var(--btn-bg)",
+                            color: "var(--text)",
+                            border: `1px solid ${border}`,
+                            borderRadius: 8,
+                            padding: "4px 24px 4px 8px",
+                            fontSize: 12,
+                            fontWeight: 700,
+                            cursor: "pointer",
+                            backgroundImage:
+                              "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'><path d='M1 3l4 4 4-4' fill='none' stroke='%23888' stroke-width='1.5'/></svg>\")",
+                            backgroundRepeat: "no-repeat",
+                            backgroundPosition: "right 8px center",
+                          }}
+                        >
+                          {PLAN_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      </td>
                       <td style={{ padding: "10px" }}>
                         <Badge text={p.status} tone={statusTone as any} />
                       </td>
@@ -591,6 +663,94 @@ export default function Admin() {
           </div>
         )}
       </div>
+
+      {/* ── Confirm tier change ──────────────────────────────────────────── */}
+      {pendingPlan && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          onClick={() => !savingPlan && (setPendingPlan(null), setPlanErr(null))}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--panel)",
+              border: `1px solid ${border}`,
+              borderRadius: 16,
+              padding: 24,
+              maxWidth: 420,
+              width: "100%",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.4)",
+            }}
+          >
+            <h3 style={{ margin: "0 0 6px", fontSize: 18, fontWeight: 800 }}>Change subscription tier?</h3>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: muted, lineHeight: 1.5 }}>
+              This changes the subscription tier for{" "}
+              <strong style={{ color: "var(--text)" }}>{pendingPlan.program.name}</strong>. It affects which
+              features the program can access. Limits (athletes, devices, sessions) are not changed automatically.
+            </p>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 12,
+                padding: "14px 12px",
+                borderRadius: 12,
+                background: "var(--btn-bg)",
+                marginBottom: 16,
+              }}
+            >
+              <Badge text={planLabel(pendingPlan.program.plan)} tone="neutral" />
+              <span style={{ color: muted, fontSize: 18 }}>→</span>
+              <Badge text={planLabel(pendingPlan.next)} tone="ok" />
+            </div>
+            {planErr && (
+              <div style={{ fontSize: 13, color: "#ff6b6b", marginBottom: 12 }}>{planErr}</div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                className="btnSecondary"
+                disabled={savingPlan}
+                onClick={() => {
+                  setPendingPlan(null);
+                  setPlanErr(null);
+                }}
+                style={{ padding: "8px 16px" }}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={savingPlan}
+                onClick={() => void applyPlanChange()}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 10,
+                  border: "1px solid var(--accent)",
+                  background: "var(--accent)",
+                  color: "#000",
+                  fontWeight: 800,
+                  fontSize: 13,
+                  cursor: savingPlan ? "default" : "pointer",
+                  opacity: savingPlan ? 0.6 : 1,
+                }}
+              >
+                {savingPlan ? "Saving…" : `Confirm change to ${planLabel(pendingPlan.next)}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ fontSize: 11, color: muted, textAlign: "center", marginTop: 20 }}>
         Panels 2/3/5/6 land in later phases (need capacity cron or a few weeks of data). See the build plan.

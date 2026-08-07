@@ -158,6 +158,8 @@ export const router = createBrowserRouter([
       // ── Audience use-case pages (one template, one content entry each) ──
       { path: "/college",    element: <UseCasePage slug="college" /> },
       { path: "/pro",        element: <UseCasePage slug="pro" /> },
+      { path: "/sports-science", element: <UseCasePage slug="sports-science" /> },
+      { path: "/facilities", element: <UseCasePage slug="facilities" /> },
       { path: "/privacy",    element: <Privacy /> },
       { path: "/terms",      element: <Terms /> },
       {

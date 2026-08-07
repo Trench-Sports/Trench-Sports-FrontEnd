@@ -69,7 +69,8 @@ async function captureCard(page, cardLabel, fileBase, outDir, shots) {
     const cards = [...document.querySelectorAll(".ts-card, .ts-span2")];
     const el = cards.find((c) => {
       const h = c.querySelector(".ts-cardTitle, h2, h3, h4");
-      return h && h.textContent.trim() === label;
+      const r = c.getBoundingClientRect();
+      return h && h.textContent.trim() === label && r.width > 0 && r.height > 0 && c.offsetParent !== null;
     });
     if (!el) return false;
     el.setAttribute("data-shot", "1");
@@ -144,14 +145,52 @@ async function run() {
   await page.screenshot({ path: summaryPath, clip: summaryClip });
   shots.push(["session-summary", summaryClip]);
 
-  // ── Pro page cards: leaderboard + team comparison (Insights tab) ───────────
+  // ── Pro / Sports-Science cards from the Insights tab ───────────────────────
   await selectTab(page, "Insights & Analysis");
   await captureCard(page, "Athlete Leaderboard", "leaderboard", OUT_DIR, shots);
   await captureCard(page, "Team Comparison", "team-comparison", OUT_DIR, shots);
+  await captureCard(page, "Most Improved", "most-improved", OUT_DIR, shots); // sports-science longitudinal analytics
 
-  // ── Pro page card: CSV export / API (Export & API tab, AMS-integration angle)
+  // ── Pro card: CSV export / API (Export & API tab, AMS-integration angle) ───
   await selectTab(page, "Export & API");
   await captureCard(page, "Session-Summary CSV Export", "export-api", OUT_DIR, shots);
+
+  // ── Sports-Science: AI Coaching Insights, with the "Fatigue" card removed ──
+  // COMPLIANCE: that one card uses banned language; we drop the node entirely
+  // (read-only throwaway page) so it's gone from both the pixels and the scan.
+  await selectTab(page, "Recent Sessions");
+  const ci = await page.evaluate(() => {
+    // The inner .ts-card (title + cards wrapper), not the outer .ts-span2 grid cell.
+    const container = [...document.querySelectorAll(".ts-card")]
+      .filter((el) => (el.textContent || "").trim().startsWith("Coaching Insights"))
+      .find((el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 && el.offsetParent !== null; });
+    if (!container) return false;
+    const wrap = container.children[1] || container; // children[0] = title row, [1] = cards
+    [...wrap.children].forEach((card) => { if (/fatigue|injur/i.test(card.textContent || "")) card.remove(); });
+    container.setAttribute("data-shot", "1");
+    container.scrollIntoView({ block: "center" });
+    return true;
+  });
+  if (!ci) throw new Error("Coaching Insights not found");
+  await page.waitForTimeout(300);
+  const ciHits = await page.evaluate(({ src }) => {
+    const bad = new RegExp(src, "i");
+    const root = document.querySelector('[data-shot="1"]');
+    const out = [];
+    const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const p = n.parentElement;
+      if (!p || ["STYLE", "SCRIPT"].includes(p.tagName)) continue;
+      const t = (n.textContent || "").trim();
+      if (t && bad.test(t)) out.push(t.slice(0, 50));
+    }
+    return out;
+  }, { src: BANNED.source });
+  if (ciHits.length) throw new Error(`COMPLIANCE: banned language in "coaching-insights":\n  - ${ciHits.join("\n  - ")}`);
+  await page.locator('[data-shot="1"]').screenshot({ path: join(OUT_DIR, "coaching-insights.png") });
+  await page.evaluate(() => document.querySelector('[data-shot="1"]')?.removeAttribute("data-shot"));
+  shots.push(["coaching-insights", "card"]);
 
   await desktop.close();
 

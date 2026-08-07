@@ -13,6 +13,8 @@ import sessionSummaryShot from "../assets/useCases/session-summary.png";
 import leaderboardShot from "../assets/useCases/leaderboard.png";
 import teamComparisonShot from "../assets/useCases/team-comparison.png";
 import exportApiShot from "../assets/useCases/export-api.png";
+import coachingInsightsShot from "../assets/useCases/coaching-insights.png";
+import mostImprovedShot from "../assets/useCases/most-improved.png";
 
 export type UseCaseSlug = "college" | "pro" | "sports-science" | "facilities";
 
@@ -298,6 +300,234 @@ export const USE_CASES: Partial<Record<UseCaseSlug, UseCaseContent>> = {
       title: "Measure the reps that decide games.",
       body: "See the leaderboard, the team comparisons, and the export running on your own roster's data — then pipe it into the stack you already run. Request a demo and we'll set it up.",
       ctaLabel: "Request a Demo",
+    },
+  },
+
+  "sports-science": {
+    slug: "sports-science",
+    audienceTag: "Sports Science Staff",
+    seo: {
+      title: "Standardized Contact Testing for Sports Science Staff | Trench Sports",
+      description:
+        "Repeatable contact-measurement protocols — consistency, symmetry, and output, measured the same way every session.",
+      canonical: "https://trenchsports.ai/sports-science",
+    },
+    hero: {
+      kicker: "Sports Science",
+      headline: "Standardized contact testing, every session.",
+      sub: "Measure force, output, placement, and consistency at the point of contact — the same protocol, the same way, every time — so the numbers are comparable across athletes, groups, and weeks. With AI analysis that reads each session for you.",
+      primaryCta: { label: "Request a Demo", to: "/contact?audience=sports-science&inquiry=sales" },
+      secondaryCta: { label: "View Demo Dashboard", to: "/dummy" },
+      stats: [
+        { value: "96", label: "sensor cells per pad" },
+        { value: "3,600/sec", label: "peak sampling rate" },
+        { value: "<100ms", label: "feedback latency" },
+      ],
+    },
+    problem: {
+      kicker: "The Problem Today",
+      title: "You can't compare what you can't standardize.",
+      body: "Sports science runs on repeatable measurement — the same test, the same conditions, numbers you can trust over time. Contact work rarely gets that. It's assessed by eye or with methods that shift session to session, so the results aren't comparable across athletes or across weeks, and whatever you do capture takes hours to analyze by hand.",
+      bullets: [
+        "No standardized, repeatable protocol for contact measurement",
+        "Results that don't compare session to session or athlete to athlete",
+        "Consistency, symmetry, and output left unquantified",
+        "Session analysis done by hand, hours after the fact",
+      ],
+    },
+    workflow: {
+      kicker: "How It Fits",
+      title: "One protocol, measured and analyzed automatically.",
+      steps: [
+        {
+          title: "Set a repeatable protocol",
+          body: "The same 96-cell pad, the same mount, no calibration step that drifts — every athlete tested under identical conditions, so the setup itself never moves the numbers.",
+        },
+        {
+          title: "Capture identical metrics",
+          body: "Force, output, placement, cadence, and strike angle are recorded the same way on every rep of every session — the raw material for measurement you can actually compare.",
+        },
+        {
+          title: "Get the analysis automatically",
+          body: "The dashboard reads each session as it lands — output, placement, consistency — so your staff spends its time on interpretation, not on data entry and spreadsheets.",
+        },
+      ],
+    },
+    outcomes: {
+      kicker: "What You Get",
+      title: "The analysis and the analytics, done for you.",
+      rows: [
+        {
+          num: "01",
+          kicker: "AI Analysis",
+          title: "The analysis, written for you.",
+          body: "Every session gets an automated read — output trending up or down, placement against the roster mean, consistency and cadence — surfaced in plain language with the numbers behind each call. Your staff starts from insight instead of a raw export.",
+          tags: ["Auto session analysis", "Output & placement", "Consistency read"],
+          visual: "sessionSummary",
+          device: "laptop",
+          image: coachingInsightsShot,
+          imageAlt: "Trench AI coaching insights: automated analysis of output, placement, and consistency across a session",
+        },
+        {
+          num: "02",
+          kicker: "Longitudinal Analytics",
+          title: "Measure change the same way over time.",
+          body: "Because every session uses the same protocol, a change in the numbers is real signal, not measurement noise. Track output and consistency across the whole cohort over weeks — ranked, comparable, and yours to interrogate.",
+          tags: ["90-day trends", "Cohort-wide", "Comparable metrics"],
+          visual: "leaderboard",
+          device: "laptop",
+          image: mostImprovedShot,
+          imageAlt: "Trench most-improved analytics ranking athletes by strength-index change over the last 90 days",
+        },
+        {
+          num: "03",
+          kicker: "Standardized Measurement",
+          title: "One protocol, one set of numbers.",
+          body: "Force, output, cadence, a full placement heatmap, and 3D strike angle — captured identically every session, so consistency and placement are measured, not estimated. The same test, every athlete, every week.",
+          tags: ["Placement heatmap", "3D strike angle", "Output & cadence"],
+          visual: "placementHeatmap",
+          device: "laptop",
+          image: sessionSummaryShot,
+          imageAlt: "Trench session summary: placement heatmap with peak force, strength index, cadence, and 3D strike angle",
+        },
+      ],
+    },
+    proof: {
+      kicker: "Proof",
+      title: "Objective data the staff can stand behind.",
+      testimonialNames: ["Wes Williams", "Jon Gullette", "Tyshon Reed"],
+    },
+    objections: [
+      {
+        q: "Is this a validated lab instrument?",
+        a: "It's a standardized measurement tool, not a clinical device. Every athlete is tested under identical conditions — same pad, same protocol, no drifting calibration — so the outputs (force, placement, consistency, cadence) are repeatable and comparable. We're happy to share the measurement methodology with your staff.",
+      },
+      {
+        q: "How is the data standardized across athletes?",
+        a: "Same 96-cell pad, same mount, and no calibration step that shifts between sessions. Every rep is captured the same way, so the numbers are comparable athlete-to-athlete and week-to-week rather than anchored to who set it up that day.",
+      },
+      {
+        q: "Can we get the raw data for our own analysis?",
+        a: "Yes. Session-summary CSV export plus per-program API access let your staff pull the underlying numbers straight into your own tools and models — the dashboard's analysis is a starting point, not a walled garden.",
+      },
+    ],
+    closing: {
+      title: "Measure it the same way, every time.",
+      body: "See the AI analysis, the longitudinal trends, and the standardized session metrics running on real football data. Request a demo and we'll walk your staff through the methodology.",
+      ctaLabel: "Request a Demo",
+    },
+  },
+
+  facilities: {
+    slug: "facilities",
+    audienceTag: "Performance Facilities",
+    seo: {
+      title: "Measurable Training for Performance Facilities | Trench Sports",
+      description:
+        "Turn every session into measurable data — a new draw for athletes and a new line of revenue.",
+      canonical: "https://trenchsports.ai/facilities",
+    },
+    hero: {
+      kicker: "Performance Facilities",
+      headline: "Give athletes a reason to train at your facility.",
+      sub: "Turn every session into measurable data athletes can see and share — objective proof they're getting better. It's a draw no other facility has, and a new line of revenue for yours.",
+      primaryCta: { label: "Become a Partner", to: "/contact?audience=facilities&inquiry=partnership" },
+      secondaryCta: { label: "View Demo Dashboard", to: "/dummy" },
+      stats: [
+        { value: "96", label: "sensor cells per pad" },
+        { value: "3,600/sec", label: "peak sampling rate" },
+        { value: "<100ms", label: "feedback latency" },
+      ],
+    },
+    problem: {
+      kicker: "The Problem Today",
+      title: "Every facility has the same equipment.",
+      body: "Racks, sleds, turf — every serious facility has them, and none of it hands an athlete a number to take home. Without objective proof they're improving, sessions blur together, athletes shop between gyms on price, and there's nothing that makes your floor the one they can't train without.",
+      bullets: [
+        "No objective proof athletes get better at your facility",
+        "Contact training that looks the same everywhere",
+        "Nothing that turns a session into something athletes share",
+        "No differentiated offering to build recurring revenue on",
+      ],
+    },
+    workflow: {
+      kicker: "How It Fits",
+      title: "Add it to the floor, turn it into an offering.",
+      steps: [
+        {
+          title: "Add it to your floor",
+          body: "The 96-cell pad mounts to equipment you already have — battery-powered, no calibration, no dedicated room. You're running measured sessions in minutes.",
+        },
+        {
+          title: "Every session becomes measurable",
+          body: "Force, output, and placement capture automatically while athletes train at full speed. They leave with a number and a trend, not just a workout.",
+        },
+        {
+          title: "Turn it into a draw and a revenue line",
+          body: "Leaderboards and athlete profiles keep people coming back, and you package it your way — a premium testing session, a membership tier, or a leaderboard event.",
+        },
+      ],
+    },
+    outcomes: {
+      kicker: "What You Get",
+      title: "A draw, a retention hook, and a floor you can scale.",
+      rows: [
+        {
+          num: "01",
+          kicker: "Competition",
+          title: "Competition that keeps them coming back.",
+          body: "A live leaderboard turns training into a game — athletes chase the top of the board, come back to defend a spot, and bring teammates in to beat it. The draw that quietly builds retention.",
+          tags: ["Live leaderboard", "Head-to-head", "Retention driver"],
+          visual: "leaderboard",
+          device: "laptop",
+          image: leaderboardShot,
+          imageAlt: "Trench athlete leaderboard ranking football players by strength index",
+        },
+        {
+          num: "02",
+          kicker: "Athlete Profiles",
+          title: "Progress they can see and show off.",
+          body: "Every athlete gets their own profile — force and placement trends, personal bests, and session history on their phone. Proof they're improving that they share with teammates, and that keeps them renewing.",
+          tags: ["Athlete trends", "Personal bests", "In their pocket"],
+          visual: "phoneAthleteProfile",
+          device: "phone",
+        },
+        {
+          num: "03",
+          kicker: "Run the Floor",
+          title: "Run it across your whole floor.",
+          body: "One dashboard for every athlete and session — walk-ins, members, and teams alike — so a small staff can offer measured training at scale and package it however you sell it.",
+          tags: ["Every athlete", "Session history", "Built to scale"],
+          visual: "coachDashboard",
+          device: "laptop",
+          image: coachDashboardShot,
+          imageAlt: "Trench coach dashboard showing a full roster with per-athlete strikes, force, and session type",
+        },
+      ],
+    },
+    proof: {
+      kicker: "Proof",
+      title: "Athletes want to train where they can measure it.",
+      testimonialNames: ["Vincent Anthony Jr.", "Brandon Johnson", "Jon Gullette"],
+    },
+    objections: [
+      {
+        q: "How do facilities make money with this?",
+        a: "Partners usually offer it as a premium measured-testing session, fold it into a higher membership tier, or run leaderboard events and combines. It's a paid add-on that also lifts retention — and we'll help you price it for your market.",
+      },
+      {
+        q: "How much space and setup does it need?",
+        a: "It mounts to equipment you already have, runs on battery with no calibration, and sets up in minutes. No dedicated room, no install, no rewiring your floor.",
+      },
+      {
+        q: "Do we need extra staff to run it?",
+        a: "No. Sessions capture automatically and the dashboard does the analysis, so one staffer can run measured training for a full floor without adding headcount.",
+      },
+    ],
+    closing: {
+      title: "Be the facility athletes can't train without.",
+      body: "See the leaderboards, the athlete profiles, and the floor-wide dashboard on real data — then let's talk about how it fits your business.",
+      ctaLabel: "Become a Partner",
     },
   },
 };

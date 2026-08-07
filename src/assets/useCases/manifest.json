@@ -30,8 +30,18 @@
     "box": "card"
   },
   {
+    "name": "most-improved",
+    "file": "most-improved.png",
+    "box": "card"
+  },
+  {
     "name": "export-api",
     "file": "export-api.png",
+    "box": "card"
+  },
+  {
+    "name": "coaching-insights",
+    "file": "coaching-insights.png",
     "box": "card"
   },
   {
