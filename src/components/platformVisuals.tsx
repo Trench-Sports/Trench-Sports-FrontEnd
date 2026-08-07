@@ -2,27 +2,12 @@
 // Three purpose-built mockup visuals for the landing page's "Platform" section —
 // each one illustrates its own feature card instead of a generic random grid.
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { IconActivity, IconAlertTriangle, IconAngle, IconTrendUp } from "./icons";
+import { useVisible } from "../hooks/useVisible";
 
 const GRID_ROWS = 8;
 const GRID_COLS = 12;
-
-// Pauses the CSS-driven animations below while their card is off-screen —
-// these run on an infinite loop, so this keeps idle cards from burning
-// paint cycles while a visitor is reading a different part of the page.
-function useVisible(threshold = 0.15) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const obs = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { threshold });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [threshold]);
-  return { ref, visible };
-}
 
 function buildCells() {
   const cells: { row: number; col: number; index: number }[] = [];
@@ -130,7 +115,7 @@ export function AIInsightVisual() {
     <div className="ts-pv-frame">
       <div className="ts-pv-aiGrid">
         <div className="ts-pv-aiCard">
-          <div className="ts-pv-aiHead" style={{ color: "#ffb020" }}><IconActivity size={13} /> Fatigue Index</div>
+          <div className="ts-pv-aiHead" style={{ color: "#ffb020" }}><IconActivity size={13} /> Output Index</div>
           <svg className="ts-pv-sparkline" viewBox="0 0 100 32" preserveAspectRatio="none">
             <polyline
               points="0,10 15,14 30,12 45,20 60,18 75,26 100,24"
@@ -166,7 +151,7 @@ export function AIInsightVisual() {
           <div className="ts-pv-aiValue" style={{ color: "#00ff88" }}>71° → 84° corrected</div>
         </div>
       </div>
-      <div className="ts-pv-caption">AI flags what to fix — before it shows up as an injury report</div>
+      <div className="ts-pv-caption">AI flags what to fix — rep by rep, session over session</div>
     </div>
   );
 }

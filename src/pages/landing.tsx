@@ -6,6 +6,7 @@ import HitSimulator from "../components/hitSimulator";
 import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
 import { IconBarChart, IconCrosshair, IconDumbbell, IconFlask, IconGraduationCap, IconTrophy, IconZap } from "../components/icons";
 import { AIInsightVisual, DataCaptureVisual, ImpactPropagationVisual } from "../components/platformVisuals";
+import { TESTIMONIALS } from "../content/testimonials";
 
 // ── Request Demo Modal ────────────────────────────────────────────────────────
 function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -285,60 +286,38 @@ export default function Landing() {
       num: "03",
       kicker: "Intelligence",
       title: "Patterns coaches couldn't see before.",
-      body: "AI flags load asymmetry, tempo drift, and fatigue signatures across sessions. Get auto-generated session summaries and weekly performance reports your staff can act on immediately.",
-      tags: ["Fatigue detection", "Load asymmetry", "Auto summaries"],
+      body: "AI flags load asymmetry, tempo drift, and output decline across sessions. Get auto-generated session summaries and weekly performance reports your staff can act on immediately.",
+      tags: ["Output trends", "Load asymmetry", "Auto summaries"],
       Visual: AIInsightVisual,
     },
   ];
 
-  const testimonials = [
-    {
-      quote: "Trench Sports is the new and improved way for athletes, especially football players, to train. The pad helps me learn and track how much force I'm applying and how accurate my punch is. Especially being a Defensive Lineman, this pad will help and elevate my game to the next level!",
-      name: "Vincent Anthony Jr.",
-      title: "Professional Football Player",
-    },
-    {
-      quote: "Trench Sports' new pad is honestly really cool. What stood out to me most was being able to see where I hit and how hard I hit in real time — it adds a whole new level to training. It's not just reps anymore, it's feedback you can actually use. Definitely a game changer.",
-      name: "Tyshon Reed",
-      title: "D1 Football Player",
-    },
-    {
-      quote: "I really like what Trench Sports is doing because it gives you data you can actually use. Instead of just feeling like you're getting better, you can see it. I think it can be a huge asset during the season for staying sharp and just as valuable in the offseason for tracking progress and getting the most out of every workout.",
-      name: "Wes Williams",
-      title: "Professional Football Player",
-    },
-    {
-      quote: "As a defensive back, every rep matters. Trench Sports brings a new level of measurable data to player development that helps athletes and coaches see progress they couldn't quantify before. It's exciting to see technology like this pushing football training forward, and I think it has the potential to change how players develop at every level.",
-      name: "Brandon Johnson",
-      title: "Professional Football Player",
-    },
-    {
-      quote: "What I like about Trench Sports is that it gives you real feedback on the work you're putting in. Every rep matters, and being able to see the data behind your performance helps you understand where you're improving and what you need to keep working on. I think it's something athletes at every level can benefit from.",
-      name: "Jon Gullette",
-      title: "D1 Football Player · Campbell University",
-    },
-  ];
+  const testimonials = TESTIMONIALS;
 
   const useCases = [
     {
       Icon: IconGraduationCap,
       title: "College Athletics",
       body: "Scale across your entire roster. Coach-ready dashboards, athlete profiles, and compliance tracking built for athletic departments.",
+      to: "/college",
     },
     {
       Icon: IconTrophy,
       title: "Professional Teams",
       body: "Elite-grade data for elite programs. Integrate with your existing AMS stack or run our custom AI-powered analytics Dashboard.",
+      to: "/pro",
     },
     {
       Icon: IconFlask,
       title: "Sports Science Staff",
-      body: "Validated metrics for return-to-play, load management, and fatigue monitoring. Data you can take into the training room.",
+      body: "Standardized, repeatable contact metrics — consistency, symmetry, and output. Data you can take into the training room.",
+      to: "/contact", // TODO: repoint to /sports-science when that page ships
     },
     {
       Icon: IconCrosshair,
       title: "Performance Facilities",
       body: "Offer your clients something no other facility has. Independent sessions or integrated athlete management.",
+      to: "/contact", // TODO: repoint to /facilities when that page ships
     },
   ];
 
@@ -525,7 +504,7 @@ export default function Landing() {
                 <div className="ts-useCaseIcon"><uc.Icon size={22} /></div>
                 <h3 className="ts-h3">{uc.title}</h3>
                 <p className="ts-muted">{uc.body}</p>
-                <Link className="ts-useCaseLink" to="/contact">Learn more →</Link>
+                <Link className="ts-useCaseLink" to={uc.to}>Learn more →</Link>
               </div>
             ))}
           </div>
@@ -579,7 +558,7 @@ export default function Landing() {
             <button className="ts-btnSecondary" style={{ padding: "14px 28px", fontSize: 16 }} onClick={() => setDemoOpen(true)}>
               Request Demo
             </button>
-            <Link className="ts-btnSecondary" to="/dashboard" style={{ padding: "14px 28px", fontSize: 16 }}>
+            <Link className="ts-btnSecondary" to="/dummy" style={{ padding: "14px 28px", fontSize: 16 }}>
               View Demo Dashboard
             </Link>
           </div>

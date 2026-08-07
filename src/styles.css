@@ -4483,3 +4483,391 @@ html.is-native .ts-webOnly {
   color: rgba(180, 0, 255, 0.9);
   margin-bottom: 8px;
 }
+
+
+/* =============================================================================
+   USE-CASE PAGES  (useCasePage.tsx, deviceFrame.tsx, useCaseVisuals.tsx)
+   Namespaced: ts-uc-  —  reuses existing tokens; adds no new colors.
+   ============================================================================= */
+
+/* ── Hero ─────────────────────────────────────────────────────────────────── */
+.ts-uc-hero {
+  padding: 72px 20px 44px;
+  text-align: center;
+}
+.ts-uc-heroInner {
+  max-width: 800px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+}
+.ts-uc-heroSub { max-width: 60ch; margin: 0; }
+.ts-uc-heroCtas { justify-content: center; }
+
+.ts-uc-statStrip {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 10px;
+}
+.ts-uc-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px 22px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  min-width: 120px;
+}
+.ts-uc-statVal {
+  font-size: 26px;
+  font-weight: 950;
+  letter-spacing: -0.5px;
+  color: var(--text);
+}
+.ts-uc-statLbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+
+/* ── Problem ──────────────────────────────────────────────────────────────── */
+.ts-uc-narrow { max-width: 780px; }
+.ts-uc-problemBody { font-size: 16px; line-height: 1.7; margin-top: 8px; }
+.ts-uc-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 22px 0 0;
+  display: grid;
+  gap: 12px;
+}
+.ts-uc-bullet {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ts-uc-bulletDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex: 0 0 auto;
+  background: var(--accent);
+  box-shadow: 0 0 10px rgba(180, 0, 255, 0.6);
+}
+
+/* ── Outcome rows: let device frames own their width ──────────────────────── */
+.ts-uc-row .ts-featureRight { width: 100%; }
+
+/* ── Device frames ────────────────────────────────────────────────────────── */
+.ts-uc-laptop {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  filter: drop-shadow(0 30px 60px rgba(0, 0, 0, 0.45));
+}
+.ts-uc-laptopGlow {
+  position: absolute;
+  top: -30px; right: -30px;
+  width: 130px; height: 130px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(180, 0, 255, 0.30) 0%, transparent 70%);
+  pointer-events: none;
+}
+.ts-uc-laptopInner {
+  position: relative;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(14px);
+  overflow: hidden;
+}
+.ts-uc-laptopBar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+}
+.ts-uc-dot { width: 9px; height: 9px; border-radius: 50%; background: rgba(255, 255, 255, 0.22); }
+.ts-uc-urlChip {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 3px 10px;
+  border-radius: 999px;
+}
+.ts-uc-badge {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: #fff;
+  background: rgba(180, 0, 255, 0.85);
+  border: 1px solid rgba(180, 0, 255, 0.5);
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+.ts-uc-laptopScreen { padding: 14px; }
+/* Screenshot mode: edge-to-edge under the bar, shown at the shot's natural aspect
+   (no crop) so wide leaderboards and tall summary cards both render in full. */
+.ts-uc-laptopScreen--flush { padding: 0; overflow: hidden; background: #fff; }
+.ts-uc-phoneScreen--flush { padding-top: 0; }
+.ts-uc-shot { display: block; width: 100%; height: auto; }
+
+.ts-uc-phone { position: relative; width: 100%; max-width: 258px; margin: 0 auto; }
+.ts-uc-phoneGlow {
+  position: absolute;
+  top: -24px; right: -24px;
+  width: 120px; height: 120px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(180, 0, 255, 0.28) 0%, transparent 70%);
+  pointer-events: none;
+}
+.ts-uc-phoneInner {
+  position: relative;
+  border-radius: 34px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
+  padding: 14px 12px;
+  overflow: hidden;
+}
+.ts-uc-phoneNotch {
+  position: absolute;
+  top: 10px; left: 50%;
+  transform: translateX(-50%);
+  width: 58px; height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.ts-uc-badge--phone { position: absolute; top: 12px; right: 12px; margin: 0; z-index: 2; }
+.ts-uc-phoneScreen { padding-top: 22px; }
+
+/* ── Shared mock text scale ───────────────────────────────────────────────── */
+.ts-uc-mock { font-size: 12px; color: var(--text); }
+
+/* ── coachDashboard ───────────────────────────────────────────────────────── */
+.ts-uc-dashHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.ts-uc-dashTitle { font-weight: 900; letter-spacing: 0.3px; }
+.ts-uc-dashSel {
+  font-size: 11px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 3px 8px;
+  border-radius: 8px;
+}
+.ts-uc-dashCols,
+.ts-uc-dashRow {
+  display: grid;
+  grid-template-columns: 1fr 30px 1.5fr;
+  gap: 8px;
+  align-items: center;
+}
+.ts-uc-dashCols {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  opacity: 0.7;
+  padding: 0 6px 6px;
+}
+.ts-uc-dashRow {
+  padding: 7px 6px;
+  border-radius: 8px;
+  transition: background 320ms ease;
+}
+.ts-uc-dashRow.is-active { background: rgba(180, 0, 255, 0.12); }
+.ts-uc-dashName { font-weight: 700; }
+.ts-uc-dashPos { color: var(--muted); font-size: 11px; }
+.ts-uc-dashForce { display: flex; align-items: center; gap: 8px; }
+.ts-uc-dashBarTrack {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.ts-uc-dashBarFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(180, 0, 255, 0.55), rgba(180, 0, 255, 1));
+  transition: width 700ms ease;
+}
+.ts-uc-dashVal { font-variant-numeric: tabular-nums; font-weight: 800; min-width: 30px; text-align: right; }
+
+/* ── placementHeatmap ─────────────────────────────────────────────────────── */
+.ts-uc-heatHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.ts-uc-heatTitle { font-weight: 900; }
+.ts-uc-heatRep { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ts-uc-heatGrid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: 3px;
+  aspect-ratio: 12 / 8;
+}
+.ts-uc-heatCell {
+  border-radius: 3px;
+  background: rgba(180, 0, 255, calc(0.05 + var(--uc-heat, 0) * 0.85));
+  box-shadow: 0 0 calc(var(--uc-heat, 0) * 9px) rgba(180, 0, 255, calc(var(--uc-heat, 0) * 0.55));
+}
+.ts-uc-heatGrid.is-live .ts-uc-heatCell {
+  animation: ts-uc-heatPulse 1.4s ease-in-out infinite alternate;
+}
+@keyframes ts-uc-heatPulse {
+  from { opacity: 0.4; }
+  to   { opacity: 1; }
+}
+.ts-uc-heatLegend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 10px;
+  color: var(--muted);
+}
+.ts-uc-heatSwatch { width: 12px; height: 12px; border-radius: 3px; background: rgba(180, 0, 255, 0.15); }
+.ts-uc-heatSwatch--hi { background: rgba(180, 0, 255, 0.9); }
+.ts-uc-heatConsistency { margin-left: auto; color: var(--text); font-weight: 700; }
+
+/* ── phoneAthleteProfile ──────────────────────────────────────────────────── */
+.ts-uc-profile { display: flex; flex-direction: column; gap: 12px; }
+.ts-uc-profileTop { display: flex; align-items: center; gap: 10px; }
+.ts-uc-profileAvatar {
+  width: 40px; height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  font-size: 14px;
+  color: var(--accent);
+  background: rgba(180, 0, 255, 0.14);
+  border: 1px solid rgba(180, 0, 255, 0.3);
+}
+.ts-uc-profileName { font-weight: 900; font-size: 14px; }
+.ts-uc-profileMeta { color: var(--muted); font-size: 11px; }
+.ts-uc-profileStats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ts-uc-profileStat {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ts-uc-profileStatVal { font-weight: 900; font-size: 18px; color: var(--text); }
+.ts-uc-profileStatLbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.ts-uc-profileCard {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.ts-uc-profileCardHead { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted); margin-bottom: 6px; }
+.ts-uc-spark { width: 100%; height: 40px; display: block; }
+.ts-uc-sparkLine { stroke: var(--accent); stroke-dasharray: 260; stroke-dashoffset: 260; }
+.ts-uc-sparkLine.is-drawn { animation: ts-uc-draw 1.4s ease forwards; }
+@keyframes ts-uc-draw { to { stroke-dashoffset: 0; } }
+.ts-uc-profileHistory { display: flex; flex-direction: column; gap: 3px; }
+.ts-uc-profileRow {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 11px;
+  color: var(--muted);
+}
+.ts-uc-profileRowVal { color: var(--text); font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* ── Objections accordion ─────────────────────────────────────────────────── */
+.ts-uc-objList { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
+.ts-uc-objItem {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  overflow: hidden;
+  transition: border-color 160ms ease;
+}
+.ts-uc-objItem.open {
+  border-color: rgba(180, 0, 255, 0.36);
+  box-shadow: 0 0 0 2px rgba(180, 0, 255, 0.08);
+}
+.ts-uc-objQ {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 20px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
+  font-family: inherit;
+}
+.ts-uc-objQ:hover { background: rgba(180, 0, 255, 0.05); }
+.ts-uc-objQ:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ts-uc-objChevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  display: flex;
+  transition: transform 240ms cubic-bezier(0.4, 0, 0.2, 1), color 160ms;
+}
+.ts-uc-objItem.open .ts-uc-objChevron { transform: rotate(180deg); color: var(--accent); }
+.ts-uc-objA {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 280ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.ts-uc-objItem.open .ts-uc-objA { grid-template-rows: 1fr; }
+.ts-uc-objAInner { overflow: hidden; min-height: 0; }
+.ts-uc-objAInner > p {
+  margin: 0;
+  padding: 0 20px 18px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--muted);
+}
+
+/* ── Responsive ───────────────────────────────────────────────────────────── */
+@media (max-width: 860px) {
+  .ts-uc-laptop { max-width: 100%; }
+  .ts-uc-phone { max-width: 220px; }
+}
+
+/* ── Reduced motion: hold the animated mocks steady ───────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .ts-uc-heatGrid.is-live .ts-uc-heatCell { animation: none; opacity: 1; }
+  .ts-uc-sparkLine { stroke-dashoffset: 0; }
+  .ts-uc-dashBarFill { transition: none; }
+}

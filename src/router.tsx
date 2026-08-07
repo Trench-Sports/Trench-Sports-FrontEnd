@@ -9,6 +9,7 @@ import Login from "./pages/login";
 import Dashboard from "./pages/dashboard";
 import Onboarding from "./pages/onboarding";
 import Contact from "./pages/contact";
+import UseCasePage from "./pages/useCasePage";
 import Privacy from "./pages/privacy";
 import Terms from "./pages/terms";
 import Session from "./pages/session";
@@ -154,6 +155,9 @@ export const router = createBrowserRouter([
       { path: "/onboarding", element: <Onboarding /> },
       { path: "/dummy",      element: <Dummy /> },
       { path: "/contact",    element: <Contact /> },
+      // ── Audience use-case pages (one template, one content entry each) ──
+      { path: "/college",    element: <UseCasePage slug="college" /> },
+      { path: "/pro",        element: <UseCasePage slug="pro" /> },
       { path: "/privacy",    element: <Privacy /> },
       { path: "/terms",      element: <Terms /> },
       {

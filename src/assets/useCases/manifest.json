@@ -1,0 +1,47 @@
+[
+  {
+    "name": "coach-dashboard",
+    "file": "coach-dashboard.png",
+    "box": {
+      "x": 34,
+      "y": 710,
+      "width": 1372,
+      "height": 1044
+    }
+  },
+  {
+    "name": "session-summary",
+    "file": "session-summary.png",
+    "box": {
+      "x": 728,
+      "y": 984,
+      "width": 668,
+      "height": 761
+    }
+  },
+  {
+    "name": "leaderboard",
+    "file": "leaderboard.png",
+    "box": "card"
+  },
+  {
+    "name": "team-comparison",
+    "file": "team-comparison.png",
+    "box": "card"
+  },
+  {
+    "name": "export-api",
+    "file": "export-api.png",
+    "box": "card"
+  },
+  {
+    "name": "mobile-home",
+    "file": "mobile-home.png",
+    "box": {
+      "x": 0,
+      "y": 0,
+      "width": 390,
+      "height": 844
+    }
+  }
+]
