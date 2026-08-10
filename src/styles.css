@@ -3864,6 +3864,12 @@ html.is-native .ts-webOnly {
     gap: 16px;
     width: max-content;
     animation: ts-marquee 60s linear infinite;
+    /* Pin the track to its own compositor layer for the whole run. A layer this
+       wide, transformed continuously, is exactly what mobile Safari evicts under
+       memory pressure — and an evicted layer paints nothing, which is the row
+       going blank part-way through instead of coming back around. */
+    will-change: transform;
+    backface-visibility: hidden;
 }
 
 /* Pause the revolve while the pointer is over the row. Gated to real pointers:
@@ -3877,9 +3883,11 @@ html.is-native .ts-webOnly {
 }
 
 @keyframes ts-marquee {
-    /* Offset by half the gap (8px) so the seam between the two sets is exact. */
-    from { transform: translateX(0); }
-    to   { transform: translateX(calc(-50% - 8px)); }
+    /* Offset by half the gap (8px) so the seam between the two sets is exact.
+       translate3d rather than translateX so the track is GPU-composited from the
+       first frame, instead of being promoted part-way in. */
+    from { transform: translate3d(0, 0, 0); }
+    to   { transform: translate3d(calc(-50% - 8px), 0, 0); }
 }
 
 /* With the revolve switched off, a frozen track would strand every quote past
@@ -3921,6 +3929,13 @@ html.is-native .ts-webOnly {
    align-stretch keeps them all the height of the tallest quote. */
 .ts-quoteCardRow {
     flex: 0 0 clamp(300px, 30vw, 380px);
+    /* No backdrop blur on the moving cards. Ten backdrop-filtered cards riding a
+       3000px track means re-rasterising ten blurs every frame, which is what
+       pushes a phone into dropping the layer. The static use-case grid keeps its
+       blur; here it bought nothing anyway, since the background behind the row
+       is essentially flat. */
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
 }
 
 .ts-testimonialCard::before {
