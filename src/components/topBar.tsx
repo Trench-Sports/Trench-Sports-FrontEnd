@@ -4,6 +4,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import ThemeToggle from "./themeToggle"; // (tsx can omit extension)
 import { supabase } from "../supabaseClient";
 import type { Session } from "@supabase/supabase-js";
+import { LANDING_NAV_SECTIONS, scrollToSection } from "../lib/landingSections";
+import { useActiveSection } from "../hooks/useActiveSection";
 
 type ThemeMode = "light" | "dark" | string;
 
@@ -82,7 +84,38 @@ function AuthActionButton(): JSX.Element {
   );
 }
 
+/**
+ * The landing page's section links, shown inline in the bar. Its own component
+ * so the scroll-spy hook isn't called conditionally from TopBar.
+ * Hidden under 900px by CSS — landingNav.tsx's pill takes over there.
+ */
+function SectionNav(): JSX.Element {
+  const active = useActiveSection(LANDING_NAV_SECTIONS.map((s) => s.id));
+
+  return (
+    <nav className="topBarSections" aria-label="Page sections">
+      {LANDING_NAV_SECTIONS.map((s) => {
+        const isActive = active === s.id;
+        return (
+          <button
+            key={s.id}
+            type="button"
+            className={`topBarSection ${isActive ? "topBarSection--active" : ""}`}
+            onClick={() => scrollToSection(s.id)}
+            aria-current={isActive ? "true" : undefined}
+          >
+            {s.label}
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 export default function TopBar({ theme, onToggleTheme, logoSrc }: TopBarProps): JSX.Element {
+  // Section links only make sense on the one page that has those sections.
+  const isLanding = useLocation().pathname === "/";
+
   return (
     <div className="topBar">
       <div className="topBarLeft">
@@ -96,6 +129,8 @@ export default function TopBar({ theme, onToggleTheme, logoSrc }: TopBarProps): 
 
         <div className="topBarTitle">Trench Sports</div>
       </div>
+
+      {isLanding && <SectionNav />}
 
       <div className="topBarRight">
         <AuthActionButton />

@@ -5,6 +5,10 @@
     /* Electric purple accent */
     --accent: #b400ff;
     --accent-soft: rgba(180, 0, 255, 0.18);
+    /* Display-text gradient — deep purple lifting to light orchid. Both ends
+       clear the page in either theme, so it needs no per-theme override.
+       Defined once because more than one rule paints with it. */
+    --text-gradient: linear-gradient(90deg, #5A00B4, #C86BFF);
     /* Theme tokens (default = dark) */
     --bg: #07070a;
     --bg-gradient:
@@ -435,6 +439,72 @@ code {
 }
 
 
+/* ── Landing section links (TopBar centre, "/" only) ─────────────────────────
+   Below 900px these give way to landingNav.tsx's floating pill, which is why
+   the bar can afford to let them shrink away rather than wrap. */
+
+.topBarSections {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    margin: 0 8px;
+    /* The row hugs its buttons exactly, so the active pill's rounded ends and
+       the focus ring's 4px outset sit right on the box edge — they need room,
+       and the box must not clip. */
+    padding: 4px;
+}
+
+.topBarSection {
+    appearance: none;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    white-space: nowrap;
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    color: var(--muted);
+    opacity: 0.75;
+    transition: color 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+
+.topBarSection:hover {
+    color: var(--text);
+    background: var(--panel);
+    opacity: 1;
+}
+
+.topBarSection:focus-visible {
+    outline: 2px solid rgba(180, 0, 255, 0.6);
+    outline-offset: 2px;
+}
+
+.topBarSection--active,
+.topBarSection--active:hover {
+    color: var(--accent);
+    background: rgba(180, 0, 255, 0.10);
+    opacity: 1;
+}
+
+@media (max-width: 900px) {
+    .topBarSections { display: none; }
+}
+
+/* Sections are jumped to from the bar, so they need to clear it rather than
+   sliding underneath. Matches the header's height (12 + 76 + 14) plus a gap. */
+#hero,
+#how-it-works,
+#platform,
+#proof,
+#use-cases,
+#testimonials {
+    scroll-margin-top: 118px;
+}
+
+
 /* Right side of top bar: keep items vertically centered + spaced */
 
 .topBarRight {
@@ -521,8 +591,40 @@ code {
     padding-bottom: env(safe-area-inset-bottom);
 }
 
+/* The bar inside is position: sticky, but a sticky element can only travel
+   within its own parent's box — so the header itself has to stick, or the whole
+   thing scrolls away with it. The background matches body's fixed gradient
+   exactly, so the band reads as page rather than as a panel. */
 .mobileHeader {
     padding: 12px 12px 0;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--bg-gradient);
+    background-attachment: fixed;
+}
+
+/* Softens the header's bottom edge, so content dissolves into the bar instead
+   of being sliced off at a hard line.
+   The scrim repeats the page's own background with the same fixed attachment,
+   which anchors it to the viewport — so it lines up with the real background
+   pixel-for-pixel in either theme and at any scroll depth, and the mask just
+   dials it out. The backdrop-filter rides the same mask, giving a blur that's
+   strongest under the bar and gone by the bottom edge. */
+.mobileHeader::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    height: 30px;
+    pointer-events: none;
+    background: var(--bg-gradient);
+    background-attachment: fixed;
+    -webkit-backdrop-filter: blur(7px);
+    backdrop-filter: blur(7px);
+    -webkit-mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 100%);
+    mask-image: linear-gradient(to bottom, #000 0%, rgba(0, 0, 0, 0.55) 45%, transparent 100%);
 }
 
 .mobileMain {
@@ -902,7 +1004,7 @@ code {
 }
 
 .ts-gradientText {
-    background: linear-gradient(90deg, rgba(180, 0, 255, 1), rgba(0, 220, 255, 1));
+    background: var(--text-gradient);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -3665,7 +3767,7 @@ html.is-native .ts-webOnly {
     font-weight: 950;
     letter-spacing: -0.5px;
     padding-right: 0.12em;
-    background: linear-gradient(90deg, rgba(180, 0, 255, 1), rgba(0, 220, 255, 1));
+    background: var(--text-gradient);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
@@ -3764,9 +3866,14 @@ html.is-native .ts-webOnly {
     animation: ts-marquee 60s linear infinite;
 }
 
-/* Pause the revolve while the pointer is over the row. */
-.ts-quoteMarquee:hover .ts-quoteTrack {
-    animation-play-state: paused;
+/* Pause the revolve while the pointer is over the row. Gated to real pointers:
+   on touch devices :hover latches after a tap and stays latched until something
+   else is tapped, which would freeze the marquee and never let it come back
+   around for mobile users. */
+@media (hover: hover) and (pointer: fine) {
+    .ts-quoteMarquee:hover .ts-quoteTrack {
+        animation-play-state: paused;
+    }
 }
 
 @keyframes ts-marquee {
@@ -3775,8 +3882,25 @@ html.is-native .ts-webOnly {
     to   { transform: translateX(calc(-50% - 8px)); }
 }
 
+/* With the revolve switched off, a frozen track would strand every quote past
+   the first off-screen behind the row's overflow: hidden. Hand the row over to
+   the reader as a swipeable scroller instead, and drop the duplicate set that
+   only exists to hide the animation's seam. */
 @media (prefers-reduced-motion: reduce) {
+    .ts-quoteMarquee {
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+
+    .ts-quoteMarquee::-webkit-scrollbar { display: none; }
+
     .ts-quoteTrack { animation: none; }
+
+    .ts-quoteTrack > [aria-hidden="true"] { display: none; }
+
+    .ts-quoteCardRow { scroll-snap-align: center; }
 }
 
 .ts-testimonialCard {
@@ -3969,174 +4093,6 @@ html.is-native .ts-webOnly {
 
 .ts-heroLanding {
     padding-top: 48px !important;
-}
-
-
-/* ── Overlay container ────────────────────────────────────────────────────────
-   Fixed to LEFT edge, vertically centered.                                     */
-
-.lnav-overlay {
-    position: fixed;
-    left: 20px;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 40;
-    background: transparent;
-    border: none;
-    padding: 0;
-}
-
-/* Hide on narrow screens */
-@media (max-width: 900px) {
-    .lnav-overlay { display: none; }
-}
-
-
-/* ── Nav wrapper ─────────────────────────────────────────────────────────────*/
-
-.lnav-nav {
-    display: flex;
-    align-items: stretch;
-    position: relative;
-}
-
-/* Track runs along the LEFT side — inside the list padding */
-.lnav-track {
-    position: absolute;
-    left: 0;
-    top: 4px;
-    bottom: 4px;
-    width: 2px;
-    border-radius: 2px;
-    background: rgba(255, 255, 255, 0.10);
-    overflow: hidden;
-}
-
-.lnav-trackFill {
-    width: 100%;
-    min-height: 8%;
-    background: linear-gradient(
-        180deg,
-        rgba(180, 0, 255, 0.85),
-        rgba(0, 220, 255, 0.60)
-    );
-    border-radius: 2px;
-    transition: height 380ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-
-/* ── List ────────────────────────────────────────────────────────────────────*/
-
-.lnav-list {
-    list-style: none;
-    margin: 0;
-    /* Left padding clears the track line */
-    padding: 0 0 0 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    align-items: flex-start;
-}
-
-
-/* ── Item button ──────────────────────────────────────────────────────────────
-   Dot on LEFT, label on RIGHT.
-   Ghost at rest → brightens on hover → full highlight when active.             */
-
-.lnav-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    /* Balanced padding wraps the dot + label so the pill is centred on both. */
-    padding: 7px 14px 7px 10px;
-    border: 1px solid transparent;
-    border-radius: 999px;
-    background: transparent;
-    /* Neutralise the leaked global <button> chrome (shadow ring / lift). */
-    box-shadow: none;
-    color: var(--text);
-    font-size: 12px;
-    font-weight: 700;
-    text-align: left;
-    cursor: pointer;
-    opacity: 0.35;
-    letter-spacing: 0.2px;
-    transition:
-        opacity    180ms ease,
-        transform  180ms ease,
-        background 180ms ease,
-        border-color 180ms ease,
-        box-shadow 180ms ease;
-}
-
-.lnav-item:hover {
-    opacity: 0.80;
-    transform: translateX(3px);
-    background: rgba(255, 255, 255, 0.05);
-    border-color: transparent;
-    box-shadow: none;
-}
-
-.lnav-item:active {
-    box-shadow: none;
-}
-
-/* Keyboard focus: a ring that hugs the pill's own radius (no offset), so it
-   never bleeds into the neighbouring items or clips the dot. */
-.lnav-item:focus-visible {
-    outline: none;
-    border-color: rgba(180, 0, 255, 0.70);
-    box-shadow: 0 0 0 2px rgba(180, 0, 255, 0.30);
-}
-
-.lnav-item--active,
-.lnav-item--active:hover {
-    opacity: 1;
-    transform: translateX(4px);
-    background: rgba(180, 0, 255, 0.10);
-    border-color: rgba(180, 0, 255, 0.55);
-    box-shadow:
-        0 0 0 1px rgba(180, 0, 255, 0.15),
-        0 4px 16px rgba(180, 0, 255, 0.18);
-}
-
-
-/* ── Dot ─────────────────────────────────────────────────────────────────────*/
-
-.lnav-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: 0 0 auto;
-    background: rgba(255, 255, 255, 0.30);
-    transition:
-        background  200ms ease,
-        box-shadow  200ms ease,
-        transform   200ms ease;
-}
-
-.lnav-item:hover .lnav-dot {
-    background: rgba(255, 255, 255, 0.60);
-}
-
-.lnav-item--active .lnav-dot {
-    background: rgba(180, 0, 255, 0.95);
-    box-shadow:
-        0 0 0 3px rgba(180, 0, 255, 0.15),
-        0 0 10px rgba(180, 0, 255, 0.55);
-    transform: scale(1.4);
-}
-
-
-/* ── Label ───────────────────────────────────────────────────────────────────*/
-
-.lnav-label {
-    white-space: nowrap;
-    line-height: 1.3;
-}
-
-.lnav-item--active .lnav-label {
-    text-shadow: 0 0 18px rgba(180, 0, 255, 0.25);
 }
 
 

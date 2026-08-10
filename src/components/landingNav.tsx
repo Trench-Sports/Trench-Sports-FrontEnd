@@ -1,71 +1,25 @@
 // src/components/landingNav.tsx
-// Scroll-tracking nav — fixed LEFT-edge ghost overlay.
-// Floats over page content, zero layout impact.
-// No auth buttons, no CTAs.
+// Small-screen section nav — a floating pill bottom-left that opens a drawer.
+// On wider screens the same sections live in the TopBar instead (see
+// SectionNav in topBar.tsx), so this renders nothing there.
 
 import React, { useState } from "react";
+import { LANDING_NAV_SECTIONS, scrollToSection } from "../lib/landingSections";
+import { useActiveSection } from "../hooks/useActiveSection";
 
-export type NavSection = {
-  id: string;
-  label: string;
-};
-
-export const LANDING_NAV_SECTIONS: NavSection[] = [
-  { id: "hero",          label: "Home"         },
-  { id: "how-it-works",  label: "How It Works" },
-  { id: "platform",      label: "Platform"     },
-  { id: "proof",         label: "Results"      },
-  { id: "use-cases",     label: "Use Cases"    },
-  { id: "testimonials",  label: "Athletes Say" },
-];
-
-type LandingNavProps = {
-  activeSection: string;
-};
-
-export default function LandingNav({ activeSection }: LandingNavProps) {
+export default function LandingNav() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const activeSection = useActiveSection(LANDING_NAV_SECTIONS.map((s) => s.id));
 
   const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToSection(id);
     setMobileOpen(false);
   };
 
   const activeIdx = LANDING_NAV_SECTIONS.findIndex((s) => s.id === activeSection);
-  const fillPct = Math.max(((activeIdx + 1) / LANDING_NAV_SECTIONS.length) * 100, 8);
 
   return (
     <>
-      {/* ── Desktop: fixed LEFT-edge ghost overlay ────────────────────── */}
-      <aside className="lnav-overlay" aria-label="Page sections">
-        <nav className="lnav-nav">
-          {/* Vertical progress track — left side of list */}
-          <div className="lnav-track">
-            <div className="lnav-trackFill" style={{ height: `${fillPct}%` }} />
-          </div>
-
-          <ul className="lnav-list">
-            {LANDING_NAV_SECTIONS.map((s) => {
-              const isActive = activeSection === s.id;
-              return (
-                <li key={s.id}>
-                  <button
-                    className={`lnav-item ${isActive ? "lnav-item--active" : ""}`}
-                    onClick={() => scrollTo(s.id)}
-                    aria-current={isActive ? "true" : undefined}
-                  >
-                    {/* Dot LEFT, label RIGHT — natural left-to-right read */}
-                    <span className="lnav-dot" />
-                    <span className="lnav-label">{s.label}</span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </nav>
-      </aside>
-
       {/* ── Mobile: floating pill bottom-left ─────────────────────────── */}
       <button
         className="lnav-mobilePill"

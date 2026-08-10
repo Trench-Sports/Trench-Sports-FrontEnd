@@ -1,6 +1,7 @@
 // src/components/hitSimulator.jsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import tsLogoMark from "../images/TS Logo Enhancement Set 2-01.png";
+import { IconBullseye, IconGauge, IconStopwatch, IconStrikeRate, IconZoneGrid } from "./icons";
 
 // ─── Types & Constants ────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ function zoneBounds(zone) {
 
 const MODE_META = {
   Power: {
-    icon: "💥",
+    Icon: IconGauge,
     color: "#b400ff",
     glow: "rgba(180,0,255,0.55)",
     label: "Hit anywhere",
@@ -47,7 +48,7 @@ const MODE_META = {
     bullets: ["Full-bag impact detection", "Force + velocity analytics", "Auto session logging"],
   },
   Accuracy: {
-    icon: "🎯",
+    Icon: IconBullseye,
     color: "#00dcff",
     glow: "rgba(0,220,255,0.55)",
     label: "Hit the center",
@@ -55,7 +56,7 @@ const MODE_META = {
     bullets: ["Bullseye proximity scoring", "Strike consistency tracking", "Drift pattern heatmaps"],
   },
   Reaction: {
-    icon: "⚡️",
+    Icon: IconStopwatch,
     color: "#ffcc00",
     glow: "rgba(255,200,0,0.55)",
     label: "React & Strike",
@@ -63,7 +64,7 @@ const MODE_META = {
     bullets: ["Signal-to-impact latency", "Reaction trend charts", "Fatigue tracking over sets"],
   },
   Volume: {
-    icon: "🥊",
+    Icon: IconStrikeRate,
     color: "#ff6a00",
     glow: "rgba(255,106,0,0.55)",
     label: "Punch volume",
@@ -71,7 +72,7 @@ const MODE_META = {
     bullets: ["Per-window hit count", "Strength index across window", "Fatigue slope across rounds"],
   },
   Target: {
-    icon: "🏹",
+    Icon: IconZoneGrid,
     color: "#00ff88",
     glow: "rgba(0,255,136,0.55)",
     label: "Hit the zone",
@@ -986,9 +987,15 @@ export default function HitSimulator() {
           color: var(--muted);
         }
 
+        /* Sizing lives on the svg, not font-size — these are line icons now. */
         .ts-sim-modeTabIcon {
-          font-size: 18px;
+          display: inline-flex;
           line-height: 1;
+        }
+
+        .ts-sim-modeTabIcon svg {
+          width: 18px;
+          height: 18px;
         }
 
         @media (max-width: 560px) {
@@ -1133,8 +1140,14 @@ export default function HitSimulator() {
         }
 
         .ts-sim-modeIcon {
-          font-size: 20px;
+          display: flex;
+          justify-content: center;
           margin-bottom: 6px;
+        }
+
+        .ts-sim-modeIcon svg {
+          width: 20px;
+          height: 20px;
         }
 
         .ts-sim-modeName {
@@ -1223,7 +1236,9 @@ export default function HitSimulator() {
           .ts-sim-statVal { font-size: 15px; }
           .ts-sim-statsGrid { gap: 6px; }
           .ts-sim-statsTitle { margin-bottom: 6px; }
-          .ts-sim-modeIcon  { font-size: 16px; margin-bottom: 4px; }
+          .ts-sim-modeIcon      { margin-bottom: 4px; }
+          .ts-sim-modeIcon svg  { width: 16px; height: 16px; }
+          .ts-sim-modeTabIcon svg { width: 16px; height: 16px; }
           .ts-sim-modeName  { font-size: 13px; }
         }
 
@@ -1290,21 +1305,28 @@ export default function HitSimulator() {
         {/* Mode selector */}
         <div style={{ maxWidth: 760, margin: "0 auto 24px" }}>
           <div className="ts-sim-modeTabs">
-            {MODES.map(m => (
-              <button
-                key={m}
-                className={`ts-sim-modeTab ${mode === m ? "active" : ""}`}
-                onClick={() => setMode(m)}
-                style={mode === m ? {
-                  background: `${MODE_META[m].color}22`,
-                  color: MODE_META[m].color,
-                  boxShadow: `0 0 0 1px ${MODE_META[m].color}55`,
-                } : {}}
-              >
-                <span className="ts-sim-modeTabIcon">{MODE_META[m].icon}</span>
-                <span className="ts-sim-modeTabLabel">{m}</span>
-              </button>
-            ))}
+            {MODES.map(m => {
+              // Capitalised local — JSX can't render a computed member
+              // expression like <MODE_META[m].Icon /> directly.
+              const TabIcon = MODE_META[m].Icon;
+              return (
+                <button
+                  key={m}
+                  className={`ts-sim-modeTab ${mode === m ? "active" : ""}`}
+                  onClick={() => setMode(m)}
+                  style={mode === m ? {
+                    background: `${MODE_META[m].color}22`,
+                    color: MODE_META[m].color,
+                    boxShadow: `0 0 0 1px ${MODE_META[m].color}55`,
+                  } : {}}
+                >
+                  {/* The icon strokes inherit the tab's colour, so it picks up
+                      the mode accent when active and stays muted when not. */}
+                  <span className="ts-sim-modeTabIcon"><TabIcon /></span>
+                  <span className="ts-sim-modeTabLabel">{m}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -1429,7 +1451,7 @@ export default function HitSimulator() {
 
             {/* Mode info */}
             <div className="ts-sim-infoCard" key={mode} style={{ borderColor: `${accentColor}33` }}>
-              <div className="ts-sim-modeIcon">{meta.icon}</div>
+              <div className="ts-sim-modeIcon" style={{ color: accentColor }}><meta.Icon /></div>
               <div className="ts-sim-modeName" style={{ color: accentColor }}>{mode} Mode</div>
               <div className="ts-sim-modeDesc">{meta.desc}</div>
               <ul className="ts-sim-bullets">

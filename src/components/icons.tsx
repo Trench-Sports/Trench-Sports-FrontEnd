@@ -401,3 +401,77 @@ export function IconDownload({ size = 24, className }: IconProps) {
     </svg>
   );
 }
+
+// ── Training modes ───────────────────────────────────────────────────────────
+// One per session mode (power / accuracy / reaction / volume / target). Each is
+// built to stay legible down to 16px and to be told apart from the other four at
+// a glance, since they sit side by side in the mode tabs.
+
+/**
+ * Power — a gauge reading high, for the magnitude of the force behind a strike.
+ * Deliberately not a lightning bolt: IconZap already means "set up in seconds"
+ * on the landing page, and the two would sit on the same screen.
+ */
+export function IconGauge({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3.5 18a9 9 0 1 1 17 0" />
+      <path d="M12 18l5-6.5" />
+      <circle cx="12" cy="18" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/** Accuracy — concentric rings scoring proximity to the bullseye. */
+export function IconBullseye({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
+/** Reaction — a stopwatch, for signal-to-impact latency. */
+export function IconStopwatch({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M9.5 2.5h5" />
+      <path d="M12 2.5v2.2" />
+      <circle cx="12" cy="13.5" r="7.8" />
+      <path d="M12 9.6v3.9h3.1" />
+      <path d="M18.9 6.6l1.5-1.5" />
+    </svg>
+  );
+}
+
+/**
+ * Volume — a run of impact spikes, for how many strikes land inside the window.
+ * No baseline, so it stays distinct from IconBarChart.
+ */
+export function IconStrikeRate({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M4 9.5v5" />
+      <path d="M8 5.5v13" />
+      <path d="M12 8v8" />
+      <path d="M16 4.5v15" />
+      <path d="M20 9.5v5" />
+    </svg>
+  );
+}
+
+/** Target — one called zone lit up on the bag's grid. */
+export function IconZoneGrid({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="3" y="3" width="18" height="18" rx="2.5" />
+      <path d="M9 3v18" />
+      <path d="M15 3v18" />
+      <path d="M3 9h18" />
+      <path d="M3 15h18" />
+      <rect x="15" y="9" width="6" height="6" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}

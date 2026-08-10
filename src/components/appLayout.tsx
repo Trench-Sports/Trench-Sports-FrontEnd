@@ -10,6 +10,7 @@ import { Outlet } from "react-router-dom";
 import TopBar from "./topBar.js";
 import { initTheme, toggleTheme } from "../lib/themeManager";
 import { usePlatform } from "../hooks/usePlatform";
+import { useScrollToTop } from "../hooks/useScrollToTop";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -19,6 +20,10 @@ import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 
 export default function AppLayout() {
   const { isNative } = usePlatform();
+
+  // Land every pushed route at the top — called before the native branch so it
+  // covers both shells.
+  useScrollToTop();
 
   // ── Theme (web only — native doesn't need a toggle) ──────────────────────
   const [theme, setTheme] = useState(() => initTheme());

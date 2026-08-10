@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
 import HitSimulator from "../components/hitSimulator";
-import LandingNav, { LANDING_NAV_SECTIONS } from "../components/landingNav";
+import LandingNav from "../components/landingNav";
 import { IconBarChart, IconCrosshair, IconDumbbell, IconFlask, IconGraduationCap, IconTrophy, IconZap } from "../components/icons";
 import { AIInsightVisual, DataCaptureVisual, ImpactPropagationVisual } from "../components/platformVisuals";
 import { TESTIMONIALS, type Testimonial } from "../content/testimonials";
@@ -257,26 +257,10 @@ export default function Landing() {
   const { ref: impactRef, inView: impactInView } = useInView();
   const { ref: navRef, inView: _navInView } = useInView(0);
   const [scrolled, setScrolled] = useState(false);
-  const [activeSection, setActiveSection] = useState("hero");
   const [demoOpen, setDemoOpen] = useState(false);
 
-  // Scroll-tracking: pick whichever section is closest to top of viewport
-  useEffect(() => {
-    const ids = LANDING_NAV_SECTIONS.map((s) => s.id);
-    const onScroll = () => {
-      let current = ids[0];
-      for (const id of ids) {
-        const el = document.getElementById(id);
-        if (el && el.getBoundingClientRect().top <= 120) {
-          current = id;
-        }
-      }
-      setActiveSection(current);
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    onScroll(); // run once on mount
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  // Scroll-tracking now lives in useActiveSection, shared by the TopBar's
+  // section links and the small-screen nav pill.
 
   const howItWorks = [
     {
@@ -358,7 +342,7 @@ export default function Landing() {
   return (
     <div className="ts-landing">
       <RequestDemoModal open={demoOpen} onClose={() => setDemoOpen(false)} />
-      <LandingNav activeSection={activeSection} />
+      <LandingNav />
 
       {/* ── HERO ─────────────────────────────────────────────────────── */}
       <section className="ts-hero" id="hero">
