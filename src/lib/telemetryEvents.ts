@@ -33,6 +33,33 @@ export const authSignupFailed = (error_code?: string) =>
 export const onboardingStepCompleted = (step: string, path: string) =>
   track("onboarding.step_completed", { step, path });
 
+// ── Coach invite links ───────────────────────────────────────────────────────
+// NEVER pass the plaintext token into any of these. The link is a bearer
+// credential and app_events is queried by internal admins. Correlate with
+// invite_id (returned by create_coach_invite) or tokenPrefix() from
+// lib/inviteToken.ts — 8 hex chars, useless for redemption.
+export const inviteCreated = (p: { invite_id: string; core_team_id: string }) =>
+  track("invite.created", { ok: true, invite_id: p.invite_id, core_team_id: p.core_team_id });
+
+/** Fired on /invite/:token once preview resolves. `valid: false` = expired, revoked, or unknown. */
+export const inviteOpened = (p: { valid: boolean; token_prefix: string; signed_in: boolean }) =>
+  track("invite.opened", { ok: p.valid, valid: p.valid, token_prefix: p.token_prefix, signed_in: p.signed_in });
+
+export const inviteRedeemed = (p: { program_id: string; core_team_id: string; token_prefix: string }) =>
+  track("invite.redeemed", {
+    ok: true,
+    program_id: p.program_id,
+    core_team_id: p.core_team_id,
+    token_prefix: p.token_prefix,
+  });
+
+/** `reason` is a coarse class (see classifyInviteError in onboarding.tsx), never the raw message. */
+export const inviteRejected = (p: { reason: string; token_prefix: string }) =>
+  track("invite.rejected", { ok: false, error_code: p.reason, reason: p.reason, token_prefix: p.token_prefix });
+
+export const inviteRevoked = (invite_id: string) =>
+  track("invite.revoked", { ok: true, invite_id });
+
 // ── BLE ─────────────────────────────────────────────────────────────────────
 export const bleConnectAttempted = (platform: Platform, slot: number) =>
   track("ble.connect_attempted", { platform, slot });

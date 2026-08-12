@@ -4487,6 +4487,72 @@ html.is-native .ts-webOnly {
   margin-bottom: 8px;
 }
 
+/* ── Light-mode overrides for the Request Demo modal ─────────────────────────
+   The panel above is hardcoded dark, but the header copy paints with
+   var(--text)/var(--muted), which go dark in light mode and vanish against
+   the dark panel. Same fix as the nav pill/drawer: flip the surface to
+   light so the dark text stays legible.                                      */
+
+:root[data-theme="light"] .ts-demoOverlay {
+  background: rgba(20, 20, 40, 0.38);
+}
+
+:root[data-theme="light"] .ts-demoModal {
+  background: #ffffff;
+  border-color: rgba(20, 20, 40, 0.10);
+  box-shadow: 0 32px 80px rgba(20, 20, 40, 0.20), 0 0 0 1px rgba(180, 0, 255, 0.10);
+  scrollbar-color: rgba(20, 20, 40, 0.16) transparent;
+}
+
+:root[data-theme="light"] .ts-demoClose {
+  background: rgba(20, 20, 40, 0.05);
+  border-color: rgba(20, 20, 40, 0.12);
+  color: rgba(20, 20, 40, 0.55);
+}
+
+:root[data-theme="light"] .ts-demoClose:hover {
+  background: rgba(20, 20, 40, 0.10);
+  color: rgba(20, 20, 40, 0.92);
+}
+
+:root[data-theme="light"] .ts-demoHeader {
+  border-bottom-color: rgba(20, 20, 40, 0.08);
+}
+
+:root[data-theme="light"] .ts-demoLabel {
+  color: rgba(20, 20, 40, 0.58);
+}
+
+:root[data-theme="light"] .ts-demoInput,
+:root[data-theme="light"] .ts-demoSelect {
+  background: rgba(20, 20, 40, 0.03);
+  border-color: rgba(20, 20, 40, 0.14);
+  color: var(--text);
+}
+
+:root[data-theme="light"] .ts-demoInput::placeholder {
+  color: rgba(20, 20, 40, 0.35);
+}
+
+:root[data-theme="light"] .ts-demoInput:focus,
+:root[data-theme="light"] .ts-demoSelect:focus {
+  border-color: rgba(180, 0, 255, 0.5);
+  background: rgba(180, 0, 255, 0.04);
+}
+
+:root[data-theme="light"] .ts-demoSelect {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='rgba(20,20,40,0.45)' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="light"] .ts-demoSelect option {
+  background: #ffffff;
+  color: rgba(20, 20, 40, 0.92);
+}
+
+:root[data-theme="light"] .ts-demoCheckLabel {
+  color: rgba(20, 20, 40, 0.55);
+}
+
 
 /* =============================================================================
    USE-CASE PAGES  (useCasePage.tsx, deviceFrame.tsx, useCaseVisuals.tsx)
@@ -4874,4 +4940,136 @@ html.is-native .ts-webOnly {
   .ts-uc-heatGrid.is-live .ts-uc-heatCell { animation: none; opacity: 1; }
   .ts-uc-sparkLine { stroke-dashoffset: 0; }
   .ts-uc-dashBarFill { transition: none; }
+}
+/* ═══════════════════════════════════════════════════════════════════════════
+   COACH INVITE LINKS
+   Shared by /invite/:token (invite.tsx), the signup locked banner, and the
+   locked step-1 rows in onboarding. See docs/coach-invite-links-plan.md.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Banner: "you're joining X · Y", shown above the signup + onboarding forms. */
+.ts-inviteBanner {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(180, 0, 255, 0.28);
+  background: rgba(180, 0, 255, 0.07);
+}
+.ts-inviteBannerLabel {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.65;
+}
+.ts-inviteBannerValue {
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.1px;
+}
+.ts-inviteBannerNote {
+  font-size: 12px;
+  opacity: 0.72;
+}
+
+/* Read-only "Program: X" / "Core team: Y" rows that replace the code input
+   and core-team select when onboarding is invite-locked. */
+.ts-inviteLockRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--panel-border, rgba(255, 255, 255, 0.10));
+  background: var(--panel, rgba(255, 255, 255, 0.04));
+}
+.ts-inviteLockKey {
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.62;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.ts-inviteLockVal {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+/* Landing card body on /invite/:token. */
+.ts-inviteHero {
+  display: grid;
+  gap: 6px;
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(180, 0, 255, 0.26);
+  background: rgba(180, 0, 255, 0.06);
+  text-align: center;
+}
+.ts-inviteHeroProgram {
+  font-size: 24px;
+  font-weight: 950;
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+}
+.ts-inviteHeroTeam {
+  font-size: 15px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+.ts-inviteExpiry {
+  font-size: 12.5px;
+  opacity: 0.7;
+  text-align: center;
+}
+
+/* Link-generation block inside the Manage Program modal. */
+.ts-inviteLinkBox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 200, 120, 0.32);
+  background: rgba(0, 200, 120, 0.07);
+}
+.ts-inviteLinkInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  padding: 0;
+}
+.ts-inviteLinkInput:focus { outline: none; }
+
+/* Button classes applied to <Link>/<a> — the base rules assume <button>, which
+   already blocks and centers. */
+a.ts-btnPrimaryWide,
+a.ts-btnGhostWide {
+  display: block;
+  box-sizing: border-box;
+  text-decoration: none;
+}
+
+/* Invite-link warning. Dark is the default (see :root); light overrides below.
+   The amber that reads well on the dark panel washes out to near-illegible on
+   the light one, so the light rule darkens the text and firms up the border. */
+.ts-inviteWarn {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 9px 12px;
+  border-radius: 10px;
+  color: rgba(255, 190, 90, 0.95);
+  border: 1px solid rgba(255, 170, 40, 0.28);
+  background: rgba(255, 170, 40, 0.07);
+}
+:root[data-theme="light"] .ts-inviteWarn {
+  color: rgba(122, 74, 0, 0.95);
+  border-color: rgba(190, 120, 0, 0.34);
+  background: rgba(255, 170, 40, 0.12);
 }

@@ -75,6 +75,7 @@ create policy "anyone can insert telemetry"
 --     'auth.signup_succeeded','auth.signup_failed',
 --     'auth.login_succeeded','auth.login_failed',
 --     'onboarding.step_completed','onboarding.guard_failed',
+--     'invite.created','invite.opened','invite.redeemed','invite.rejected','invite.revoked',
 --     'ble.connect_attempted','ble.connect_succeeded','ble.connect_failed','ble.disconnected',
 --     'session.started','session.stopped','session.discarded',
 --     'session.upload_started','session.upload_stage_failed','session.upload_succeeded',

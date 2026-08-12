@@ -89,6 +89,47 @@ CREATE TABLE public.team_members (
   CONSTRAINT team_members_coach_user_id_fkey FOREIGN KEY (coach_user_id) REFERENCES public.profiles(user_id),
   CONSTRAINT team_members_athlete_id_fkey FOREIGN KEY (athlete_id) REFERENCES public.athletes(id)
 );
+-- Temporary program+core-scoped onboarding links for coaches.
+-- Source: supabase/coach_invite_links.sql. token_hash is SHA-256 hex of the
+-- plaintext token; the plaintext is returned once by create_coach_invite() and
+-- never stored. Multi-use until expires_at (created_at + 72h) or revoked_at.
+CREATE TABLE public.coach_invites (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  program_id uuid NOT NULL,
+  core_team_id uuid NOT NULL,
+  created_by uuid,
+  token_hash text NOT NULL UNIQUE,
+  -- Plaintext, retained so any admin can re-copy a live link (source:
+  -- coach_invite_single_active_link.sql). NULLed on revoke. token_hash, not
+  -- this, is the redemption lookup key.
+  token text,
+  expires_at timestamp with time zone NOT NULL,
+  revoked_at timestamp with time zone,
+  redemption_count integer NOT NULL DEFAULT 0,
+  last_redeemed_at timestamp with time zone,
+  label text,
+  CONSTRAINT coach_invites_pkey PRIMARY KEY (id),
+  CONSTRAINT coach_invites_program_id_fkey FOREIGN KEY (program_id) REFERENCES public.programs(id),
+  CONSTRAINT coach_invites_core_team_id_fkey FOREIGN KEY (core_team_id) REFERENCES public.teams(id),
+  -- profiles, NOT auth.users: redemption copies created_by into
+  -- team_members.added_by, which FKs profiles(user_id). See coach_invite_links.sql.
+  CONSTRAINT coach_invites_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.profiles(user_id)
+);
+CREATE TABLE public.coach_invite_redemptions (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  invite_id uuid NOT NULL,
+  program_id uuid NOT NULL,
+  core_team_id uuid NOT NULL,
+  user_id uuid NOT NULL,
+  CONSTRAINT coach_invite_redemptions_pkey PRIMARY KEY (id),
+  CONSTRAINT coach_invite_redemptions_unique UNIQUE (invite_id, user_id),
+  CONSTRAINT coach_invite_redemptions_invite_id_fkey FOREIGN KEY (invite_id) REFERENCES public.coach_invites(id),
+  CONSTRAINT coach_invite_redemptions_program_id_fkey FOREIGN KEY (program_id) REFERENCES public.programs(id),
+  CONSTRAINT coach_invite_redemptions_core_team_id_fkey FOREIGN KEY (core_team_id) REFERENCES public.teams(id),
+  CONSTRAINT coach_invite_redemptions_user_id_fkey FOREIGN KEY (user_id) REFERENCES auth.users(id)
+);
 CREATE TABLE public.sessions (
   id text NOT NULL,
   created_at timestamp with time zone NOT NULL DEFAULT now(),

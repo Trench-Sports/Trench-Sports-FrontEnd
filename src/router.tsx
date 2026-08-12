@@ -14,6 +14,7 @@ import Privacy from "./pages/privacy";
 import Terms from "./pages/terms";
 import Session from "./pages/session";
 import Dummy from "./pages/dummy";
+import Invite from "./pages/invite";
 
 // Internal-only observability dashboard. Lazy-loaded so its code (and any
 // future charting lib) never ships to coaches' bundles. Not linked in nav.
@@ -152,6 +153,11 @@ export const router = createBrowserRouter([
           ? <NativeAwareRedirect to="/m/login" />
           : <Login />,
       },
+      // Coach invite links. NOT wrapped in RequireOnboarding — the visitor has
+      // no account yet, which is the whole point. Eagerly imported (not lazy):
+      // this is a cold-start entry point pasted into a group chat, so it should
+      // paint on first frame.
+      { path: "/invite/:token", element: <Invite /> },
       { path: "/onboarding", element: <Onboarding /> },
       { path: "/dummy",      element: <Dummy /> },
       { path: "/contact",    element: <Contact /> },

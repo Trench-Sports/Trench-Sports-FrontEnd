@@ -9,12 +9,14 @@
 // Features:
 //   • Displays program name, location, and 6-digit onboarding code
 //   • Copy-to-clipboard for the program code
+//   • Generates temporary, core-team-scoped coach invite links (72h, revocable)
 //   • Lists all coaches in the program with position + team
 //   • Admins can remove a coach (clears program_id on their profile + removes team_members rows)
 
 import React, { useCallback, useEffect, useState } from "react";
 import Modal from "./modal";
 import { supabase } from "../supabaseClient";
+import { inviteCreated, inviteRevoked } from "../lib/telemetryEvents";
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -192,6 +194,45 @@ const S = {
     opacity: 0.7,
   },
 
+  // Invite links
+  inviteRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    padding: "10px 13px",
+    borderRadius: "12px",
+    border: "1px solid var(--panel-border, rgba(255,255,255,0.08))",
+    background: "var(--panel, rgba(255,255,255,0.02))",
+  },
+  inviteRowMeta: {
+    flex: 1,
+    minWidth: 0,
+    display: "flex",
+    flexDirection: "column",
+    gap: "2px",
+  },
+  inviteRowTitle: {
+    fontWeight: 700,
+    fontSize: "13.5px",
+    color: "var(--text)",
+  },
+  inviteRowSub: {
+    fontSize: "12px",
+    color: "var(--muted)",
+    opacity: 0.8,
+  },
+  revokeBtn: {
+    padding: "6px 11px",
+    borderRadius: "9px",
+    border: "1px solid rgba(255,60,60,0.22)",
+    background: "rgba(255,40,40,0.05)",
+    color: "rgba(255,110,110,0.85)",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontWeight: 700,
+    flexShrink: 0,
+  },
+
   // Stats row
   statsRow: {
     display: "grid",
@@ -284,11 +325,25 @@ export default function ProgramModal({ open, onClose }) {
   const [bootstrapping, setBootstrapping] = useState(false);
   const [error, setError]             = useState("");
   const [copied, setCopied]           = useState(false);
+  const [copyFailed, setCopyFailed]   = useState(false);
 
   // Inline remove flow
   const [confirmId, setConfirmId]     = useState(null); // coach user_id pending confirm
   const [removing, setRemoving]       = useState(false);
   const [removeError, setRemoveError] = useState("");
+
+  // ── Coach invite links (docs/coach-invite-links-plan.md §4.5) ─────────────
+  // A program holds at most ONE live link, and it stays copyable for its whole
+  // 72h life — list_coach_invites() returns the plaintext token, so any admin
+  // can re-share it, not just whoever generated it. Enforced server-side in
+  // coach_invite_single_active_link.sql; the UI just reflects it.
+  const [coreTeams, setCoreTeams]     = useState([]);
+  const [inviteCoreId, setInviteCoreId] = useState("");
+  const [invites, setInvites]         = useState([]);
+  const [generating, setGenerating]   = useState(false);
+  const [inviteError, setInviteError] = useState("");
+  const [revokingId, setRevokingId]   = useState(null);
+  const [copiedInviteId, setCopiedInviteId] = useState(null);
 
   // ── Bootstrap ──────────────────────────────────────────────────────────────
 
@@ -297,7 +352,9 @@ export default function ProgramModal({ open, onClose }) {
     setBootstrapping(true);
     setError("");
     setRemoveError("");
+    setInviteError("");
     setConfirmId(null);
+    setCopiedInviteId(null);
 
     try {
       const { data: userData } = await supabase.auth.getUser();
@@ -351,6 +408,31 @@ export default function ProgramModal({ open, onClose }) {
         });
       }
 
+      // Core teams an invite can point at, plus the program's live links.
+      // Neither is load-bearing for the rest of the modal, so a failure here
+      // degrades the invite section rather than blanking the whole panel.
+      try {
+        const { data: coreRows, error: coreErr } = await supabase
+          .from("teams")
+          .select("id, name")
+          .eq("program_id", me.program_id)
+          .eq("team_type", "core")
+          .order("name");
+
+        if (coreErr) throw coreErr;
+
+        const cores = coreRows ?? [];
+        setCoreTeams(cores);
+        // Auto-select the only option, mirroring onboarding's core-team picker.
+        setInviteCoreId(cores.length === 1 ? cores[0].id : "");
+
+        const { data: inviteRows, error: invErr } = await supabase.rpc("list_coach_invites");
+        if (invErr) throw invErr;
+        setInvites(inviteRows ?? []);
+      } catch (invLoadErr) {
+        setInviteError(invLoadErr.message ?? "Failed to load invite links.");
+      }
+
       setCoaches(
         (coachRows ?? []).map((c) => ({
           userId:   c.user_id,
@@ -377,10 +459,91 @@ export default function ProgramModal({ open, onClose }) {
 
   function handleCopy() {
     if (!program?.onboarding_code) return;
-    navigator.clipboard.writeText(program.onboarding_code).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2200);
-    });
+    // The rejection arm matters: writeText throws NotAllowedError whenever the
+    // clipboard permission is denied or the click carried no user activation.
+    // Without it the button silently does nothing and throws unhandled.
+    // NOT setError() — that's the modal's fatal state and would blank the body.
+    navigator.clipboard.writeText(program.onboarding_code).then(
+      () => {
+        setCopyFailed(false);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2200);
+      },
+      () => {
+        setCopyFailed(true);
+        setTimeout(() => setCopyFailed(false), 2600);
+      },
+    );
+  }
+
+  // ── Coach invite links ─────────────────────────────────────────────────────
+
+  async function handleGenerateInvite() {
+    if (!supabase || !inviteCoreId) return;
+    setGenerating(true);
+    setInviteError("");
+
+    try {
+      const { data, error: rpcErr } = await supabase.rpc("create_coach_invite", {
+        p_core_team_id: inviteCoreId,
+        p_label: null,
+      });
+
+      if (rpcErr) throw rpcErr;
+
+      const row = (data ?? [])[0];
+      if (!row?.invite_id) throw new Error("No invite link was returned. Try again.");
+
+      // Never log the token or put it in telemetry — the link is a bearer
+      // credential. invite_id is the correlatable half.
+      inviteCreated({ invite_id: row.invite_id, core_team_id: inviteCoreId });
+
+      // Re-read rather than splicing the RPC's row in: list_coach_invites is
+      // the one shape the list renders, and it's what enforces "live only".
+      const { data: inviteRows, error: listErr } = await supabase.rpc("list_coach_invites");
+      if (listErr) throw listErr;
+      setInvites(inviteRows ?? []);
+    } catch (err) {
+      setInviteError(err.message ?? "Failed to generate an invite link.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  function handleCopyLink(invite) {
+    const url = inviteUrl(invite);
+    if (!url) return;
+    navigator.clipboard.writeText(url).then(
+      () => {
+        setInviteError("");
+        setCopiedInviteId(invite.invite_id);
+        setTimeout(
+          () => setCopiedInviteId((id) => (id === invite.invite_id ? null : id)),
+          2200,
+        );
+      },
+      () => setInviteError("Couldn't copy — select the link and copy it manually."),
+    );
+  }
+
+  async function handleRevokeInvite(inviteId) {
+    if (!supabase) return;
+    setRevokingId(inviteId);
+    setInviteError("");
+
+    try {
+      const { error: rpcErr } = await supabase.rpc("revoke_coach_invite", {
+        p_invite_id: inviteId,
+      });
+      if (rpcErr) throw rpcErr;
+
+      inviteRevoked(inviteId);
+      setInvites((prev) => prev.filter((i) => i.invite_id !== inviteId));
+    } catch (err) {
+      setInviteError(err.message ?? "Failed to revoke the invite link.");
+    } finally {
+      setRevokingId(null);
+    }
   }
 
   // ── Remove coach ───────────────────────────────────────────────────────────
@@ -419,6 +582,15 @@ export default function ProgramModal({ open, onClose }) {
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────
+
+  // One live link per program — while it exists, generating is blocked and the
+  // admin shares the existing link instead. list_coach_invites() orders newest
+  // first, so [0] is the current one.
+  const activeInvite = invites[0] ?? null;
+  // Programs that predate coach_invite_single_active_link.sql may still hold
+  // several live links. They'd otherwise be invisible AND unrevokable while
+  // still blocking new ones, so surface them for cleanup.
+  const staleInvites = invites.slice(1);
 
   const footer = (
     <button type="button" className="ts-btn ts-btnGhost" onClick={onClose}>
@@ -486,9 +658,153 @@ export default function ProgramModal({ open, onClose }) {
                 aria-label="Copy program code to clipboard"
               >
                 {copied ? <CheckIcon /> : <CopyIcon />}
-                {copied ? "Copied!" : "Copy"}
+                {copied ? "Copied!" : copyFailed ? "Copy failed" : "Copy"}
               </button>
             </div>
+          </div>
+
+          <div style={S.divider} />
+
+          {/* ── Invite coaches ── */}
+          <div style={S.sectionLabel}>Invite coaches</div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+            {inviteError && <div style={S.error}>{inviteError}</div>}
+
+            {coreTeams.length === 0 ? (
+              <div style={{ ...S.emptyState, padding: "12px 0" }}>
+                Create a core team before inviting coaches.
+              </div>
+            ) : activeInvite ? (
+              // One live link at a time. Rather than a disabled Generate button
+              // the admin can't act on, lead with the link itself — sharing it
+              // is the thing they came here to do.
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div className="ts-inviteLinkBox">
+                  <input
+                    className="ts-inviteLinkInput"
+                    readOnly
+                    value={inviteUrl(activeInvite) ?? "Link unavailable"}
+                    onFocus={(e) => e.target.select()}
+                    aria-label="Coach invite link"
+                  />
+                  <button
+                    type="button"
+                    style={{
+                      ...S.copyBtn,
+                      ...(copiedInviteId === activeInvite.invite_id ? S.copyBtnDone : {}),
+                      opacity: inviteUrl(activeInvite) ? 1 : 0.5,
+                    }}
+                    disabled={!inviteUrl(activeInvite)}
+                    onClick={() => handleCopyLink(activeInvite)}
+                    aria-label="Copy invite link to clipboard"
+                  >
+                    {copiedInviteId === activeInvite.invite_id ? <CheckIcon /> : <CopyIcon />}
+                    {copiedInviteId === activeInvite.invite_id ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+
+                <div style={S.inviteRow}>
+                  <div style={S.inviteRowMeta}>
+                    <div style={S.inviteRowTitle}>{activeInvite.core_team_name}</div>
+                    <div style={S.inviteRowSub}>
+                      {formatExpiresIn(activeInvite.expires_at)} ·{" "}
+                      {activeInvite.redemption_count}{" "}
+                      {activeInvite.redemption_count === 1 ? "coach joined" : "coaches joined"}
+                      {activeInvite.label ? ` · ${activeInvite.label}` : ""}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    style={{
+                      ...S.revokeBtn,
+                      opacity: revokingId === activeInvite.invite_id ? 0.6 : 1,
+                    }}
+                    disabled={revokingId === activeInvite.invite_id}
+                    onClick={() => handleRevokeInvite(activeInvite.invite_id)}
+                  >
+                    {revokingId === activeInvite.invite_id ? "Revoking…" : "Revoke"}
+                  </button>
+                </div>
+
+                {/* Invites minted before the token column existed can't be
+                    re-shown. Rare and self-healing — say so plainly. */}
+                {!inviteUrl(activeInvite) && (
+                  <div className="ts-inviteWarn">
+                    This link was created before links became re-copyable, so it can't be shown
+                    again. Revoke it and generate a new one to get a shareable link.
+                  </div>
+                )}
+
+                <div className="ts-inviteWarn">
+                  Anyone with this link can join <strong>{activeInvite.core_team_name}</strong> as a
+                  coach and will be able to see that team's athlete roster. Share it only with staff
+                  you're adding. To invite a different team, revoke this link first — a program has
+                  one active link at a time.
+                </div>
+
+                {staleInvites.length > 0 && (
+                  <>
+                    <div className="ts-inviteWarn">
+                      This program has {staleInvites.length + 1} live links, from before the
+                      one-link-at-a-time rule. Revoke the extras below — each one still works until
+                      it expires.
+                    </div>
+                    {staleInvites.map((inv) => (
+                      <div key={inv.invite_id} style={S.inviteRow}>
+                        <div style={S.inviteRowMeta}>
+                          <div style={S.inviteRowTitle}>{inv.core_team_name}</div>
+                          <div style={S.inviteRowSub}>
+                            {formatExpiresIn(inv.expires_at)} · {inv.redemption_count}{" "}
+                            {inv.redemption_count === 1 ? "coach joined" : "coaches joined"}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          style={{ ...S.revokeBtn, opacity: revokingId === inv.invite_id ? 0.6 : 1 }}
+                          disabled={revokingId === inv.invite_id}
+                          onClick={() => handleRevokeInvite(inv.invite_id)}
+                        >
+                          {revokingId === inv.invite_id ? "Revoking…" : "Revoke"}
+                        </button>
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <div style={{ display: "flex", gap: "8px", alignItems: "flex-end", flexWrap: "wrap" }}>
+                  <label className="ts-field" style={{ flex: 1, minWidth: "180px", margin: 0 }}>
+                    <span>Core team</span>
+                    <select
+                      value={inviteCoreId}
+                      onChange={(e) => setInviteCoreId(e.target.value)}
+                      disabled={generating}
+                    >
+                      <option value="">Select a team…</option>
+                      {coreTeams.map((t) => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    style={{ ...S.copyBtn, height: "40px", opacity: !inviteCoreId || generating ? 0.55 : 1 }}
+                    disabled={!inviteCoreId || generating}
+                    onClick={handleGenerateInvite}
+                  >
+                    {generating ? "Generating…" : "Generate invite link"}
+                  </button>
+                </div>
+
+                <div style={S.inviteRowSub}>
+                  Coaches who open the link sign up straight into this team — no program code to
+                  type. Links last 72 hours and can be revoked any time.
+                </div>
+              </div>
+            )}
           </div>
 
           <div style={S.divider} />
@@ -567,6 +883,30 @@ export default function ProgramModal({ open, onClose }) {
 }
 
 // ─── Small helpers ────────────────────────────────────────────────────────────
+
+/**
+ * The shareable URL for a live invite, or null when the plaintext isn't
+ * available — invites minted before coach_invite_single_active_link.sql have
+ * token = NULL and can never be re-displayed.
+ */
+function inviteUrl(invite) {
+  if (!invite?.token) return null;
+  return `${window.location.origin}/invite/${invite.token}`;
+}
+
+/** "Expires in 2 days" / "Expires in 5 hours" — list rows want relative, not absolute. */
+function formatExpiresIn(iso) {
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return "Expired";
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    return `Expires in ${days} day${days === 1 ? "" : "s"}`;
+  }
+  if (hours >= 1) return `Expires in ${hours} hour${hours === 1 ? "" : "s"}`;
+  const mins = Math.max(1, Math.floor(ms / 60_000));
+  return `Expires in ${mins} min`;
+}
 
 function StatChip({ value, label, muted }) {
   return (

@@ -2,7 +2,8 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
-import { onboardingStepCompleted } from "../lib/telemetryEvents";
+import { onboardingStepCompleted, inviteRedeemed, inviteRejected } from "../lib/telemetryEvents";
+import { readInvite, clearInvite, tokenPrefix, type StashedInvite } from "../lib/inviteToken";
 
 type Role = "coach" | "admin";
 type Step = 0 | 1;
@@ -65,6 +66,31 @@ function onlyDigits(s: string) {
   return (s || "").replace(/\D/g, "");
 }
 
+// Map redeem_coach_invite's RAISE messages onto a coarse class. The messages
+// themselves are written to be user-facing and are shown verbatim; this only
+// decides what the UI does next, and gives telemetry a low-cardinality reason
+// that never contains the token.
+type InviteFailure =
+  | "expired" | "revoked" | "invalid" | "other_program"
+  | "other_core" | "admin" | "cap" | "unknown";
+
+function classifyInviteError(msg: string): InviteFailure {
+  const m = (msg || "").toLowerCase();
+  if (m.includes("expired")) return "expired";
+  if (m.includes("revoked")) return "revoked";
+  if (m.includes("invalid invite link")) return "invalid";
+  if (m.includes("another program")) return "other_program";
+  if (m.includes("different core team")) return "other_core";
+  if (m.includes("admin accounts cannot redeem")) return "admin";
+  if (m.includes("coach limit")) return "cap";
+  return "unknown";
+}
+
+// Failures the coach can route around themselves: drop the lock and give them
+// the 6-digit code flow back. The rest (seat cap, wrong core, unknown) need an
+// admin, so we keep the invite in place and just surface the message.
+const RECOVERABLE_BY_CODE: InviteFailure[] = ["expired", "revoked", "invalid", "other_program", "admin"];
+
 function random6() {
   // client-side code generation; if collision happens, insert will fail and user can retry.
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -87,6 +113,11 @@ export default function Onboarding() {
 
   // Training / Access (Step 2)
   const [role, setRole] = useState<Role>("coach");
+
+  // Coach flow — invite link (docs/coach-invite-links-plan.md §4.4). When
+  // `inviteLocked`, program + core come from the link and step 1 is read-only.
+  const [invite, setInvite] = useState<StashedInvite | null>(null);
+  const [inviteLocked, setInviteLocked] = useState(false);
 
   // Coach flow
   const [programCode, setProgramCode] = useState("");
@@ -166,8 +197,44 @@ export default function Onboarding() {
 
         // If program already attached, you can skip onboarding entirely.
         if (profile?.program_id && isProfileBackgroundComplete(profile)) {
+          // Nothing left to redeem — don't leave a live invite in localStorage
+          // to resurface as a stale banner on this browser later.
+          clearInvite();
           navigate("/dashboard", { replace: true });
           return;
+        }
+
+        // ── Coach invite link ──────────────────────────────────────────────
+        // readInvite() self-clears anything expired or malformed, so a stashed
+        // invite here is one worth trying.
+        const stashed = readInvite();
+        if (alive && stashed) {
+          if (profile?.role === "admin") {
+            // redeem_coach_invite refuses admins outright, and locking here
+            // would be worse than useless: saveBackground() writes `role`
+            // straight from component state, so forcing role="coach" would
+            // demote them one step BEFORE the RPC ever got a chance to refuse.
+            clearInvite();
+            setError(
+              "Admin accounts can't join through a coach invite link. Continue with your normal setup."
+            );
+          } else {
+            // Must land here, not in the step-1 render path: step 0's
+            // saveBackground() persists `role` from state, and a stale "admin"
+            // written there would make redeem_coach_invite reject outright.
+            setRole("coach");
+            setInvite(stashed);
+            setInviteLocked(true);
+            // Satisfies the existing coachTrainingOk memo with no user input.
+            // Display-only — redemption re-validates all of it server-side.
+            setProgramHit({
+              id: stashed.programId,
+              name: stashed.programName,
+              location: null,
+              onboarding_code: "",
+            });
+            setCoreTeamId(stashed.coreTeamId);
+          }
         }
       } catch (e: any) {
         if (alive) setError(e?.message || "Failed to load onboarding.");
@@ -273,6 +340,21 @@ export default function Onboarding() {
     }
   }
 
+  /**
+   * Drop out of the invite flow and back to 6-digit code entry. Used by the
+   * "Enter a program code instead" escape hatch and by the recoverable
+   * redemption failures — cheap insurance when an admin sends the wrong link.
+   */
+  function unlockInvite() {
+    clearInvite();
+    setInvite(null);
+    setInviteLocked(false);
+    setProgramHit(null);
+    setTeams([]);
+    setCoreTeamId("");
+    setProgramCode("");
+  }
+
   async function completeCoachOnboarding() {
     setError(null);
     if (!supabase) return setError("Supabase is not configured.");
@@ -285,6 +367,46 @@ export default function Onboarding() {
       const user = authData.user;
       if (!user) {
         navigate("/login", { replace: true });
+        return;
+      }
+
+      // ── Invite path ──────────────────────────────────────────────────────
+      // Everything the coach typed (position/city/state/DOB) was already
+      // written by saveBackground() at step 0, which is exactly why
+      // redeem_coach_invite deliberately touches only program_id + role. All
+      // this needs is the token; the RPC re-validates expiry, revocation, the
+      // seat cap, and the core team itself.
+      if (inviteLocked && invite) {
+        const { data: redeemed, error: redeemErr } = await supabase.rpc("redeem_coach_invite", {
+          p_token: invite.token,
+        });
+
+        if (redeemErr) {
+          const message = redeemErr.message || "This invite link could not be used.";
+          const reason = classifyInviteError(message);
+          inviteRejected({ reason, token_prefix: tokenPrefix(invite.token) });
+          // The RPC's messages are written to be user-facing — show verbatim.
+          setError(message);
+          if (RECOVERABLE_BY_CODE.includes(reason)) {
+            // Deliberately NOT routing to /dashboard here (plan §4.4): the
+            // profile is still incomplete, so RequireOnboarding would bounce
+            // them straight back and we'd have built a redirect loop. Handing
+            // back the code flow is the exit that actually works.
+            unlockInvite();
+          }
+          return;
+        }
+
+        const row = (redeemed as any[] | null)?.[0];
+        inviteRedeemed({
+          program_id: row?.program_id ?? invite.programId,
+          core_team_id: row?.core_team_id ?? invite.coreTeamId,
+          token_prefix: tokenPrefix(invite.token),
+        });
+
+        clearInvite();
+        onboardingStepCompleted("complete", "coach-invite");
+        navigate("/dashboard", { replace: true });
         return;
       }
 
@@ -554,6 +676,45 @@ export default function Onboarding() {
 
             {role === "coach" ? (
               <>
+                {inviteLocked ? (
+                  <>
+                    <p style={{ marginTop: -2, opacity: 0.8 }}>
+                      You were invited by your program admin — nothing to look up.
+                    </p>
+
+                    <div style={{ display: "grid", gap: 8 }}>
+                      <div className="ts-inviteLockRow">
+                        <span className="ts-inviteLockKey">Program</span>
+                        <span className="ts-inviteLockVal">{invite?.programName}</span>
+                      </div>
+                      <div className="ts-inviteLockRow">
+                        <span className="ts-inviteLockKey">Core team</span>
+                        <span className="ts-inviteLockVal">{invite?.coreTeamName}</span>
+                      </div>
+                    </div>
+
+                    <div className="ts-note" style={{ fontSize: 12.5, opacity: 0.7 }}>
+                      Set by your program admin's invite link.{" "}
+                      <button
+                        type="button"
+                        onClick={unlockInvite}
+                        disabled={busy}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          font: "inherit",
+                          color: "inherit",
+                          textDecoration: "underline",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Enter a program code instead
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                <>
                 <p style={{ marginTop: -2, opacity: 0.8 }}>
                   Enter your 6-digit program code.
                 </p>
@@ -612,6 +773,8 @@ export default function Onboarding() {
                     </label>
                   </div>
                 ) : null}
+                </>
+                )}
 
                 {error ? <div className="ts-error">{error}</div> : null}
 
@@ -627,7 +790,7 @@ export default function Onboarding() {
                     onClick={completeCoachOnboarding}
                     style={{ maxWidth: 360 }}
                   >
-                    {busy ? "Finishing…" : "Complete onboarding"}
+                    {busy ? "Finishing…" : inviteLocked ? "Join program" : "Complete onboarding"}
                   </button>
                 </div>
               </>

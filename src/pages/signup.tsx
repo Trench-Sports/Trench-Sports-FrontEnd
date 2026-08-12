@@ -1,8 +1,9 @@
 // src/pages/signup.tsx
 import React, { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { authSignupSucceeded, authSignupFailed } from "../lib/telemetryEvents";
+import { readInvite, type StashedInvite } from "../lib/inviteToken";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -29,6 +30,7 @@ function scorePassword(pw: string) {
 
 export default function Signup() {
   const navigate = useNavigate();
+  const loc = useLocation();
 
   const [theme, setTheme] = useState<"dark" | "light">(() => getTheme());
   useEffect(() => {
@@ -44,13 +46,27 @@ export default function Signup() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
 
-  const [email, setEmail] = useState("");
+  // Coach invite link (see docs/coach-invite-links-plan.md §4.3). When present,
+  // the role picker disappears and role is hard-coded to "coach" — the program
+  // attachment itself happens later, at redemption in onboarding.
+  const [invite, setInvite] = useState<StashedInvite | null>(null);
+  useEffect(() => {
+    setInvite(readInvite());
+  }, []);
+
+  // login.tsx bounces "no account for that email" here as /signup?email=… —
+  // this page used to drop the param and make them retype it.
+  const [email, setEmail] = useState(() => new URLSearchParams(loc.search).get("email") ?? "");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [agree, setAgree] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // An invited coach never picks their own role; redeem_coach_invite would
+  // reject them outright if this profile row said "admin".
+  const effectiveRole: Role = invite ? "coach" : role;
 
   const pwScore = useMemo(() => scorePassword(pw), [pw]);
   const pwOk = pwScore >= 3;
@@ -88,7 +104,7 @@ export default function Signup() {
         const { error: profErr } = await supabase.from("profiles").upsert(
           {
             user_id: userId,
-            role,
+            role: effectiveRole,
             first_name: firstName.trim(),
             last_name: lastName.trim(),
             email: email.trim().toLowerCase(),
@@ -123,6 +139,18 @@ export default function Signup() {
           </div>
 
           <form onSubmit={onSubmit} className="ts-signupForm">
+            {invite ? (
+              <div className="ts-inviteBanner">
+                <div className="ts-inviteBannerLabel">Joining</div>
+                <div className="ts-inviteBannerValue">
+                  {invite.programName} · {invite.coreTeamName}
+                </div>
+                <div className="ts-inviteBannerNote">
+                  Set by your program admin's invite link. You're signing up as a coach.
+                </div>
+              </div>
+            ) : null}
+
             {/* 1) Name first */}
             <div className="ts-grid2">
               <label className="ts-field">
@@ -146,15 +174,18 @@ export default function Signup() {
               </label>
             </div>
 
-            {/* 2) Then role + email */}
-            <div className="ts-grid2">
-              <label className="ts-field">
-                <span>Role</span>
-                <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                  <option value="coach">Coach</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </label>
+            {/* 2) Then role + email. The role picker is hidden for invited
+                coaches — their role is stamped server-side at redemption. */}
+            <div className={invite ? undefined : "ts-grid2"}>
+              {invite ? null : (
+                <label className="ts-field">
+                  <span>Role</span>
+                  <select value={role} onChange={(e) => setRole(e.target.value as Role)}>
+                    <option value="coach">Coach</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+              )}
 
               <label className="ts-field">
                 <span>Email</span>
