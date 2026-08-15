@@ -24,6 +24,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import Modal from "./modal";
 import { supabase } from "../supabaseClient";
+import { useEntitlements } from "../lib/entitlements";
 
 // ─── Template config ──────────────────────────────────────────────────────────
 
@@ -416,6 +417,9 @@ export default function ImportRosterModal({
   programId,
   userId,
 }: ImportRosterModalProps) {
+  // Supplies the program's athlete cap for the pre-import check below.
+  const ent = useEntitlements();
+
   // ── Wizard step: 0 = team, 1 = upload, 2 = preview, 3 = done ─────────────
   const [step, setStep] = useState(0);
 
@@ -441,6 +445,11 @@ export default function ImportRosterModal({
   const [importError, setImportError] = useState<string | null>(null);
   const [importResult, setImportResult] = useState<{ count: number } | null>(null);
 
+  // ── Plan cap ──────────────────────────────────────────────────────────────
+  // Exact current roster size, for the pre-check in "Derived counts" below.
+  // null = not resolved yet.
+  const [athleteCount, setAthleteCount] = useState<number | null>(null);
+
   // ── Reset on open/close ───────────────────────────────────────────────────
   useEffect(() => {
     if (open) {
@@ -453,6 +462,9 @@ export default function ImportRosterModal({
       setImportResult(null);
       setWarningsAcknowledged(false);
       setIsDragging(false);
+      // Drop the cached roster size so a second import in the same session
+      // re-counts — the first import changed it.
+      setAthleteCount(null);
     }
   }, [open]);
 
@@ -481,6 +493,25 @@ export default function ImportRosterModal({
       .then(({ data }) => { if (data) setExistingAthletes(data); });
   }, [step, programId]);
 
+  // ── Roster headroom against the plan's athlete cap ────────────────────────
+  // Counted with an exact head-count rather than existingAthletes.length: that
+  // list is a normal row fetch and PostgREST caps it (1000 by default), so on a
+  // large Tier III roster it would undercount and the check would pass a batch
+  // the database then rejects.
+  useEffect(() => {
+    if (step !== 1 || !programId || !supabase) return;
+    let cancelled = false;
+    supabase
+      .from("athletes")
+      .select("id", { count: "exact", head: true })
+      .eq("program_id", programId)
+      .then(({ count, error }) => {
+        if (cancelled || error) return;
+        setAthleteCount(count ?? null);
+      });
+    return () => { cancelled = true; };
+  }, [step, programId]);
+
   // ── Derived counts ────────────────────────────────────────────────────────
   const validRows    = rows.filter((r) => !r.skipped && r.status === "valid");
   const warningRows  = rows.filter((r) => !r.skipped && r.status === "warning");
@@ -490,9 +521,25 @@ export default function ImportRosterModal({
   const skippedCount = rows.filter((r) => r.skipped).length;
   const importableCount = validRows.length + warningRows.length;
 
+  // ── Plan athlete cap ──────────────────────────────────────────────────────
+  // The database enforces this per row, and a batch insert is one statement, so
+  // going over the cap rolls the WHOLE import back — import 60 against 50 free
+  // slots and you get nothing plus a raw Postgres error. Checking here turns
+  // that into "40 will fit, deselect 20" before the user commits.
+  //
+  // null cap = unlimited (Tier III). A null count means the head-count query has
+  // not answered yet; treat that as "unknown" and do not block on it, since the
+  // server-side trigger is still the real guard.
+  const athleteCap = ent.limit("maxAthletes");
+  const capKnown = athleteCap !== null && athleteCount !== null;
+  const slotsRemaining = capKnown ? Math.max(0, athleteCap! - athleteCount!) : null;
+  const overCapBy =
+    slotsRemaining === null ? 0 : Math.max(0, importableCount - slotsRemaining);
+
   const canConfirm =
     activeErrors === 0 &&
     importableCount > 0 &&
+    overCapBy === 0 &&
     (activeWarnings === 0 || warningsAcknowledged);
 
   // ── Template download ─────────────────────────────────────────────────────
@@ -998,6 +1045,56 @@ export default function ImportRosterModal({
           })}
         </div>
 
+        {/* ── Plan athlete cap ──────────────────────────────────────────────
+            Shown whenever the cap is known and finite. Over cap it blocks the
+            import and says exactly how many to deselect; near the cap it just
+            reports headroom, because "48 of 50 used" is worth knowing before
+            you import rather than after. */}
+        {capKnown && (
+          <div style={{
+            marginTop: 16,
+            padding: "12px 14px",
+            borderRadius: 11,
+            border: `1px solid ${overCapBy > 0 ? "var(--ir-err-bar)" : "var(--ir-divider)"}`,
+            background: overCapBy > 0 ? "rgba(200,50,50,0.07)" : "transparent",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 10,
+          }}>
+            <span style={{ fontSize: 15, flexShrink: 0, marginTop: 1 }}>
+              {overCapBy > 0 ? "🚫" : "👥"}
+            </span>
+            <div style={{ fontSize: 13, lineHeight: 1.55 }}>
+              {overCapBy > 0 ? (
+                <>
+                  <strong style={{ fontWeight: 700, color: "var(--ir-err-bar)" }}>
+                    This import exceeds your plan's athlete limit.
+                  </strong>
+                  <div style={{ marginTop: 4, color: "var(--ir-muted)" }}>
+                    Your plan allows {athleteCap} athletes and you have {athleteCount},
+                    so {slotsRemaining} more {slotsRemaining === 1 ? "fits" : "fit"} —
+                    but {importableCount} {importableCount === 1 ? "row is" : "rows are"} selected.
+                    Skip {overCapBy} more {overCapBy === 1 ? "row" : "rows"} to continue, or
+                    upgrade for a higher limit.
+                    <div style={{ marginTop: 5, opacity: 0.85 }}>
+                      Nothing is imported while the total is over the limit — the whole
+                      batch is written in one step, so it would be rejected as a unit.
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <span style={{ color: "var(--ir-muted)" }}>
+                  Using <strong style={{ fontWeight: 700 }}>{athleteCount! + importableCount} of {athleteCap}</strong>{" "}
+                  athlete slots after this import
+                  {slotsRemaining! - importableCount === 0
+                    ? " — this fills your plan's limit."
+                    : ` · ${slotsRemaining! - importableCount} will remain.`}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Warning acknowledgment */}
         {activeWarnings > 0 && activeErrors === 0 && (
           <label style={{
@@ -1099,12 +1196,18 @@ export default function ImportRosterModal({
             title={
               activeErrors > 0
                 ? "Resolve or skip all errors before importing"
+                : overCapBy > 0
+                ? `Over your plan's athlete limit by ${overCapBy} — skip ${overCapBy} more row${overCapBy !== 1 ? "s" : ""} to continue`
                 : activeWarnings > 0 && !warningsAcknowledged
                 ? "Acknowledge duplicate warnings to continue"
                 : ""
             }
           >
-            {importing ? "Importing…" : `Import ${importableCount} Athlete${importableCount !== 1 ? "s" : ""}`}
+            {importing
+              ? "Importing…"
+              : overCapBy > 0
+              ? `${overCapBy} over plan limit`
+              : `Import ${importableCount} Athlete${importableCount !== 1 ? "s" : ""}`}
           </button>
         </div>
       );

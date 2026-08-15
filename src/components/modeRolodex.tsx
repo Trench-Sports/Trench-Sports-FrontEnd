@@ -95,6 +95,19 @@ export interface ModeRolodexProps {
   saving?: boolean;
   /** Called when the Save button is tapped. */
   onSave?: () => void;
+  /**
+   * Modes the program's subscription tier does not include. They stay in the
+   * arc with a lock glyph rather than being removed — doc §8.5: "locked modes
+   * stay in the mode rolodex with a lock badge, preserving the sense of the
+   * full product". Scrolling onto one shows the lock copy but does NOT emit
+   * onModeSelect, so a locked mode can never become the active session mode.
+   *
+   * Presentation only. The enforcement that matters is server-side: sessions
+   * recorded in an unentitled mode are dropped from every read
+   * (supabase/entitlements.sql §6a). Write-time rejection is still to come —
+   * see the "NOT YET ENFORCED" note at the bottom of that file.
+   */
+  lockedModes?: SessionMode[];
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -108,7 +121,12 @@ export function ModeRolodex({
   canSave = false,
   saving = false,
   onSave,
+  lockedModes = [],
 }: ModeRolodexProps) {
+  const isLocked = useCallback(
+    (m: SessionMode) => lockedModes.includes(m),
+    [lockedModes]
+  );
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -227,14 +245,17 @@ export function ModeRolodex({
     if (Math.abs(diff) < 0.003) {
       scrollPos.current = targetPos.current;
       const idx = ((Math.round(scrollPos.current) % N) + N) % N;
-      onModeSelect(MODES[idx]);
+      // A locked orb can be scrolled to and read, but never selected — the
+      // caller keeps whatever mode it had, so Start cannot launch a session
+      // the program has not paid for.
+      if (!isLocked(MODES[idx])) onModeSelect(MODES[idx]);
       bump();
       return;
     }
     scrollPos.current += diff * 0.18;
     bump();
     animId.current = requestAnimationFrame(animateSnap);
-  }, [onModeSelect, bump]);
+  }, [onModeSelect, bump, isLocked]);
 
   const momentumScroll = useCallback(() => {
     if (Math.abs(velocity.current) < 0.005) {
@@ -477,6 +498,7 @@ export function ModeRolodex({
       >
         {orbs.map(orb => {
           const m       = MODE_META[MODES[orb.mIdx]];
+          const locked  = isLocked(MODES[orb.mIdx]);
           // Icon fills the orb now that the label has moved to the centre
           // of the semi-circle. Larger at the centre so the active mode
           // icon reads clearly; smaller orbs still get a healthy glyph.
@@ -502,8 +524,9 @@ export function ModeRolodex({
               {/* Orb button */}
               <div
                 role="button"
-                aria-label={m.label}
+                aria-label={locked ? `${m.label} — locked, requires a higher plan` : m.label}
                 aria-pressed={orb.isCenter}
+                aria-disabled={locked || undefined}
                 onClick={e => {
                   if (Math.abs(orb.dist) > 0.5) {
                     e.stopPropagation();
@@ -517,20 +540,56 @@ export function ModeRolodex({
                   width: orb.size, height: orb.size,
                   borderRadius: "50%", transform: `translate(calc(-50% + ${orb.dx}px), -50%)`,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  border: orb.isCenter
+                  border: locked
+                    ? `1.5px dashed rgba(255,255,255,${orb.isCenter ? 0.55 : borderAlpha * 0.8})`
+                    : orb.isCenter
                     ? `2px solid ${m.color}`
                     : `1.5px solid rgba(255,255,255,${borderAlpha})`,
-                  background: orb.isCenter
+                  background: locked
+                    ? `rgba(255,255,255,${fillAlpha * 0.6})`
+                    : orb.isCenter
                     ? `rgba(${hexRgb(m.color)},${fillAlpha})`
                     : `rgba(255,255,255,${fillAlpha})`,
-                  opacity: orb.opacity,
+                  // Dimmed but never hidden — a mode you cannot see is a mode
+                  // you cannot be sold.
+                  opacity: locked ? orb.opacity * 0.55 : orb.opacity,
                   backdropFilter: "blur(8px)",
                   WebkitBackdropFilter: "blur(8px)",
                   cursor: Math.abs(orb.dist) < 0.5 ? "default" : "pointer",
                   pointerEvents: Math.abs(orb.dist) < 1.2 ? "auto" : "none",
                 }}
               >
-                <span style={{ fontSize: emojiSz, lineHeight: 1 }}>{m.icon}</span>
+                <span
+                  style={{
+                    fontSize: emojiSz,
+                    lineHeight: 1,
+                    filter: locked ? "grayscale(1)" : undefined,
+                  }}
+                >
+                  {m.icon}
+                </span>
+                {locked && (
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      position: "absolute",
+                      right: -1,
+                      bottom: -1,
+                      width: Math.max(14, Math.round(orb.size * 0.30)),
+                      height: Math.max(14, Math.round(orb.size * 0.30)),
+                      borderRadius: "50%",
+                      background: "rgba(18,14,30,0.92)",
+                      border: "1px solid rgba(255,255,255,0.30)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: Math.max(7, Math.round(orb.size * 0.16)),
+                      lineHeight: 1,
+                    }}
+                  >
+                    🔒
+                  </span>
+                )}
               </div>
             </React.Fragment>
           );
@@ -544,7 +603,16 @@ export function ModeRolodex({
         color: "rgba(255,255,255,0.32)", pointerEvents: "none", zIndex: 2,
         transition: "opacity 200ms",
       }}>
-        {activeMeta.desc}
+        {isLocked(MODES[trueActive]) ? (
+          <>
+            <span style={{ display: "block", fontWeight: 800, color: "rgba(210,140,255,0.85)", marginBottom: 3 }}>
+              🔒 {activeMeta.label} is not on your plan
+            </span>
+            {activeMeta.desc}
+          </>
+        ) : (
+          activeMeta.desc
+        )}
       </div>
 
       <style>{`@keyframes rdGlowPulse{0%,100%{opacity:.18}50%{opacity:.35}}`}</style>

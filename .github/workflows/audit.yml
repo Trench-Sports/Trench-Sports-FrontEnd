@@ -1,0 +1,44 @@
+# Runs this repo's diff-scoped audit agents (.claude/agents/*.md via
+# scripts/audit.mjs) on every PR into main.
+#
+# The runner scaffolding lives in the org repo so other Trench-Sports repos get
+# it for free. The agents stay here, because what's worth guarding is
+# repo-specific — see .claude/agents/README.md.
+#
+# DO NOT MERGE THIS until Trench-Sports/.github exists with
+# .github/workflows/audit-agents.yml on main, and that repo's
+# Settings → Actions → General → "Access" is set to
+# "Accessible from repositories in the Trench-Sports organization".
+# Both repos are private, so without that setting this resolves to a 404 and
+# every PR check fails.
+
+name: Audit
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: audit-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    uses: Trench-Sports/.github/.github/workflows/audit-agents.yml@main
+    # Passes both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN through when
+    # they exist. The reusable workflow fails fast if neither is set, so an
+    # expired or unshared org secret shows up as a clear error rather than a
+    # green check over an audit that never ran.
+    secrets: inherit
+    with:
+      # package.json declares node 24.x, but the audit only typechecks and
+      # shells out to the Claude CLI — pinned to 20 to match what this repo's
+      # CI has actually been exercised on. Bump deliberately, not incidentally.
+      node-version: "20"
+      pre-audit-command: "npm run typecheck"
+      audit-command: "npm run audit"
+      findings-path: ".audit/findings.md"
+      # Flip to "1" once the agents have earned it — CRITICAL findings will
+      # then fail this job instead of only printing.
+      blocking: "0"
+      timeout-minutes: 20

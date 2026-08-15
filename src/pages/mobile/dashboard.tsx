@@ -10,6 +10,17 @@ import ManageTeamModal from "../../components/manageTeam";
 import { supabase } from "../../supabaseClient";
 import StrikeCompass from "../../components/strikeCompass";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
+import { useEntitlements, useRetainedData } from "../../lib/entitlements";
+import {
+  LockedPanel,
+  LockBadge,
+  LapsedBanner,
+  TrialBanner,
+  RetainedDataNotice,
+  SampleTable,
+  SAMPLE_IMPROVED_ROWS,
+  SAMPLE_TEAM_ROWS,
+} from "../../components/lockedFeature";
 
 type Insight = { title: string; body: string; tag: "Power" | "Accuracy" | "Tempo" | "Recovery" };
 
@@ -83,6 +94,15 @@ type Team = {
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
+}
+
+// Session rows now arrive from tiered_session_summaries() rather than from the
+// table, and PostgREST cannot embed a related resource into a function result —
+// so the athlete's name comes back as two flat columns instead of a nested
+// `athletes` object. One helper keeps that shape change in a single place.
+function athleteNameOf(row: any, fallback = "Unknown Athlete"): string {
+  const name = [row?.athlete_first_name, row?.athlete_last_name].filter(Boolean).join(" ").trim();
+  return name || fallback;
 }
 
 
@@ -184,6 +204,18 @@ function useSwipeToDismiss(isOpen: boolean, onClose: () => void, threshold = 80)
 
 export default function Dashboard() {
   const navigate = useNavigate();
+
+  // ── Entitlements ─────────────────────────────────────────────────────────
+  // Decides which panels render and which render locked. NOT the security
+  // boundary — supabase/entitlements.sql withholds the underlying rows, so a
+  // program that forged a higher tier here would unlock empty panels.
+  // Components ask capability questions (ent.can("fatigueTracker")), never
+  // `plan === "II"` — see the hard rule in src/lib/entitlements.ts.
+  const ent = useEntitlements();
+  // Real counts of the program's own retained-but-locked training data.
+  // Capture is tier-blind and nothing is ever pruned, so this is what an
+  // upgrade would reveal — see RetainedDataNotice.
+  const retained = useRetainedData();
 
   // ── Gesture: pull-to-refresh ─────────────────────────────────────────────
   const dashRef        = useRef<HTMLDivElement>(null);
@@ -327,21 +359,22 @@ export default function Dashboard() {
       try {
         // Fetch all sessions across all modes in one round-trip.
         // num_events powers the volume pill (max hits in a single session).
-        let progressQuery = supabase!
-          .from("session_summaries")
-          .select("athlete_id, date_of_record, mode, quality, peak_force_stats, num_events")
-          .eq("program_id", programId!)
-          .not("athlete_id", "is", null)
-          .order("date_of_record", { ascending: true });
+        // Reads go through tiered_session_summaries() instead of the table.
+        // Program scope, coach core-team scope, the tier's entitled mode set
+        // and its history window are all applied inside the function
+        // (supabase/entitlements.sql §6a), and the gated columns are revoked
+        // from the client outright — so none of the filters that used to live
+        // here are load-bearing for access control any more.
+        const { data: progressRows } = await supabase!.rpc("tiered_session_summaries");
 
-        // Coaches are scoped to their core team; admins see the whole program
-        if (userRole === "coach" && coreTeamId) {
-          progressQuery = progressQuery.eq("core_team_id", coreTeamId);
-        }
+        // The RPC orders newest-first; this aggregation wants oldest-first so
+        // the early-vs-late trend split below reads in chronological order.
+        const data = (progressRows ?? [])
+          .filter((r: any) => r.athlete_id)
+          .sort((a: any, b: any) =>
+            String(a.date_of_record ?? "").localeCompare(String(b.date_of_record ?? "")));
 
-        const { data } = await progressQuery;
-
-        if (!data) return;
+        if (!data.length) return;
 
         // Group by athlete → mode → vals[]
         type ModeVals = {
@@ -580,18 +613,10 @@ export default function Dashboard() {
       setRecentSessionsLoading(true);
       setRecentSessionsError("");
       try {
-        let query = supabase!
-          .from("session_summaries")
-          .select("session_id, date_of_record, mode, athlete_id, athletes(first_name, last_name)")
-          .eq("program_id", programId!)
-          .order("date_of_record", { ascending: false });
-
-        // Coaches are scoped to their core team; admins see the whole program
-        if (userRole === "coach" && coreTeamId) {
-          query = query.eq("core_team_id", coreTeamId);
-        }
-
-        const { data, error } = await query;
+        // Tier-scoped read. Sessions recorded in a mode the program is not
+        // entitled to never appear in this list — the rows are dropped
+        // server-side, not filtered here.
+        const { data, error } = await supabase!.rpc("tiered_session_summaries");
         if (error) throw error;
 
         setRecentSessions(
@@ -599,8 +624,10 @@ export default function Dashboard() {
             id: row.session_id,
             timestamp: row.date_of_record ?? "",
             mode: row.mode ?? "Power",
-            athleteFirstName: row.athletes?.first_name ?? "—",
-            athleteLastName: row.athletes?.last_name ?? "",
+            // Athlete names arrive as flat columns — PostgREST cannot embed a
+            // related resource into a function result.
+            athleteFirstName: row.athlete_first_name ?? "—",
+            athleteLastName: row.athlete_last_name ?? "",
             athleteId: row.athlete_id ?? null,
           }))
         );
@@ -661,12 +688,13 @@ export default function Dashboard() {
     async function fetchSessionHeatmap() {
       setHeatmapLoading(true);
       try {
-        // 1. Grab the full summary row
-        const { data: summary } = await supabase!
-          .from("session_summaries")
-          .select("heatmap, mode, num_events, session_duration_ms, peak_force_stats, impulse_stats, duration_ms_stats, angles_deg, most_contacted_cell_rc, center_of_mass_mm, cadence_hz_avg, iei_ms, quality")
-          .eq("session_id", selectedSessionId!)
-          .maybeSingle();
+        // 1. Grab the summary row, tier-masked. Fields above the program's
+        //    tier come back null rather than absent, so the metric rows below
+        //    render their "—" placeholder instead of breaking.
+        const { data: summaryRows } = await supabase!.rpc("tiered_session_summaries", {
+          p_session_id: selectedSessionId!,
+        });
+        const summary = (summaryRows ?? [])[0] as any;
 
         if (summary) {
           setSessionSummary({
@@ -704,25 +732,29 @@ export default function Dashboard() {
           }
         }
 
-        // 2. Fetch ordered events with all cells — grouped per event for true-time replay
-        const { data: events } = await supabase!
-          .from("events")
-          .select("event_id, t_start_ms, strength_index, temporal, impulse_index, rise_time_ms, duration_ms, angle_deg, reaction_time_ms, accuracy, event_cells(r, c, v_min)")
-          .eq("session_id", selectedSessionId!)
-          .order("t_start_ms", { ascending: true });
+        // 2. Fetch ordered events with all cells — grouped per event for
+        //    true-time replay. Served by tiered_session_events(), which
+        //    re-authorises the session by id (events carries no program_id of
+        //    its own), drops it entirely if the mode or date is outside the
+        //    tier, and nulls the Tier II+ per-strike fields below that tier.
+        //    event_cells is no longer client-readable at all — the cells come
+        //    back pre-aggregated as a jsonb array.
+        const { data: events } = await supabase!.rpc("tiered_session_events", {
+          p_session_id: selectedSessionId!,
+        });
 
         if (events && events.length > 0) {
           const tZero: number = (events[0] as any).t_start_ms ?? 0;
           const replayEvs: ReplayEvent[] = (events as any[]).map(ev => ({
             eventId:    ev.event_id,
             tMs:        (ev.t_start_ms ?? tZero) - tZero,
-            cells:      (ev.event_cells ?? []).map((c: any) => ({
+            cells:      (ev.cells ?? []).map((c: any) => ({
               r:  c.r,
               c:  c.c,
               mv: Math.round((c.v_min ?? 0) * 1000),
             })),
             si:         ev.strength_index?.value ?? null,
-            cellCount:  ev.temporal?.cell_count  ?? (ev.event_cells?.length ?? 0),
+            cellCount:  ev.cell_count ?? (ev.cells?.length ?? 0),
             impulse:    ev.impulse_index   != null ? Math.round(Number(ev.impulse_index) * 10) / 10 : null,
             durationMs: ev.duration_ms     != null ? Math.round(Number(ev.duration_ms))             : null,
             riseMs:     ev.rise_time_ms    != null ? Math.round(Number(ev.rise_time_ms))             : null,
@@ -1136,12 +1168,32 @@ export default function Dashboard() {
   // ---------- Leaderboard ----------
   type LeaderDateRange = 7 | 30 | 90 | "all";
   const [leaderDateRange, setLeaderDateRange] = useState<LeaderDateRange>(30);
-  const leaderCutoff = useMemo<string | null>(() => {
-    if (leaderDateRange === "all") return null;
-    const d = new Date();
-    d.setDate(d.getDate() - leaderDateRange);
-    return d.toISOString();
-  }, [leaderDateRange]);
+  // The window the user asked for, as a day count the RPC understands.
+  // "all time" sends null, which the function reads as "no client-side
+  // narrowing" — it still clamps to the tier's own history window, so a Tier I
+  // program selecting All time gets 30 days and nothing older.
+  const leaderRangeDays = useMemo<number | null>(
+    () => (leaderDateRange === "all" ? null : leaderDateRange),
+    [leaderDateRange]
+  );
+
+  // Ranges the program's history window actually covers. Offering "All time"
+  // to a Tier I program would silently return 30 days and read as a bug.
+  // Mobile carries a 7-day option the desktop does not; it is inside every
+  // tier's window, so it always survives the filter.
+  const availableRanges = useMemo<LeaderDateRange[]>(() => {
+    const days = ent.historyDays();
+    if (days === null) return [7, 30, 90, "all"];
+    if (days >= 90) return [7, 30, 90];
+    return [7, 30];
+  }, [ent]);
+
+  // Keep the selection inside what the tier allows — including on downgrade,
+  // where a stored "all time" choice would otherwise persist as a dead option.
+  useEffect(() => {
+    if (ent.loading) return;
+    if (!availableRanges.includes(leaderDateRange)) setLeaderDateRange(availableRanges[0]);
+  }, [availableRanges, leaderDateRange, ent.loading]);
 
   const [leaderMetric, setLeaderMetric] = useState<MetricKey>("strength");
   const [strengthRows, setStrengthRows] = useState<Extract<LeaderRow, { metric: "strength" }>[]>([]);
@@ -1188,47 +1240,17 @@ export default function Dashboard() {
     setVolumeInsightRows([]);
     setTargetInsightRows([]);
 
-    // Build all five queries with their filters applied
-    let qStrength = supabase!
-      .from("session_summaries")
-      .select("athlete_id, quality, peak_force_stats, num_events, athletes(first_name, last_name)")
-      .eq("program_id", programId)
-      .eq("mode", "power")
-      .not("peak_force_stats", "is", null);
-    if (userRole === "coach" && coreTeamId) qStrength = qStrength.eq("core_team_id", coreTeamId);
-    if (leaderCutoff) qStrength = qStrength.gte("date_of_record", leaderCutoff);
-
-    let qReaction = supabase!
-      .from("session_summaries")
-      .select("athlete_id, num_events, quality, athletes(first_name, last_name)")
-      .eq("program_id", programId)
-      .eq("mode", "reaction");
-    if (userRole === "coach" && coreTeamId) qReaction = qReaction.eq("core_team_id", coreTeamId);
-    if (leaderCutoff) qReaction = qReaction.gte("date_of_record", leaderCutoff);
-
-    let qAccuracy = supabase!
-      .from("session_summaries")
-      .select("athlete_id, quality, peak_force_stats, num_events, iei_ms, athletes(first_name, last_name)")
-      .eq("program_id", programId)
-      .eq("mode", "accuracy");
-    if (userRole === "coach" && coreTeamId) qAccuracy = qAccuracy.eq("core_team_id", coreTeamId);
-    if (leaderCutoff) qAccuracy = qAccuracy.gte("date_of_record", leaderCutoff);
-
-    let qVolume = supabase!
-      .from("session_summaries")
-      .select("athlete_id, quality, num_events, athletes(first_name, last_name)")
-      .eq("program_id", programId)
-      .eq("mode", "volume");
-    if (userRole === "coach" && coreTeamId) qVolume = qVolume.eq("core_team_id", coreTeamId);
-    if (leaderCutoff) qVolume = qVolume.gte("date_of_record", leaderCutoff);
-
-    let qTarget = supabase!
-      .from("session_summaries")
-      .select("athlete_id, quality, athletes(first_name, last_name)")
-      .eq("program_id", programId)
-      .eq("mode", "target");
-    if (userRole === "coach" && coreTeamId) qTarget = qTarget.eq("core_team_id", coreTeamId);
-    if (leaderCutoff) qTarget = qTarget.gte("date_of_record", leaderCutoff);
+    // One tier-scoped call per mode. The RPC applies program and core-team
+    // scoping itself, so the only thing passed here is the narrowing the user
+    // actually asked for. A tier that has not unlocked a mode gets an empty
+    // array back — the Volume and Target calls simply return nothing below
+    // Tier III, which is what starves the fatigue tracker of its inputs.
+    const range = leaderRangeDays;
+    const qStrength = supabase!.rpc("tiered_session_summaries", { p_mode: "power",    p_range_days: range });
+    const qReaction = supabase!.rpc("tiered_session_summaries", { p_mode: "reaction", p_range_days: range });
+    const qAccuracy = supabase!.rpc("tiered_session_summaries", { p_mode: "accuracy", p_range_days: range });
+    const qVolume   = supabase!.rpc("tiered_session_summaries", { p_mode: "volume",   p_range_days: range });
+    const qTarget   = supabase!.rpc("tiered_session_summaries", { p_mode: "target",   p_range_days: range });
 
     (async () => {
       try {
@@ -1262,7 +1284,7 @@ export default function Dashboard() {
               }
             }
             if (siMax == null || siMean == null) continue;
-            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const name = athleteNameOf(row);
             const ex = aggMap.get(athleteId);
             if (ex) { ex.peakIndex = Math.max(ex.peakIndex, siMax); ex.avgSum += siMean; ex.avgCount++; ex.sessions++; }
             else aggMap.set(athleteId, { name, peakIndex: siMax, avgSum: siMean, avgCount: 1, sessions: 1 });
@@ -1287,7 +1309,7 @@ export default function Dashboard() {
             const minMs = q?.best_reaction_ms ?? null;
             if (avgMs == null) continue;
             const resolvedMin = minMs ?? avgMs;
-            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const name = athleteNameOf(row);
             const ex = aggMap.get(athleteId);
             if (ex) { ex.bestMs = Math.min(ex.bestMs, resolvedMin); ex.sumAvgMs += avgMs; ex.count++; ex.attempts += row.num_events ?? 0; }
             else aggMap.set(athleteId, { name, bestMs: resolvedMin, sumAvgMs: avgMs, count: 1, attempts: row.num_events ?? 0 });
@@ -1314,7 +1336,7 @@ export default function Dashboard() {
               if (avgMv == null) continue;
               pct = Math.min(100, Math.round((avgMv / 3320) * 100 * 10) / 10);
             }
-            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown Athlete";
+            const name = athleteNameOf(row);
             const ex = aggMap.get(athleteId);
             if (ex) { ex.sumPct += Number(pct); ex.sessions++; if (offset != null) { ex.sumOffset += Number(offset); ex.offsetCount++; } }
             else aggMap.set(athleteId, { name, sumPct: Number(pct), sumOffset: offset != null ? Number(offset) : 0, offsetCount: offset != null ? 1 : 0, sessions: 1 });
@@ -1339,7 +1361,7 @@ export default function Dashboard() {
             const bestWin = qd?.best_window_hits ?? avgWin;
             const slope   = qd?.si_fatigue_slope ?? null;
             const siMean  = qd?.strength_index?.mean ?? null;
-            const name    = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown";
+            const name    = athleteNameOf(row, "Unknown");
             const evts    = row.num_events ?? 0;
             const ex = aggMap.get(aid);
             if (ex) {
@@ -1370,7 +1392,7 @@ export default function Dashboard() {
             if (accPct == null) continue;
             const rt   = qd?.avg_reaction_ms_correct ?? qd?.avg_reaction_ms_all ?? null;
             const atts = qd?.attempts ?? 0;
-            const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}` : "Unknown";
+            const name = athleteNameOf(row, "Unknown");
             const ex = aggMap.get(aid);
             if (ex) { ex.sumAccPct += Number(accPct); if (rt != null) { ex.sumRtCorrect += Number(rt); ex.rtCount++; } ex.attempts += Number(atts); ex.sessions++; }
             else aggMap.set(aid, { name, sumAccPct: Number(accPct), sumRtCorrect: rt != null ? Number(rt) : 0, rtCount: rt != null ? 1 : 0, attempts: Number(atts), sessions: 1 });
@@ -1387,7 +1409,7 @@ export default function Dashboard() {
         setStrengthLoading(false);
       }
     })();
-  }, [programId, userRole, coreTeamId, leaderCutoff]);
+  }, [programId, userRole, coreTeamId, leaderRangeDays]);
 
   // ---------- Team Leaderboards ----------
   type TeamLeaderRow = {
@@ -1458,22 +1480,21 @@ export default function Dashboard() {
         for (const team of allTeams) {
           const isCore = team.team_type === "core";
 
-          let query = supabase!
-            .from("session_summaries")
-            .select("quality, peak_force_stats, num_events, impulse_stats")
-            .eq("program_id", programId!)
-            .eq("mode", modeFilter);
-
-          if (isCore) {
-            query = query.eq("core_team_id", team.id);
-          } else {
-            const ids = subTeamMembers.get(team.id) ?? [];
-            if (ids.length === 0) continue;
-            query = (query as any).in("athlete_id", ids);
+          // A core team scopes by core_team_id; a sub-team scopes by its
+          // roster. Both narrow the tier-scoped result rather than widening
+          // it, so an id from outside the program still returns nothing.
+          let athleteIds: string[] | null = null;
+          if (!isCore) {
+            athleteIds = subTeamMembers.get(team.id) ?? [];
+            if (athleteIds.length === 0) continue;
           }
-          if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
-          const { data } = await query;
+          const { data } = await supabase!.rpc("tiered_session_summaries", {
+            p_mode: modeFilter,
+            p_range_days: leaderRangeDays,
+            p_athlete_ids: athleteIds,
+            p_core_team_id: isCore ? team.id : null,
+          });
           if (!data || data.length === 0) continue;
 
           if (teamLeaderMetric === "strength") {
@@ -1553,7 +1574,7 @@ export default function Dashboard() {
         setTeamLeaderLoading(false);
       }
     })();
-  }, [programId, teams, teamLeaderMetric, leaderCutoff]);
+  }, [programId, teams, teamLeaderMetric, leaderRangeDays]);
 
   // Most Improved per team
   useEffect(() => {
@@ -1582,23 +1603,24 @@ export default function Dashboard() {
 
         for (const team of teams) {
           const isCore = team.team_type === "core";
-          let query = supabase!.from("session_summaries")
-            .select("date_of_record, quality, peak_force_stats, angles_deg")
-            .eq("program_id", programId!)
-            .order("date_of_record", { ascending: true });
-
-          if (modeFilter) query = (query as any).eq("mode", modeFilter);
-
-          if (isCore) { query = query.eq("core_team_id", team.id); }
-          else {
-            const ids = subTeamMembers.get(team.id) ?? [];
-            if (ids.length === 0) continue;
-            query = (query as any).in("athlete_id", ids);
+          let athleteIds: string[] | null = null;
+          if (!isCore) {
+            athleteIds = subTeamMembers.get(team.id) ?? [];
+            if (athleteIds.length === 0) continue;
           }
-          if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
 
-          const { data } = await query;
-          if (!data || data.length < 4) continue;
+          const { data: teamRows } = await supabase!.rpc("tiered_session_summaries", {
+            p_mode: modeFilter,
+            p_range_days: leaderRangeDays,
+            p_athlete_ids: athleteIds,
+            p_core_team_id: isCore ? team.id : null,
+          });
+
+          // Oldest-first: the improvement split below compares the first half
+          // of a team's history against the last.
+          const data = (teamRows ?? []).sort((a: any, b: any) =>
+            String(a.date_of_record ?? "").localeCompare(String(b.date_of_record ?? "")));
+          if (data.length < 4) continue;
 
           function extractVal(row: any): number | null {
             if (teamImprovedMetric === "strength") {
@@ -1632,7 +1654,7 @@ export default function Dashboard() {
         setTeamImprovedLoading(false);
       }
     })();
-  }, [programId, teams, teamImprovedMetric, leaderCutoff]);
+  }, [programId, teams, teamImprovedMetric, leaderRangeDays]);
 
   const leaderboardData = useMemo<LeaderRow[]>(() => {
     if (leaderMetric === "strength") return strengthRows;
@@ -2164,14 +2186,14 @@ export default function Dashboard() {
 
     (async () => {
       try {
-        const { data, error } = await supabase!
-          .from("session_summaries")
-          .select("session_id, date_of_record, mode, num_events, session_duration_ms, cadence_hz_avg, peak_force_stats, quality, angles_deg, iei_ms")
-          .eq("athlete_id", analysisAthleteId)
-          .eq("program_id", programId)
-          .order("date_of_record", { ascending: true });
+        const { data: analysisRows, error } = await supabase!.rpc("tiered_session_summaries", {
+          p_athlete_ids: [analysisAthleteId],
+        });
 
         if (error) throw error;
+        // Oldest-first for the per-axis trend maths further down.
+        const data = (analysisRows ?? []).sort((a: any, b: any) =>
+          String(a.date_of_record ?? "").localeCompare(String(b.date_of_record ?? "")));
         setAnalysisSessions(
           (data ?? []).map((r: any) => ({
             session_id:         r.session_id,
@@ -2325,25 +2347,25 @@ export default function Dashboard() {
                          : athleteImprovedMetric === "form"     ? null  // all modes
                          : athleteImprovedMetric;
 
-        let query = supabase!
-          .from("session_summaries")
-          .select("athlete_id, date_of_record, quality, peak_force_stats, angles_deg, athletes(first_name, last_name)")
-          .eq("program_id", programId!)
-          .not("athlete_id", "is", null)
-          .order("date_of_record", { ascending: true });
+        const { data: improvedRows } = await supabase!.rpc("tiered_session_summaries", {
+          p_mode: modeFilter,
+          p_range_days: leaderRangeDays,
+        });
 
-        if (modeFilter) query = (query as any).eq("mode", modeFilter);
-        if (leaderCutoff) query = query.gte("date_of_record", leaderCutoff);
-
-        const { data } = await query;
-        if (!data) return;
+        // Oldest-first: Most Improved compares the first half of each
+        // athlete's history against the last.
+        const data = (improvedRows ?? [])
+          .filter((r: any) => r.athlete_id)
+          .sort((a: any, b: any) =>
+            String(a.date_of_record ?? "").localeCompare(String(b.date_of_record ?? "")));
+        if (!data.length) return;
 
         // Group by athlete
         const byAthlete = new Map<string, { name: string; vals: number[] }>();
         for (const row of data as any[]) {
           const id = row.athlete_id;
           if (!id) continue;
-          const name = row.athletes ? `${row.athletes.first_name} ${row.athletes.last_name}`.trim() : "Unknown";
+          const name = athleteNameOf(row, "Unknown");
           let val: number | null = null;
           if (athleteImprovedMetric === "strength") {
             const si = row.quality?.strength_index;
@@ -2383,7 +2405,7 @@ export default function Dashboard() {
         setAthleteImprovedLoading(false);
       }
     })();
-  }, [programId, athleteImprovedMetric, leaderCutoff]);
+  }, [programId, athleteImprovedMetric, leaderRangeDays]);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Charts & Graphs
@@ -2450,30 +2472,24 @@ export default function Dashboard() {
       if (athleteIds.length === 0) return [];
     }
 
-    // Build query scoped to this entity
-    let query = supabase
-      .from("session_summaries")
-      .select("date_of_record, mode, num_events, quality, peak_force_stats, session_duration_ms")
-      .eq("program_id", programId)
-      .order("date_of_record", { ascending: true });
+    // Scope this entity within the tier-scoped result. An athlete and a
+    // sub-team both narrow by athlete id; a core team narrows by team id.
+    const modeFilter =
+      metric === "strength" ? "power" :
+      metric === "accuracy" ? "accuracy" :
+      metric === "reaction" ? "reaction" : null;
 
-    if (entity.kind === "athlete") {
-      query = query.eq("athlete_id", entity.id);
-    } else if (isSubTeam && athleteIds) {
-      // Sub-team: sessions belonging to any member athlete
-      query = (query as any).in("athlete_id", athleteIds);
-    } else {
-      // Core team: sessions directly scoped by core_team_id
-      query = query.eq("core_team_id", entity.id);
-    }
+    const { data: chartRows, error } = await supabase.rpc("tiered_session_summaries", {
+      p_mode: modeFilter,
+      p_athlete_ids:
+        entity.kind === "athlete" ? [entity.id] : (isSubTeam ? athleteIds : null),
+      p_core_team_id: entity.kind === "team" && !isSubTeam ? entity.id : null,
+    });
+    if (error || !chartRows) return [];
 
-    // Scope mode for metric
-    if (metric === "strength") query = (query as any).eq("mode", "power");
-    if (metric === "accuracy") query = (query as any).eq("mode", "accuracy");
-    if (metric === "reaction") query = (query as any).eq("mode", "reaction");
-
-    const { data, error } = await query;
-    if (error || !data) return [];
+    // Oldest-first so the weekly buckets below build in order.
+    const data = chartRows.sort((a: any, b: any) =>
+      String(a.date_of_record ?? "").localeCompare(String(b.date_of_record ?? "")));
 
     // Group into ISO weeks and aggregate
     const weekMap = new Map<string, number[]>();
@@ -2846,6 +2862,31 @@ export default function Dashboard() {
           <p className="ts-dashSub">Realtime training metrics + AI-ready analysis.</p>
         </div>
       </div>
+
+      {/* Program-level plan state. The lapsed banner leads with the fact that
+          captured sessions are retained, because that is the first thing a
+          lapsed customer wants to know. */}
+      {!ent.loading && ent.isLapsed && (
+        <div style={{ padding: "0 var(--dash-pad, 16px)" }}>
+          <LapsedBanner isTrial={ent.plan === "trial"} isDark={isDark} />
+        </div>
+      )}
+      {!ent.loading && ent.isTrial && (
+        <div style={{ padding: "0 var(--dash-pad, 16px)" }}>
+          <TrialBanner daysLeft={ent.trialDaysLeft} isDark={isDark} />
+        </div>
+      )}
+      {!retained.loading && retained.hasLockedData && (
+        <div style={{ padding: "0 var(--dash-pad, 16px)" }}>
+          <RetainedDataNotice
+            lockedModes={retained.lockedModes}
+            lockedModeSessions={retained.lockedModeSessions}
+            lockedByHistory={retained.lockedByHistory}
+            historyDays={ent.historyDays()}
+            isDark={isDark}
+          />
+        </div>
+      )}
 
       {/* TAB CONTENT — keyed wrapper so a tab switch replays the
            fade/slide-in animation defined in .ts-tabContent. */}
@@ -4021,18 +4062,48 @@ export default function Dashboard() {
                       );
                     })()}
 
-                    {/* ── Strike View 3D — hidden on phone/tablet (≤1024px) ── */}
+                    {/* ── Strike View 3D — hidden on phone/tablet (≤1024px) ──
+                        Tier II. Below it the compass has nothing to draw:
+                        angle_deg and angles_deg are masked out of the row, so
+                        every arrow would land at zero. The locked state says
+                        that plainly instead of rendering a broken compass. */}
                     <div className="ts-strikeCompassWrap">
                       {sessionSummary && (
-                        <StrikeCompass
-                          activeEvent={activeEvent ?? null}
-                          activeAngle={activeEvent?.angleDeg ?? null}
-                          anglesDeg={sessionSummary.angles_deg}
-                          isReplaying={isReplaying}
-                          modeAccent={modeAccent}
-                          modeGlow={modeGlow}
-                          isDark={isDark}
-                        />
+                        ent.can("strikeCompass") ? (
+                          <StrikeCompass
+                            activeEvent={activeEvent ?? null}
+                            activeAngle={activeEvent?.angleDeg ?? null}
+                            anglesDeg={sessionSummary.angles_deg}
+                            isReplaying={isReplaying}
+                            modeAccent={modeAccent}
+                            modeGlow={modeGlow}
+                            isDark={isDark}
+                          />
+                        ) : (
+                          <div
+                            style={{
+                              height: "100%",
+                              minHeight: 220,
+                              borderRadius: 12,
+                              border: `1px dashed rgba(${isDark ? "255,255,255" : "20,20,40"},0.16)`,
+                              display: "flex",
+                              flexDirection: "column",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: 10,
+                              textAlign: "center",
+                              padding: "20px 24px",
+                            }}
+                          >
+                            <div style={{ fontSize: 28, opacity: 0.5 }}>🧭</div>
+                            <div style={{ fontSize: 13, fontWeight: 700 }}>Strike Compass</div>
+                            <div style={{ fontSize: 11.5, lineHeight: 1.55, opacity: 0.6, maxWidth: 240 }}>
+                              Reconstructs the incoming angle of every strike in 3D —
+                              something you cannot see from the sideline.
+                            </div>
+                            <LockBadge tier={ent.requiredTier("strikeCompass")} />
+                          </div>
+                        )
                       )}
                     </div>
                   </div>
@@ -4188,7 +4259,9 @@ export default function Dashboard() {
               border: `1px solid ${isDark ? "rgba(255,255,255,0.10)" : "rgba(20,20,40,0.10)"}`,
               borderRadius: 10, padding: 3, gap: 2,
             }}>
-              {([7, 30, 90, "all"] as LeaderDateRange[]).map(r => {
+              {/* Only the windows the tier's history actually covers — a 30-day
+                  plan offered "All time" would return 30 days and read as a bug. */}
+              {availableRanges.map(r => {
                 const isActive = leaderDateRange === r;
                 const ink = isDark ? "255,255,255" : "20,20,40";
                 return (
@@ -4525,7 +4598,24 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Athlete Most Improved */}
+          {/* Athlete Most Improved — Tier II. It ranks change rather than
+              level, which needs the 90-day window Tier II unlocks; on a 30-day
+              history the split would compare two weeks against two weeks. */}
+          {!ent.can("mostImproved") ? (
+            <LockedPanel
+              feature="mostImproved"
+              requiredTier={ent.requiredTier("mostImproved")}
+              title="Most Improved"
+              isDark={isDark}
+              minHeight={200}
+            >
+              <SampleTable
+                isDark={isDark}
+                columns={["Athlete", "Change", "Metric"]}
+                rows={SAMPLE_IMPROVED_ROWS.map((r) => [r.name, r.delta, r.metric])}
+              />
+            </LockedPanel>
+          ) : (
           <div className="ts-card">
             <div className="ts-cardTop">
               <div className="ts-cardTitle">Most Improved</div>
@@ -4619,6 +4709,7 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+          )}
 
           {/* ── TEAM SECTION DIVIDER ── */}
           <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 12, paddingTop: 8, paddingBottom: 4 }}>
@@ -4626,7 +4717,23 @@ export default function Dashboard() {
             <div style={{ flex: 1, height: 1, background: isDark ? "rgba(255,255,255,0.08)" : "rgba(20,20,40,0.10)" }} />
           </div>
 
-          {/* Team Leaderboard */}
+          {/* Team Leaderboard — Tier II. A leaderboard is meaningless without a
+              cohort to populate it, which is why team comparison starts here. */}
+          {!ent.can("teamComparison") ? (
+            <LockedPanel
+              feature="teamComparison"
+              requiredTier={ent.requiredTier("teamComparison")}
+              title="Team Leaderboard"
+              isDark={isDark}
+              minHeight={220}
+            >
+              <SampleTable
+                isDark={isDark}
+                columns={["Team", "Avg SI", "Athletes"]}
+                rows={SAMPLE_TEAM_ROWS.map((r) => [r.name, r.avg, r.athletes])}
+              />
+            </LockedPanel>
+          ) : (
           <div className="ts-card ts-span2">
             <div className="ts-cardTop">
               <div className="ts-cardTitle">Team Leaderboard</div>
@@ -4756,7 +4863,29 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Team Most Improved */}
+          )}
+
+          {/* Team Most Improved — needs both team comparison and the change
+              ranking, so it unlocks with the rest of Tier II. */}
+          {!ent.can("teamComparison") || !ent.can("mostImproved") ? (
+            <LockedPanel
+              feature="mostImproved"
+              requiredTier="II"
+              title="Most Improved"
+              isDark={isDark}
+              minHeight={200}
+            >
+              <SampleTable
+                isDark={isDark}
+                columns={["Team", "Change", "Metric"]}
+                rows={[
+                  ["JV", "+61", "Strength Index"],
+                  ["Varsity", "+24", "Strength Index"],
+                  ["Freshman", "−12", "Strength Index"],
+                ]}
+              />
+            </LockedPanel>
+          ) : (
           <div className="ts-card">
             <div className="ts-cardTop">
               <div className="ts-cardTitle">Most Improved</div>
@@ -4845,6 +4974,7 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+          )}
 
         </div>
         ); // end normal populated return

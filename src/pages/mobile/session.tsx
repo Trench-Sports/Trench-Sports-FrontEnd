@@ -44,6 +44,7 @@ import {
 
 import { ModeRolodex } from "../../components/modeRolodex";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
+import { useEntitlements } from "../../lib/entitlements";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -2497,6 +2498,10 @@ function BlePickerSheet({
 export default function Session() {
   const navigate = useNavigate();
   const { unlock: unlockAudio, playSignal, playVolumeEnd, playZoneCue, closeAudio } = useSignalAudio();
+
+  // Which impact modes this program's plan includes. Drives the rolodex lock
+  // glyphs; the binding gate on unentitled modes is server-side.
+  const ent = useEntitlements();
 
   // ── Theme ────────────────────────────────────────────────────────────────────
   const [isDark, setIsDark] = useState<boolean>(() => initTheme() === "dark");
@@ -5997,6 +6002,9 @@ export default function Session() {
         canSave={canSave && !sessionSettings.autoSave}
         saving={saveState === "saving"}
         onSave={saveSession}
+        // Modes outside the program's tier stay visible with a lock glyph but
+        // cannot be selected. Presentation only — see the prop's doc comment.
+        lockedModes={MODES.filter((m) => !ent.modeAllowed(m))}
       />
 
       <style>{`

@@ -16,6 +16,7 @@ import React, { useMemo, useState } from "react";
 import Modal from "./modal";
 import { supabase } from "../supabaseClient";
 import { IconCheck, IconX } from "./icons";
+import { useEntitlements } from "../lib/entitlements";
 
 /* ─── Types ──────────────────────────────────────────────── */
 export type ExportAthlete = {
@@ -60,7 +61,9 @@ const num = (v: any, d = 1): number | null =>
 
 const METRICS: Metric[] = [
   // Identity
-  { key: "athlete", label: "Athlete", group: "Identity", get: (r) => r.athletes ? `${r.athletes.first_name} ${r.athletes.last_name}`.trim() : "Unknown" },
+  // Names arrive as flat columns — PostgREST cannot embed a related resource
+  // into a function result, and this row now comes from an RPC.
+  { key: "athlete", label: "Athlete", group: "Identity", get: (r) => [r.athlete_first_name, r.athlete_last_name].filter(Boolean).join(" ").trim() || "Unknown" },
   { key: "date", label: "Date", group: "Identity", get: (r) => (r.date_of_record ? new Date(r.date_of_record).toISOString().slice(0, 10) : "") },
   { key: "mode", label: "Session Type", group: "Identity", get: (r) => (r.mode ? MODE_LABEL[r.mode as Mode] ?? r.mode : "") },
   { key: "session_id", label: "Session ID", group: "Identity", get: (r) => r.session_id ?? "" },
@@ -148,6 +151,9 @@ const sectionLabel: React.CSSProperties = {
 export default function ExportSessionsModal({
   open, onClose, programId, userRole, coreTeamId, athletes,
 }: Props) {
+  const ent = useEntitlements();
+  const historyDays = ent.historyDays();
+
   const [preset, setPreset] = useState<RangePreset>("30");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -188,42 +194,39 @@ export default function ExportSessionsModal({
 
     setBusy(true); setError(""); setResultMsg("");
     try {
-      let q = supabase
-        .from("session_summaries")
-        .select(
-          "session_id, athlete_id, mode, num_events, session_duration_ms, cadence_hz_avg, longest_pause_ms, peak_force_stats, quality, date_of_record, athletes(first_name, last_name)"
-        )
-        .eq("program_id", programId)
-        .order("date_of_record", { ascending: false });
-
-      // Coach scoping — mirror the leaderboard behavior.
-      if (userRole === "coach" && coreTeamId) q = q.eq("core_team_id", coreTeamId);
-
-      // Session types
-      if (selectedModes.size < MODES.length) q = q.in("mode", Array.from(selectedModes));
-
-      // Athletes
-      if (!allAthletes) q = q.in("athlete_id", Array.from(selectedAthletes));
-
-      // Time window
-      if (preset === "30" || preset === "90") {
-        const d = new Date();
-        d.setDate(d.getDate() - Number(preset));
-        q = q.gte("date_of_record", d.toISOString());
-      } else if (preset === "custom") {
-        if (fromDate) q = q.gte("date_of_record", new Date(fromDate).toISOString());
-        if (toDate) {
-          // inclusive end-of-day
-          const end = new Date(toDate);
-          end.setHours(23, 59, 59, 999);
-          q = q.lte("date_of_record", end.toISOString());
-        }
-      }
-
-      const { data, error: qErr } = await q;
+      // Rows come from export_session_summaries(), which checks the csvExport
+      // entitlement, applies program + coach scoping, drops modes the tier has
+      // not unlocked, masks fields above the tier, and clamps the window to the
+      // tier's history cap. Nothing below narrows access — it only narrows what
+      // the user asked for. A Tier I program gets a 42501 here, not an empty file.
+      const { data, error: qErr } = await supabase.rpc("export_session_summaries", {
+        p_mode: selectedModes.size === 1 ? Array.from(selectedModes)[0] : null,
+        p_range_days: preset === "30" || preset === "90" ? Number(preset) : null,
+        p_athlete_ids: allAthletes ? null : Array.from(selectedAthletes),
+      });
       if (qErr) throw qErr;
 
-      const rows = (data ?? []) as Row[];
+      let rows = (data ?? []) as Row[];
+
+      // Multi-mode and custom-range narrowing the RPC does not take as params.
+      // Safe to do here: both only ever REMOVE rows the server already cleared.
+      if (selectedModes.size > 1 && selectedModes.size < MODES.length) {
+        rows = rows.filter((r) => selectedModes.has(String(r.mode).toLowerCase() as Mode));
+      }
+      if (preset === "custom") {
+        const from = fromDate ? new Date(fromDate).getTime() : null;
+        let to: number | null = null;
+        if (toDate) {
+          const end = new Date(toDate);
+          end.setHours(23, 59, 59, 999); // inclusive end-of-day
+          to = end.getTime();
+        }
+        rows = rows.filter((r) => {
+          const t = r.date_of_record ? new Date(r.date_of_record).getTime() : 0;
+          return (from == null || t >= from) && (to == null || t <= to);
+        });
+      }
+
       if (rows.length === 0) {
         setError("No sessions match those filters. Try widening the time window or athlete selection.");
         setBusy(false);
@@ -278,16 +281,27 @@ export default function ExportSessionsModal({
               <DateField label="To" value={toDate} min={fromDate || undefined} onChange={setToDate} />
             </div>
           )}
+          {/* Doc open question #7: an export silently truncated at the tier's
+              history cap generates support tickets, so state the cap here
+              rather than letting the user discover it in the file. */}
+          {historyDays != null && (
+            <div style={{ fontSize: 11.5, opacity: 0.6, marginTop: 10, lineHeight: 1.5 }}>
+              Your plan includes {historyDays} days of session history — older sessions
+              are not included in the export, whichever window you pick above.
+            </div>
+          )}
         </div>
 
-        {/* Session types */}
+        {/* Session types — only the modes the program has unlocked. Locked
+            modes have no sessions to export in the first place, so offering
+            them here would just produce an empty file. */}
         <div>
           <label style={sectionLabel}>Session Types</label>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button type="button" style={chip(selectedModes.size === MODES.length)} onClick={() => setSelectedModes(new Set(MODES))}>
               All
             </button>
-            {MODES.map((m) => (
+            {MODES.filter((m) => ent.modeAllowed(m)).map((m) => (
               <button
                 key={m}
                 type="button"
