@@ -203,13 +203,17 @@ async function main() {
   // Mode: default reviews what a push adds (origin/main...HEAD). `--working`
   // reviews uncommitted tracked changes, for an on-demand check before committing.
   const working = process.argv.includes("--working");
-  let files, diff, scopeLabel;
+  // `base` is read again by renderMarkdown below, so it has to outlive this
+  // block — it was previously scoped to the else branch, which crashed every
+  // run that got as far as writing findings.
+  let files, diff, scopeLabel, base;
   if (working) {
+    base = "HEAD";
     files = sh("git", ["diff", "--name-only", "HEAD"]).split("\n").filter(Boolean);
     diff = sh("git", ["diff", "HEAD"]);
     scopeLabel = "uncommitted changes (working tree)";
   } else {
-    const base = getDiffBase();
+    base = getDiffBase();
     files = sh("git", ["diff", "--name-only", `${base}...HEAD`]).split("\n").filter(Boolean);
     diff = sh("git", ["diff", `${base}...HEAD`]);
     scopeLabel = `origin/main...HEAD (base ${base.slice(0, 8)})`;
@@ -297,4 +301,24 @@ function renderMarkdown(base, files, findings) {
   return md;
 }
 
-process.exit(await main());
+// The harness promises to fail OPEN (see the design rules at the top), but that
+// only held for the failures it anticipated — a bug in the harness itself threw
+// straight out of main() and wedged the push, which is exactly what fail-open
+// exists to prevent. Catch everything.
+//
+// CI is the exception: there a crash means the agents didn't run, and a green
+// check over an audit that never happened is worse than a red one.
+let code = 0;
+try {
+  code = await main();
+} catch (err) {
+  console.error(`[audit] harness crashed: ${err?.stack ?? err}`);
+  if (process.env.CI) {
+    console.error("[audit] CI detected — failing the job rather than reporting a clean run.");
+    code = 1;
+  } else {
+    console.error("[audit] failing open — your push is not blocked. Please report this.");
+    code = 0;
+  }
+}
+process.exit(code);
