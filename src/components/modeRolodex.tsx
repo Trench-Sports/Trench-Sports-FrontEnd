@@ -24,6 +24,7 @@ import { useLocation } from "react-router-dom";
 // Re-import the shared types and constants from the session module.
 // session.tsx must export: SessionMode, MODES, MODE_META
 import { type SessionMode, MODES, MODE_META } from "../lib/sessionModes";
+import { IconLock } from "./icons";
 import { SwipeDeckContext } from "./mobileSwipeDeck";
 
 const N = MODES.length;
@@ -502,7 +503,7 @@ export function ModeRolodex({
           // Icon fills the orb now that the label has moved to the centre
           // of the semi-circle. Larger at the centre so the active mode
           // icon reads clearly; smaller orbs still get a healthy glyph.
-          const emojiSz = Math.round(orb.size * (orb.isCenter ? 0.55 : 0.5));
+          const iconSz  = Math.round(orb.size * (orb.isCenter ? 0.48 : 0.44));
           // Beef the chrome up — without the inner label the orb relied on
           // text for legibility. Bump border + fill opacities so the circles
           // remain clearly visible at every distance from centre.
@@ -561,12 +562,18 @@ export function ModeRolodex({
               >
                 <span
                   style={{
-                    fontSize: emojiSz,
-                    lineHeight: 1,
-                    filter: locked ? "grayscale(1)" : undefined,
+                    display: "flex",
+                    // The line icon takes the mode's colour at the centre and
+                    // fades back to plain white off-centre, the same way the
+                    // orb chrome does — locked modes just go muted.
+                    color: locked
+                      ? "rgba(255,255,255,0.55)"
+                      : orb.isCenter
+                      ? m.color
+                      : "rgba(255,255,255,0.85)",
                   }}
                 >
-                  {m.icon}
+                  <m.Icon size={iconSz} />
                 </span>
                 {locked && (
                   <span
@@ -583,11 +590,10 @@ export function ModeRolodex({
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      fontSize: Math.max(7, Math.round(orb.size * 0.16)),
-                      lineHeight: 1,
+                      color: "rgba(255,255,255,0.70)",
                     }}
                   >
-                    🔒
+                    <IconLock size={Math.max(8, Math.round(orb.size * 0.17))} />
                   </span>
                 )}
               </div>
@@ -606,7 +612,10 @@ export function ModeRolodex({
         {isLocked(MODES[trueActive]) ? (
           <>
             <span style={{ display: "block", fontWeight: 800, color: "rgba(210,140,255,0.85)", marginBottom: 3 }}>
-              🔒 {activeMeta.label} is not on your plan
+              <span style={{ display: "inline-flex", verticalAlign: "-0.14em", marginRight: 5 }}>
+                <IconLock size={11} />
+              </span>
+              {activeMeta.label} is not on your plan
             </span>
             {activeMeta.desc}
           </>

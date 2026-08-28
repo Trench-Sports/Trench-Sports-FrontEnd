@@ -201,6 +201,8 @@ const MULTIBAG_ENABLED = ((import.meta as any).env?.VITE_MULTIBAG ?? "on") === "
 export { MODES, MODE_META } from "../../lib/sessionModes";
 export type { SessionMode } from "../../lib/sessionModes";
 import { MODES, MODE_META, type SessionMode } from "../../lib/sessionModes";
+import { ModeIcon } from "../../components/modeIcon";
+import { IconBluetoothScan, IconSignalBars, IconUser, IconZap, IconFlame, IconThumbsUp, IconDumbbell } from "../../components/icons";
 
 // ─── Target mode — zone mapping ───────────────────────────────────────────────
 // Grid is 12 rows × 8 cols (1-indexed from ESP32).
@@ -1169,7 +1171,21 @@ function ReactionOverlay({ phase, reactionMs }: { phase: string; reactionMs: num
         {reactionMs}ms
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
-        {reactionMs < 250 ? "Elite ⚡" : reactionMs < 350 ? "Sharp 🔥" : reactionMs < 500 ? "Good 👍" : "Keep Training 💪"}
+        {(() => {
+          // One glyph per rating tier, mirroring the emoji this replaced:
+          // bolt / flame / thumb / dumbbell, fastest to slowest.
+          const [Glyph, label] =
+            reactionMs < 250 ? [IconZap, "Elite"]
+            : reactionMs < 350 ? [IconFlame, "Sharp"]
+            : reactionMs < 500 ? [IconThumbsUp, "Good"]
+            : [IconDumbbell, "Keep Training"];
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              {label}
+              <Glyph size={13} />
+            </span>
+          );
+        })()}
       </div>
     </div>
   );
@@ -2451,7 +2467,7 @@ function BlePickerSheet({
               alignItems: "center", justifyContent: "center",
               padding: "32px 0", gap: 10,
             }}>
-              <div style={{ fontSize: 28, opacity: 0.25 }}>📡</div>
+              <div style={{ opacity: 0.25, display: "flex" }}><IconBluetoothScan size={30} /></div>
               <div style={{ fontSize: 13, color: "var(--muted)" }}>
                 {scanning ? "Looking for Trench bags…" : "No devices found. Make sure the bag is powered on and nearby."}
               </div>
@@ -2487,7 +2503,7 @@ function BlePickerSheet({
                 }}>
                   {isBag
                     ? <img src={tsPowerBolt} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />
-                    : "📶"}
+                    : <IconSignalBars size={18} />}
                 </div>
 
                 {/* Name + ID */}
@@ -5290,7 +5306,10 @@ export default function Home() {
                   textTransform: "uppercase", color: MODE_META[sessionMode].color,
                   display: "flex", alignItems: "center", gap: 8,
                 }}>
-                  <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label}</span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <ModeIcon mode={sessionMode} size={12} />
+                    {MODE_META[sessionMode].label}
+                  </span>
                   <span style={{ opacity: 0.5 }}>·</span>
                   <span style={{ color: "var(--muted)" }}>{matrixTiles.length} bags</span>
                   {focusedTile && (
@@ -5603,9 +5622,9 @@ export default function Home() {
                     border: `2px solid ${MODE_META[sessionMode].color}`,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: `0 0 24px 6px ${MODE_META[sessionMode].glow}`,
-                    fontSize: 22,
+                    color: MODE_META[sessionMode].color,
                   }}>
-                    {MODE_META[sessionMode].icon}
+                    <ModeIcon mode={sessionMode} size={26} />
                   </div>
                   <div style={{
                     fontSize: 15, fontWeight: 900, letterSpacing: "0.12em",
@@ -5867,7 +5886,9 @@ export default function Home() {
               }}>
                 {!selectedAthlete ? (
                   <>
-                    <div style={{ fontSize: 30, marginBottom: 10, opacity: 0.28 }}>👤</div>
+                    <div style={{ display: "flex", marginBottom: 10, opacity: 0.28, color: "var(--text)" }}>
+                      <IconUser size={32} />
+                    </div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Select an athlete to begin</div>
                   </>
                 ) : (
@@ -5900,7 +5921,10 @@ export default function Home() {
           {/* Stats */}
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label} Session</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <ModeIcon mode={sessionMode} size={13} color={MODE_META[sessionMode].color} />
+                {MODE_META[sessionMode].label} Session
+              </span>
               <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                 {(() => {
                   const toggleInk = isDark ? "255,255,255" : "20,20,40";

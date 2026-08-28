@@ -25,6 +25,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import Modal from "./modal";
 import { supabase } from "../supabaseClient";
 import { useEntitlements } from "../lib/entitlements";
+import { IconBan, IconUsers } from "./icons";
 
 // ─── Template config ──────────────────────────────────────────────────────────
 
@@ -1061,8 +1062,8 @@ export default function ImportRosterModal({
             alignItems: "flex-start",
             gap: 10,
           }}>
-            <span style={{ fontSize: 15, flexShrink: 0, marginTop: 1 }}>
-              {overCapBy > 0 ? "🚫" : "👥"}
+            <span style={{ display: "flex", flexShrink: 0, marginTop: 1 }}>
+              {overCapBy > 0 ? <IconBan size={16} /> : <IconUsers size={16} />}
             </span>
             <div style={{ fontSize: 13, lineHeight: 1.55 }}>
               {overCapBy > 0 ? (

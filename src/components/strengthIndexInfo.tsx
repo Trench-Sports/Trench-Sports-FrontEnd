@@ -11,6 +11,7 @@
 // model's scan resolution.
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { ModeIcon } from "./modeIcon";
 
 const ACCENT = "#b400ff";
 
@@ -119,8 +120,9 @@ export function StrengthIndexInfo({
               borderBottom: "1px solid var(--panel-border)",
             }}>
               <div>
-                <div style={{ fontSize: 16, fontWeight: 900, color: "var(--text)", letterSpacing: "0.01em" }}>
-                  💥 Strength Index
+                <div style={{ fontSize: 16, fontWeight: 900, color: "var(--text)", letterSpacing: "0.01em", display: "flex", alignItems: "center", gap: 7 }}>
+                  <ModeIcon mode="power" size={17} style={{ color: "#b400ff" }} />
+                  Strength Index
                 </div>
                 <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
                   Rate-of-force score · 0–1000

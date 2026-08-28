@@ -402,6 +402,162 @@ export function IconDownload({ size = 24, className }: IconProps) {
   );
 }
 
+/** Quick-start prompts — "ready to get started?". */
+export function IconRocket({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M12 2.4c2.7 2.1 4.1 5.2 4.1 8.6v3.6l-4.1 2.5-4.1-2.5v-3.6c0-3.4 1.4-6.5 4.1-8.6z" />
+      <circle cx="12" cy="9.8" r="1.7" />
+      <path d="M7.9 12.6 4.9 15v3.2l3-1.6" />
+      <path d="M16.1 12.6 19.1 15v3.2l-3-1.6" />
+      <path d="M10.4 19.4 12 22l1.6-2.6" />
+    </svg>
+  );
+}
+
+export function IconSun({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2.5" />
+      <path d="M12 19.5V22" />
+      <path d="M2 12h2.5" />
+      <path d="M19.5 12H22" />
+      <path d="m4.9 4.9 1.8 1.8" />
+      <path d="m17.3 17.3 1.8 1.8" />
+      <path d="m19.1 4.9-1.8 1.8" />
+      <path d="m6.7 17.3-1.8 1.8" />
+    </svg>
+  );
+}
+
+export function IconMoon({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M20.5 14.4A8.6 8.6 0 0 1 9.6 3.5a8.6 8.6 0 1 0 10.9 10.9z" />
+    </svg>
+  );
+}
+
+/** Strike Compass — the 3D incoming-angle view. */
+export function IconCompass({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="12" cy="12" r="9.2" />
+      <path d="m15.4 8.6-2 5.4-5.4 2 2-5.4z" />
+    </svg>
+  );
+}
+
+export function IconPencil({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="m16.5 3.3 4.2 4.2" />
+      <path d="M18.4 1.4a2 2 0 0 1 2.8 2.8L7.6 17.8 3 19l1.2-4.6z" />
+    </svg>
+  );
+}
+
+export function IconUsers({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M15.5 20v-1.8a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4V20" />
+      <circle cx="8.8" cy="7" r="3.6" />
+      <path d="M22 20v-1.8a4 4 0 0 0-3-3.9" />
+      <path d="M16.2 3.6a4 4 0 0 1 0 7" />
+    </svg>
+  );
+}
+
+/**
+ * Injury flag. The inner pad rectangle is what makes this a bandage rather
+ * than a paperclip once it's under ~20px — keep it.
+ */
+export function IconBandage({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <g transform="rotate(-45 12 12)">
+        <rect x="1.2" y="7.6" width="21.6" height="8.8" rx="4.4" />
+        <rect x="7.6" y="7.6" width="8.8" height="8.8" />
+        <path d="M10.2 10.6v.01" />
+        <path d="M13.8 10.6v.01" />
+        <path d="M10.2 13.4v.01" />
+        <path d="M13.8 13.4v.01" />
+      </g>
+    </svg>
+  );
+}
+
+export function IconFlame({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M12 2.5c3.4 3.1 6 6.2 6 9.9a6 6 0 0 1-12 0c0-1.7.6-3.2 1.6-4.6.5 1 1.2 1.7 2 2.1.2-3 .9-5.4 2.4-7.4z" />
+    </svg>
+  );
+}
+
+export function IconThumbsUp({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M7 10.5 11 2a2.6 2.6 0 0 1 2.6 2.6V9h5a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.4 20H7" />
+      <path d="M7 10.5V20H4a1.5 1.5 0 0 1-1.5-1.5V12A1.5 1.5 0 0 1 4 10.5z" />
+    </svg>
+  );
+}
+
+export function IconPlay({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M7 4.5 19.5 12 7 19.5z" />
+    </svg>
+  );
+}
+
+// ── Devices & connection ─────────────────────────────────────────────────────
+
+/**
+ * "No sessions yet" — go train. The knuckle band is what separates the mitt
+ * silhouette from a mug or a helmet once it's down at 24px; don't drop it.
+ */
+export function IconBoxingGlove({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M4.5 12.5v-2.6A5.9 5.9 0 0 1 10.4 4h1.7a5.9 5.9 0 0 1 5.9 5.9v2.6" />
+      <path d="M18 10.6a2.2 2.2 0 0 1 0 4.4" />
+      <path d="M4.5 12.5h13" />
+      <path d="M4.5 12.5v2A2.5 2.5 0 0 0 7 17h8a2.5 2.5 0 0 0 2.5-2.5v-2" />
+      <path d="M7.2 17v2A2 2 0 0 0 9.2 21h3.6a2 2 0 0 0 2-2v-2" />
+    </svg>
+  );
+}
+
+/** Bluetooth scan in progress — the rune plus a broadcast arc. */
+export function IconBluetoothScan({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="m6 7 9 9-4.5 4.5V2.5L15 7l-9 9" />
+      <path d="M19.5 9.2a4 4 0 0 1 0 5.6" />
+      <path d="M22 6.7a7.5 7.5 0 0 1 0 10.6" />
+    </svg>
+  );
+}
+
+/**
+ * A nearby BLE device that isn't one of ours. Ascending bars on a baseline, so
+ * it stays distinct from IconStrikeRate (Volume mode), which has neither.
+ */
+export function IconSignalBars({ size = 24, className }: IconProps) {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 20h18" />
+      <path d="M6 20v-3.5" />
+      <path d="M11 20v-7" />
+      <path d="M16 20v-10.5" />
+      <path d="M21 20v-14" />
+    </svg>
+  );
+}
+
 // ── Training modes ───────────────────────────────────────────────────────────
 // One per session mode (power / accuracy / reaction / volume / target). Each is
 // built to stay legible down to 16px and to be told apart from the other four at

@@ -9,6 +9,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { initTheme, toggleTheme } from "../lib/themeManager";
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
+import { IconSun, IconMoon } from "./icons";
 
 export default function MobileLayout() {
   const loc = useLocation();
@@ -62,7 +63,7 @@ export default function MobileLayout() {
           aria-label="Toggle theme"
           style={{ width: 36, height: 36 }}
         >
-          {theme === "dark" ? "☀️" : "🌙"}
+          {theme === "dark" ? <IconSun size={18} /> : <IconMoon size={18} />}
         </button>
       </header>
 

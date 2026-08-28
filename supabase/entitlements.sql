@@ -425,13 +425,208 @@ create index if not exists idx_session_summaries_core_team
 -- =====================================================================
 -- 6. TIER-SCOPED READ SURFACES
 -- =====================================================================
--- These replace direct table reads for every gated column. Each one
--- re-implements the RLS predicate from rls_policies.sql verbatim (admins
--- see the program, coaches see their core team) because SECURITY DEFINER
--- bypasses RLS — that duplication is the price of column-level gating and
--- MUST be kept in sync if those policies ever change.
+-- These replace direct table reads for every gated column. SECURITY DEFINER
+-- bypasses RLS, so the RLS predicate from rls_policies.sql (admins see the
+-- program, coaches see their core team) has to be restated here — that
+-- restatement is the price of column-level gating.
+--
+-- AS OF THE §1 REFACTOR, 6a states it EXACTLY ONCE, in
+-- scoped_session_summaries. tiered_session_summaries and (step 3)
+-- api_session_summaries both delegate to it and contain no predicate of their
+-- own, so adding an API surface does not add a third copy to keep in sync.
+-- 6b (tiered_session_events) still carries its own copy — refactor it the same
+-- way when /v1/sessions/{id}/events lands (runbook step 6).
+--
+-- If the policies in rls_policies.sql ever change, the places to change here
+-- are: scoped_session_summaries' WHERE clause, and 6b's.
 
--- ── 6a. Session summaries ────────────────────────────────────────────
+-- ── 6a-core. The shared scoping core ─────────────────────────────────
+-- THE one architectural decision (plan §1). Row scoping and column masking
+-- live here exactly once, taking identity as PARAMETERS. Two thin callers
+-- resolve identity differently and neither duplicates a predicate:
+--
+--   scoped_session_summaries(p_program_id, p_role, p_scope_team_id, p_tier, …)
+--          ▲                                        ▲
+--   tiered_session_summaries()              api_session_summaries(p_key_hash, …)
+--     identity from auth.uid() via            identity from api_keys
+--     get_my_program_id() / get_my_role()     (supabase/api_keys.sql, step 3)
+--     / get_my_core_team_id() / my_tier()
+--
+-- WHY: the API layer must not re-implement program scoping or the tier mask.
+-- That would be a THIRD copy of the predicates already duplicated between
+-- rls_policies.sql and this section (see the §6 header note), and a third copy
+-- drifting is how a partner ends up reading another program's sessions.
+--
+-- RULES FOR THIS FUNCTION, all load-bearing:
+--   * NO auth.uid(), my_tier(), get_my_*() anywhere in the body. Identity
+--     arrives as arguments or it does not arrive.
+--   * Not directly callable. Revoked from public/anon/authenticated below, so
+--     only a definer caller can reach it. Without that revoke, a browser could
+--     call it with p_program_id => <someone else's program>.
+--   * s.program_id = p_program_id stays EXPLICIT. Never rely on the athletes
+--     join to exclude the NULL-program rows the pre-signup /m/home funnel
+--     writes (reenable_rls_anon_uploads.sql:1-26).
+--
+-- DROP first: create or replace cannot change a return type, so a re-run after
+-- adding a column fails without this.
+drop function if exists public.scoped_session_summaries(
+  uuid, text, uuid, text, text, int, uuid[], uuid, text,
+  timestamptz, timestamptz, text, int);
+
+create or replace function public.scoped_session_summaries(
+  -- Identity, supplied by the caller. Never resolved in here.
+  p_program_id        uuid,
+  p_role              text,
+  p_scope_team_id     uuid,          -- the caller's OWN core team (coach scoping)
+  p_tier              text,
+  -- Filters. Every one of these NARROWS the result; none can widen it past
+  -- the role scoping, so an admin passing another program's team id still
+  -- gets nothing.
+  p_mode              text        default null,
+  p_range_days        int         default null,
+  p_athlete_ids       uuid[]      default null,
+  p_core_team_id      uuid        default null,   -- filter, NOT identity
+  p_session_id        text        default null,
+  -- API-shaped params (plan §4 conventions). The browser caller passes NULL
+  -- for all four and is unaffected.
+  p_since             timestamptz default null,   -- incremental sync on ingested_at
+  p_cursor_ingested   timestamptz default null,   -- keyset pagination, half 1
+  p_cursor_session_id text        default null,   -- keyset pagination, half 2
+  p_limit             int         default null    -- NULL = unlimited
+)
+returns table (
+  session_id             text,
+  program_id             uuid,
+  core_team_id           uuid,
+  athlete_id             uuid,
+  athlete_first_name     text,
+  athlete_last_name      text,
+  date_of_record         timestamptz,
+  mode                   text,
+  num_events             integer,
+  session_duration_ms    bigint,
+  heatmap                jsonb,
+  quality                jsonb,
+  peak_force_stats       jsonb,
+  impulse_stats          jsonb,
+  duration_ms_stats      jsonb,
+  angles_deg             jsonb,
+  most_contacted_cell_rc jsonb,
+  center_of_mass_mm      jsonb,
+  cadence_hz_avg         numeric,
+  cadence_hz_median      numeric,
+  iei_ms                 jsonb,
+  longest_pause_ms       bigint,
+  -- Appended LAST, deliberately. export_session_summaries (6c) does
+  -- `select * from tiered_session_summaries(...)` into a fixed 22-column
+  -- returns table, so the browser caller must not grow a column — it projects
+  -- this one away. Only the API caller selects it.
+  ingested_at            timestamptz
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_cutoff      timestamptz := public.tier_history_cutoff(p_tier);
+  v_modes       text[]      := public.tier_modes(p_tier);
+  -- Tier II sees impulse/duration distributions' aggregates; Tier I sees
+  -- neither column at all (§7 marks both as Tier II).
+  v_comparative boolean     := public.tier_rank(p_tier) >= 2;
+begin
+  -- Lapsed trial, suspended program, or an unresolvable identity: no rows at
+  -- all. Their data still exists on disk and returns the moment the program is
+  -- reinstated.
+  if p_tier is null or p_tier = 'none' or p_program_id is null then
+    return;
+  end if;
+
+  -- The caller may narrow the window but never widen it past its tier.
+  if p_range_days is not null then
+    v_cutoff := greatest(
+      coalesce(v_cutoff, '-infinity'::timestamptz),
+      now() - make_interval(days => p_range_days));
+  end if;
+
+  return query
+  select
+    s.session_id,
+    s.program_id,
+    s.core_team_id,
+    s.athlete_id,
+    a.first_name,
+    a.last_name,
+    s.date_of_record,
+    s.mode::text,
+    s.num_events,
+    s.session_duration_ms,
+    -- heatmap is the heaviest column on the row (a full contact grid). Only
+    -- the single-session detail view ever draws it, so it is returned only for
+    -- a by-id lookup — otherwise every leaderboard call would drag one grid
+    -- per session across the wire for nothing.
+    case when p_session_id is not null then s.heatmap end,
+    public.mask_quality(s.quality, p_tier),
+    public.mask_stats(s.peak_force_stats, p_tier),
+    case when v_comparative then public.mask_stats(s.impulse_stats, p_tier) end,
+    case when v_comparative then public.mask_stats(s.duration_ms_stats, p_tier) end,
+    case when v_comparative then s.angles_deg end,
+    case when v_comparative then s.most_contacted_cell_rc end,
+    case when v_comparative then s.center_of_mass_mm end,
+    case when v_comparative then s.cadence_hz_avg end,
+    case when v_comparative then s.cadence_hz_median end,
+    -- KNOWN LEAK, preserved verbatim so this refactor is provably a no-op:
+    -- iei_ms is written as {...statSummary, values:[...]} (session.tsx:1473-1475)
+    -- so it carries the full distribution to Tier II, bypassing mask_stats.
+    -- Fixed in the NEXT commit (runbook step 2d) with its own one-line diff,
+    -- because fixing it here would make the byte-identical proof impossible.
+    case when v_comparative then s.iei_ms end,
+    case when v_comparative then s.longest_pause_ms end,
+    s.ingested_at
+  from public.session_summaries s
+  left join public.athletes a on a.id = s.athlete_id
+  where s.program_id = p_program_id
+    -- Mirrors session_summaries_select_admin / _select_coach in
+    -- rls_policies.sql. A role that is neither admin nor coach gets nothing.
+    and (p_role = 'admin' or (p_role = 'coach' and s.core_team_id = p_scope_team_id))
+    -- Rows for modes this tier has not paid for never leave the database.
+    and s.mode::text = any(v_modes)
+    and (v_cutoff is null or s.date_of_record >= v_cutoff)
+    and (p_mode         is null or s.mode::text = p_mode)
+    and (p_athlete_ids  is null or s.athlete_id = any(p_athlete_ids))
+    and (p_core_team_id is null or s.core_team_id = p_core_team_id)
+    and (p_session_id   is null or s.session_id = p_session_id)
+    -- Incremental sync. ingested_at, never date_of_record: the IndexedDB
+    -- outbox (src/storage/sessionOutbox.ts) lands Friday's session on Monday,
+    -- and a partner polling on date_of_record would silently never see it.
+    and (p_since is null or s.ingested_at >= p_since)
+    -- Keyset pagination. Both halves required — a half-supplied cursor is
+    -- ignored rather than silently returning page 1 forever. Only correct
+    -- against the ORDER BY immediately below, so the two move together.
+    and (p_cursor_ingested is null or p_cursor_session_id is null
+         or (s.ingested_at, s.session_id) < (p_cursor_ingested, p_cursor_session_id))
+  -- Ordered for the cursor, NOT for the browser. The browser caller re-sorts
+  -- by date_of_record desc to reproduce its historical order exactly; this
+  -- ordering is the one the (program_id, ingested_at desc) index in
+  -- api_prereqs.sql can actually serve, and the one the keyset predicate above
+  -- requires. session_id breaks ties so a cursor can never loop or skip.
+  order by s.ingested_at desc, s.session_id desc
+  -- DANGER: least(NULL, 200) returns 200 in Postgres — LEAST ignores NULLs.
+  -- Writing `limit least(coalesce(p_limit,100), 200)` would silently truncate
+  -- the browser (which passes no limit) to 200 rows. The CASE is required.
+  limit case when p_limit is null then null else least(greatest(p_limit, 1), 200) end;
+end;
+$$;
+
+-- Not callable by a client under any circumstance. The publishable key ships
+-- in the browser bundle, so without this revoke a console call could pass an
+-- arbitrary p_program_id and read any program's sessions.
+revoke all on function public.scoped_session_summaries(
+  uuid, text, uuid, text, text, int, uuid[], uuid, text,
+  timestamptz, timestamptz, text, int) from public, anon, authenticated;
+
+
+-- ── 6a. Session summaries (browser caller) ───────────────────────────
 -- Replaces `.from("session_summaries").select(...)` everywhere. Filter
 -- params are pushed down rather than chained client-side so the tier cut
 -- happens before rows leave the database.
@@ -440,10 +635,17 @@ create index if not exists idx_session_summaries_core_team
 --   p_athlete_ids  — optional athlete scope (sub-team rosters pass a list)
 --   p_core_team_id — optional core-team scope, for team leaderboards
 --   p_session_id   — optional single-session lookup
--- Every one of these NARROWS the result. None of them can widen it past the
--- role scoping below, so an admin passing another program's team id still
--- gets nothing. Athlete names come back as flat columns because PostgREST
--- cannot embed related resources into a function result.
+-- Athlete names come back as flat columns because PostgREST cannot embed
+-- related resources into a function result.
+--
+-- SIGNATURE AND RETURN TYPE ARE UNCHANGED BY THE §1 REFACTOR, deliberately:
+--   * 11 call sites in src/pages/dashboard.tsx (and the mobile equivalents)
+--     read named fields off the result
+--   * export_session_summaries (6c) does `select *` from this into its own
+--     fixed 22-column returns table — adding a column here breaks the CSV
+--     export with a column-count mismatch
+-- The core's ingested_at is therefore projected away below rather than
+-- surfaced. Only api_session_summaries (step 3) selects it.
 --
 -- DROP first — CREATE OR REPLACE cannot change a function's return type, so a
 -- re-run after adding a column would fail without this.
@@ -484,71 +686,53 @@ stable
 security definer
 set search_path = public
 as $$
-declare
-  v_tier    text := public.my_tier();
-  v_program uuid := public.get_my_program_id();
-  v_role    text := public.get_my_role();
-  v_team    uuid := public.get_my_core_team_id();
-  v_cutoff  timestamptz := public.tier_history_cutoff(v_tier);
-  v_modes   text[] := public.tier_modes(v_tier);
-  -- Tier II sees impulse/duration distributions' aggregates; Tier I sees
-  -- neither column at all (§7 marks both as Tier II).
-  v_comparative boolean := public.tier_rank(v_tier) >= 2;
 begin
-  -- Lapsed trial or suspended program: no rows at all. Their data still
-  -- exists on disk and returns the moment the program is reinstated.
-  if v_tier = 'none' or v_program is null then
-    return;
-  end if;
-
-  -- The client may narrow the window but never widen it past its tier.
-  if p_range_days is not null then
-    v_cutoff := greatest(
-      coalesce(v_cutoff, '-infinity'::timestamptz),
-      now() - make_interval(days => p_range_days));
-  end if;
-
+  -- Identity resolution is the ENTIRE job of this function. Every predicate
+  -- and every mask lives in the core.
   return query
   select
-    s.session_id,
-    s.program_id,
-    s.core_team_id,
-    s.athlete_id,
-    a.first_name,
-    a.last_name,
-    s.date_of_record,
-    s.mode::text,
-    s.num_events,
-    s.session_duration_ms,
-    -- heatmap is the heaviest column on the row (a full contact grid). Only
-    -- the single-session detail view ever draws it, so it is returned only for
-    -- a by-id lookup — otherwise every leaderboard call would drag one grid
-    -- per session across the wire for nothing.
-    case when p_session_id is not null then s.heatmap end,
-    public.mask_quality(s.quality, v_tier),
-    public.mask_stats(s.peak_force_stats, v_tier),
-    case when v_comparative then public.mask_stats(s.impulse_stats, v_tier) end,
-    case when v_comparative then public.mask_stats(s.duration_ms_stats, v_tier) end,
-    case when v_comparative then s.angles_deg end,
-    case when v_comparative then s.most_contacted_cell_rc end,
-    case when v_comparative then s.center_of_mass_mm end,
-    case when v_comparative then s.cadence_hz_avg end,
-    case when v_comparative then s.cadence_hz_median end,
-    case when v_comparative then s.iei_ms end,
-    case when v_comparative then s.longest_pause_ms end
-  from public.session_summaries s
-  left join public.athletes a on a.id = s.athlete_id
-  where s.program_id = v_program
-    -- Mirrors session_summaries_select_admin / _select_coach.
-    and (v_role = 'admin' or (v_role = 'coach' and s.core_team_id = v_team))
-    -- Rows for modes this tier has not paid for never leave the database.
-    and s.mode::text = any(v_modes)
-    and (v_cutoff is null or s.date_of_record >= v_cutoff)
-    and (p_mode         is null or s.mode::text = p_mode)
-    and (p_athlete_ids  is null or s.athlete_id = any(p_athlete_ids))
-    and (p_core_team_id is null or s.core_team_id = p_core_team_id)
-    and (p_session_id   is null or s.session_id = p_session_id)
-  order by s.date_of_record desc;
+    c.session_id,
+    c.program_id,
+    c.core_team_id,
+    c.athlete_id,
+    c.athlete_first_name,
+    c.athlete_last_name,
+    c.date_of_record,
+    c.mode,
+    c.num_events,
+    c.session_duration_ms,
+    c.heatmap,
+    c.quality,
+    c.peak_force_stats,
+    c.impulse_stats,
+    c.duration_ms_stats,
+    c.angles_deg,
+    c.most_contacted_cell_rc,
+    c.center_of_mass_mm,
+    c.cadence_hz_avg,
+    c.cadence_hz_median,
+    c.iei_ms,
+    c.longest_pause_ms
+    -- c.ingested_at deliberately NOT selected — see the note above.
+  from public.scoped_session_summaries(
+    public.get_my_program_id(),
+    public.get_my_role(),
+    public.get_my_core_team_id(),
+    public.my_tier(),
+    p_mode,
+    p_range_days,
+    p_athlete_ids,
+    p_core_team_id,
+    p_session_id,
+    null,   -- p_since
+    null,   -- p_cursor_ingested
+    null,   -- p_cursor_session_id
+    null    -- p_limit: unlimited, exactly as before
+  ) c
+  -- Reproduces the pre-refactor ordering. The core sorts for the cursor; this
+  -- restores date_of_record desc for the app. Ties were already arbitrary
+  -- before the refactor, so no ordering guarantee changes here.
+  order by c.date_of_record desc;
 end;
 $$;
 

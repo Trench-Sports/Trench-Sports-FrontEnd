@@ -23,6 +23,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import StrikeCompass from "../components/strikeCompass";
+import { ModeIcon } from "../components/modeIcon";
+import { IconBandage } from "../components/icons";
 import StrengthIndexInfo from "../components/strengthIndexInfo";
 import { DASHBOARD_CSS, DEMO_EXTRA_CSS } from "./demoDashboardStyles";
 
@@ -71,7 +73,6 @@ type ModeKey = "power" | "accuracy" | "reaction" | "volume" | "target";
 type ModeDef = {
   key: ModeKey;
   label: string;
-  icon: string;
   accent: string;
   glow: string;
   minTier: TierNum;
@@ -80,11 +81,11 @@ type ModeDef = {
 };
 
 const MODES: ModeDef[] = [
-  { key: "power",    label: "Power",    icon: "💥", accent: "#b400ff", glow: "rgba(180,0,255,0.55)", minTier: 1, pill: "ts-modePill--power",    desc: "Strike any zone — force & placement, no cue" },
-  { key: "accuracy", label: "Accuracy", icon: "🎯", accent: "#00dcff", glow: "rgba(0,220,255,0.55)", minTier: 2, pill: "ts-modePill--accuracy", desc: "Each strike scored by distance from the bullseye" },
-  { key: "reaction", label: "Reaction", icon: "⚡️", accent: "#ffcc00", glow: "rgba(255,200,0,0.55)", minTier: 2, pill: "ts-modePill--reaction", desc: "Cue-to-impact latency — readiness & decision speed" },
-  { key: "volume",   label: "Volume",   icon: "🥊", accent: "#ff6a00", glow: "rgba(255,106,0,0.55)", minTier: 3, pill: "ts-modePill--volume",   desc: "Max strikes in a 5-second window — feeds fatigue" },
-  { key: "target",   label: "Target",   icon: "🏹", accent: "#00ff88", glow: "rgba(0,255,136,0.55)", minTier: 3, pill: "ts-modePill--target",   desc: "Zone cue: reaction time and accuracy at once" },
+  { key: "power",    label: "Power",    accent: "#b400ff", glow: "rgba(180,0,255,0.55)", minTier: 1, pill: "ts-modePill--power",    desc: "Strike any zone — force & placement, no cue" },
+  { key: "accuracy", label: "Accuracy", accent: "#00dcff", glow: "rgba(0,220,255,0.55)", minTier: 2, pill: "ts-modePill--accuracy", desc: "Each strike scored by distance from the bullseye" },
+  { key: "reaction", label: "Reaction", accent: "#ffcc00", glow: "rgba(255,200,0,0.55)", minTier: 2, pill: "ts-modePill--reaction", desc: "Cue-to-impact latency — readiness & decision speed" },
+  { key: "volume",   label: "Volume",   accent: "#ff6a00", glow: "rgba(255,106,0,0.55)", minTier: 3, pill: "ts-modePill--volume",   desc: "Max strikes in a 5-second window — feeds fatigue" },
+  { key: "target",   label: "Target",   accent: "#00ff88", glow: "rgba(0,255,136,0.55)", minTier: 3, pill: "ts-modePill--target",   desc: "Zone cue: reaction time and accuracy at once" },
 ];
 
 const MODE_BY_KEY: Record<ModeKey, ModeDef> = MODES.reduce((acc, m) => {
@@ -925,7 +926,7 @@ export default function Dummy() {
                     style={{ opacity: on ? 1 : 0.4 }}
                     title={m.desc}
                   >
-                    <span aria-hidden="true">{m.icon}</span>
+                    <ModeIcon mode={m.key} size={11} style={{ marginRight: 4 }} />
                     {m.label}
                     {!on && (
                       <span className="dm-lockBadge" style={{ marginLeft: 4 }}>
@@ -1101,7 +1102,8 @@ function RecentTab({ isDark, tier, can }: { isDark: boolean; tier: TierNum; can:
                     </div>
                   </div>
                   <span className="ts-summaryModePill" data-mode={s.mode} style={{ flexShrink: 0 }}>
-                    {sm.icon} {sm.label}
+                    <ModeIcon mode={sm.key} size={11} style={{ marginRight: 4 }} />
+                    {sm.label}
                   </span>
                 </div>
                 <svg className="ts-recentSessionChevron" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -1118,7 +1120,8 @@ function RecentTab({ isDark, tier, can }: { isDark: boolean; tier: TierNum; can:
         <div className="ts-cardTop">
           <div className="ts-cardTitle">Session Summary</div>
           <span className="ts-summaryModePill" data-mode={session.mode}>
-            {mode.icon} {mode.label}
+            <ModeIcon mode={mode.key} size={11} style={{ marginRight: 4 }} />
+            {mode.label}
           </span>
         </div>
         <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 4 }}>
@@ -1500,7 +1503,7 @@ function InsightsTab({
                 const locked = !modeUnlocked(mode.key);
                 return (
                   <option key={m} value={m} disabled={locked}>
-                    {mode.icon} {mode.label}{locked ? ` — ${TIERS[mode.minTier - 1].label}` : ""}
+                    {mode.label}{locked ? ` — ${TIERS[mode.minTier - 1].label}` : ""}
                   </option>
                 );
               })}
@@ -1752,7 +1755,7 @@ function TeamCompareCard({ isDark }: { isDark: boolean }) {
   const unit = metric === "power" ? "/1000" : metric === "accuracy" ? "%" : "ms";
   const dimLabel = dim === "squad" ? "Varsity / JV" : dim === "unit" ? "Offense / Defense / ST" : `${groups.length} position groups`;
 
-  const seg = (val: string, cur: string, set: (v: any) => void, label: string) => (
+  const seg = (val: string, cur: string, set: (v: any) => void, label: React.ReactNode) => (
     <button
       key={val}
       type="button"
@@ -1779,7 +1782,12 @@ function TeamCompareCard({ isDark }: { isDark: boolean }) {
         </div>
         {/* Metric */}
         <div style={{ display: "inline-flex", gap: 2, padding: 3, borderRadius: 9, border: `1px solid rgba(${isDark ? "255,255,255" : "20,20,40"},0.10)` }}>
-          {(["power", "accuracy", "reaction"] as const).map((m) => seg(m, metric, setMetric, `${MODE_BY_KEY[m].icon} ${MODE_BY_KEY[m].label}`))}
+          {(["power", "accuracy", "reaction"] as const).map((m) => seg(m, metric, setMetric, (
+            <>
+              <ModeIcon mode={m} size={11} style={{ marginRight: 4 }} />
+              {MODE_BY_KEY[m].label}
+            </>
+          )))}
         </div>
       </div>
       {groups.map((t) => (
@@ -2037,7 +2045,8 @@ function AiRecChip({ rec, primary, isDark }: { rec: AiRec; primary: boolean; isD
         className={`ts-athletePill ts-modePill ${m.pill}`}
         style={{ alignSelf: "flex-start", flexShrink: 0 }}
       >
-        <span aria-hidden="true">{m.icon}</span> {m.label}
+        <ModeIcon mode={m.key} size={11} style={{ marginRight: 4 }} />
+        {m.label}
       </span>
       <div style={{ minWidth: 0 }}>
         <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.05em", textTransform: "uppercase", opacity: 0.5, marginBottom: 3 }}>
@@ -2188,11 +2197,11 @@ function AthleteAnalysis({ athlete, isDark, tier, can }: { athlete: Athlete; isD
   const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${H - ((v - min) / range) * (H - 6) - 3}`).join(" ");
 
   // Tier I: profile + history only. Axis breakdown accordion is Tier II+.
-  const sections: { key: "power" | "accuracy" | "reaction" | "form"; icon: string; label: string; accent: string; accentBg: string; accentBdr: string }[] = [
-    { key: "power", icon: "💥", label: "Power", accent: "#b400ff", accentBg: "rgba(180,0,255,0.09)", accentBdr: "rgba(180,0,255,0.25)" },
-    { key: "accuracy", icon: "🎯", label: "Accuracy", accent: "#00dcff", accentBg: "rgba(0,220,255,0.07)", accentBdr: "rgba(0,220,255,0.22)" },
-    { key: "reaction", icon: "⚡️", label: "Reaction", accent: "#ffcc00", accentBg: "rgba(255,200,0,0.07)", accentBdr: "rgba(255,200,0,0.22)" },
-    { key: "form", icon: "📐", label: "Form & Angle", accent: isDark ? "rgba(255,255,255,0.8)" : "rgba(20,20,40,0.8)", accentBg: `rgba(${ink},0.05)`, accentBdr: `rgba(${ink},0.14)` },
+  const sections: { key: "power" | "accuracy" | "reaction" | "form"; label: string; accent: string; accentBg: string; accentBdr: string }[] = [
+    { key: "power", label: "Power", accent: "#b400ff", accentBg: "rgba(180,0,255,0.09)", accentBdr: "rgba(180,0,255,0.25)" },
+    { key: "accuracy", label: "Accuracy", accent: "#00dcff", accentBg: "rgba(0,220,255,0.07)", accentBdr: "rgba(0,220,255,0.22)" },
+    { key: "reaction", label: "Reaction", accent: "#ffcc00", accentBg: "rgba(255,200,0,0.07)", accentBdr: "rgba(255,200,0,0.22)" },
+    { key: "form", label: "Form & Angle", accent: isDark ? "rgba(255,255,255,0.8)" : "rgba(20,20,40,0.8)", accentBg: `rgba(${ink},0.05)`, accentBdr: `rgba(${ink},0.14)` },
   ];
 
   return (
@@ -2217,7 +2226,7 @@ function AthleteAnalysis({ athlete, isDark, tier, can }: { athlete: Athlete; isD
           border: `1px solid ${INJURY_COLOR[athlete.injury.status].border}`,
           background: INJURY_COLOR[athlete.injury.status].bg,
         }}>
-          <span style={{ fontSize: 15 }} aria-hidden="true">🩹</span>
+          <span style={{ display: "flex", flexShrink: 0 }} aria-hidden="true"><IconBandage size={16} /></span>
           <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
             <b>{athlete.injury.status} — {athlete.injury.area}.</b> {athlete.injury.note}.{" "}
             <span style={{ opacity: 0.7 }}>Flagged week {athlete.injury.sinceWeek} · {athlete.injury.gamesMissed} game{athlete.injury.gamesMissed !== 1 ? "s" : ""} missed.</span>
@@ -2289,7 +2298,7 @@ function AthleteAnalysis({ athlete, isDark, tier, can }: { athlete: Athlete; isD
                     font: "inherit",
                   }}
                 >
-                  <span style={{ fontSize: 15, lineHeight: 1 }}>{sec.icon}</span>
+                  <ModeIcon mode={sec.key} size={16} style={{ color: active ? sec.accent : `rgba(${ink},0.55)` }} />
                   <span style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", textTransform: "uppercase", color: active ? sec.accent : `rgba(${ink},0.55)` }}>{sec.label}</span>
                 </button>
               );

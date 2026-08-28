@@ -9,6 +9,8 @@ import ProgramModal from "../../components/program";
 import ManageTeamModal from "../../components/manageTeam";
 import { supabase } from "../../supabaseClient";
 import StrikeCompass from "../../components/strikeCompass";
+import { IconGauge, IconBullseye, IconStopwatch, IconTrendUp, IconBarChart, IconBoxingGlove, IconRocket, IconTrophy, IconCompass, IconClipboard, IconPencil, IconPlay, type IconProps } from "../../components/icons";
+import { ModeIcon } from "../../components/modeIcon";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
 import { useEntitlements, useRetainedData } from "../../lib/entitlements";
 import {
@@ -2693,11 +2695,11 @@ export default function Dashboard() {
         const ink = isDark ? "255,255,255" : "20,20,40";
         const a   = actionSheetAthlete;
         const fullName = `${a.first_name} ${a.last_name}`;
-        type Action = { label: string; icon: string; accent?: boolean; onClick: () => void };
+        type Action = { label: string; Icon: (p: IconProps) => JSX.Element; accent?: boolean; onClick: () => void };
         const actions: Action[] = [
           {
             label: "View Sessions",
-            icon: "📋",
+            Icon: IconClipboard,
             onClick: () => {
               setActionSheetAthlete(null);
               navigate("/m/session", { state: { athleteId: a.id, athleteName: fullName } });
@@ -2705,7 +2707,7 @@ export default function Dashboard() {
           },
           {
             label: "Edit Athlete",
-            icon: "✏️",
+            Icon: IconPencil,
             onClick: () => {
               setActionSheetAthlete(null);
               setEditAthleteTarget(a);
@@ -2713,7 +2715,7 @@ export default function Dashboard() {
           },
           {
             label: "New Session",
-            icon: "▶",
+            Icon: IconPlay,
             accent: true,
             onClick: () => {
               setActionSheetAthlete(null);
@@ -2778,7 +2780,9 @@ export default function Dashboard() {
                       cursor: "pointer", textAlign: "left",
                     }}
                   >
-                    <span style={{ fontSize: 18, lineHeight: 1, width: 24, textAlign: "center" }}>{act.icon}</span>
+                    <span style={{ display: "flex", justifyContent: "center", width: 24, flexShrink: 0 }}>
+                      <act.Icon size={19} />
+                    </span>
                     {act.label}
                   </button>
                 ))}
@@ -3114,9 +3118,9 @@ export default function Dashboard() {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: 22,
+                    color: "rgba(180,0,255,0.75)",
                   }}>
-                    🥊
+                    <IconBoxingGlove size={24} />
                   </div>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 5 }}>No sessions yet</div>
@@ -3208,34 +3212,34 @@ export default function Dashboard() {
                         <div style={{ padding: "8px 13px 10px", display: "flex", flexDirection: "column", gap: 5 }}>
                           {strengthRow ? (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>💥 Peak strength</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="power" size={12} />Peak strength</span>
                               <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(180,0,255,0.90)" }}>{strengthRow.peakIndex} <span style={{ fontSize: 10, opacity: 0.45 }}>/1000</span></span>
                             </div>
                           ) : (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>💥 Strength</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="power" size={12} />Strength</span>
                               <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
                             </div>
                           )}
                           {reactionRow ? (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>⚡️ Avg reaction</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="reaction" size={12} />Avg reaction</span>
                               <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(255,210,60,0.95)" }}>{reactionRow.avgReactionMs} <span style={{ fontSize: 10, opacity: 0.45 }}>ms</span></span>
                             </div>
                           ) : (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>⚡️ Reaction</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="reaction" size={12} />Reaction</span>
                               <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
                             </div>
                           )}
                           {accuracyRow ? (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>🎯 Accuracy</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="accuracy" size={12} />Accuracy</span>
                               <span style={{ fontSize: 12, fontWeight: 800, fontVariantNumeric: "tabular-nums", color: "rgba(80,220,255,0.95)" }}>{accuracyRow.accuracyPct}<span style={{ fontSize: 10, opacity: 0.45 }}>%</span></span>
                             </div>
                           ) : (
                             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <span style={{ fontSize: 11, opacity: 0.50 }}>🎯 Accuracy</span>
+                              <span style={{ fontSize: 11, opacity: 0.50, display: "inline-flex", alignItems: "center", gap: 5 }}><ModeIcon mode="accuracy" size={12} />Accuracy</span>
                               <span style={{ fontSize: 11, opacity: 0.30 }}>no data</span>
                             </div>
                           )}
@@ -3305,8 +3309,12 @@ export default function Dashboard() {
                           >
                             {(() => {
                               const m = (session.mode ?? "power").toLowerCase();
-                              const icon = m === "accuracy" ? "🎯" : m === "reaction" ? "⚡️" : m === "volume" ? "🥊" : m === "target" ? "🏹" : "💥";
-                              return `${icon} ${m.charAt(0).toUpperCase() + m.slice(1)}`;
+                              return (
+                                <>
+                                  <ModeIcon mode={m} size={11} style={{ marginRight: 5 }} />
+                                  {m.charAt(0).toUpperCase() + m.slice(1)}
+                                </>
+                              );
                             })()}
                           </div>
                         </div>
@@ -4095,7 +4103,7 @@ export default function Dashboard() {
                               padding: "20px 24px",
                             }}
                           >
-                            <div style={{ fontSize: 28, opacity: 0.5 }}>🧭</div>
+                            <div style={{ display: "flex", opacity: 0.5 }}><IconCompass size={28} /></div>
                             <div style={{ fontSize: 13, fontWeight: 700 }}>Strike Compass</div>
                             <div style={{ fontSize: 11.5, lineHeight: 1.55, opacity: 0.6, maxWidth: 240 }}>
                               Reconstructs the incoming angle of every strike in 3D —
@@ -4138,8 +4146,9 @@ export default function Dashboard() {
                   width: 56, height: 56, borderRadius: 14, flexShrink: 0,
                   background: isDark ? "rgba(180,0,255,0.18)" : "rgba(180,0,255,0.12)",
                   border: "1px solid rgba(180,0,255,0.30)",
-                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26,
-                }}>📊</div>
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  color: isDark ? "rgba(210,140,255,0.95)" : "rgba(120,0,200,0.90)",
+                }}><IconBarChart size={26} /></div>
                 <div style={{ flex: 1, minWidth: 240 }}>
                   <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 8, color: isDark ? "rgba(210,140,255,0.95)" : "rgba(120,0,200,0.90)" }}>
                     Your leaderboards will appear here
@@ -4155,7 +4164,7 @@ export default function Dashboard() {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12, marginBottom: 20 }}>
                 {[
                   {
-                    icon: "💥", label: "Athlete Leaderboard", accentColor: "#b400ff",
+                    Icon: IconGauge, label: "Athlete Leaderboard", accentColor: "#b400ff",
                     accentBg: isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.06)",
                     accentBdr: isDark ? "rgba(180,0,255,0.28)" : "rgba(180,0,255,0.20)",
                     steps: [
@@ -4165,7 +4174,7 @@ export default function Dashboard() {
                     ],
                   },
                   {
-                    icon: "🎯", label: "Accuracy Leaderboard", accentColor: "#00dcff",
+                    Icon: IconBullseye, label: "Accuracy Leaderboard", accentColor: "#00dcff",
                     accentBg: isDark ? "rgba(0,220,255,0.08)" : "rgba(0,220,255,0.05)",
                     accentBdr: isDark ? "rgba(0,220,255,0.25)" : "rgba(0,220,255,0.18)",
                     steps: [
@@ -4175,7 +4184,7 @@ export default function Dashboard() {
                     ],
                   },
                   {
-                    icon: "⚡️", label: "Reaction Leaderboard", accentColor: "#ffcc00",
+                    Icon: IconStopwatch, label: "Reaction Leaderboard", accentColor: "#ffcc00",
                     accentBg: isDark ? "rgba(255,200,0,0.08)" : "rgba(255,200,0,0.05)",
                     accentBdr: isDark ? "rgba(255,200,0,0.25)" : "rgba(255,200,0,0.18)",
                     steps: [
@@ -4185,7 +4194,7 @@ export default function Dashboard() {
                     ],
                   },
                   {
-                    icon: "📈", label: "Most Improved", accentColor: isDark ? "rgba(80,220,160,0.95)" : "rgba(15,130,80,0.90)",
+                    Icon: IconTrendUp, label: "Most Improved", accentColor: isDark ? "rgba(80,220,160,0.95)" : "rgba(15,130,80,0.90)",
                     accentBg: isDark ? "rgba(80,220,160,0.08)" : "rgba(15,130,80,0.05)",
                     accentBdr: isDark ? "rgba(80,220,160,0.24)" : "rgba(15,130,80,0.18)",
                     steps: [
@@ -4194,7 +4203,7 @@ export default function Dashboard() {
                       "Automatically updates as more sessions are recorded",
                     ],
                   },
-                ].map(({ icon, label, accentColor, accentBg, accentBdr, steps }) => (
+                ].map(({ Icon, label, accentColor, accentBg, accentBdr, steps }) => (
                   <div key={label} style={{
                     borderRadius: 12,
                     border: `1px solid ${accentBdr}`,
@@ -4202,7 +4211,7 @@ export default function Dashboard() {
                     padding: "16px 18px",
                   }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
-                      <span style={{ fontSize: 18 }}>{icon}</span>
+                      <span style={{ display: "flex", color: accentColor }}><Icon size={18} /></span>
                       <span style={{ fontSize: 13, fontWeight: 800, color: accentColor }}>{label}</span>
                     </div>
                     <ol style={{ margin: 0, padding: "0 0 0 16px", display: "flex", flexDirection: "column", gap: 6 }}>
@@ -4223,7 +4232,7 @@ export default function Dashboard() {
                 display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap",
               }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 16 }}>🚀</span>
+                  <span style={{ display: "flex", flexShrink: 0, opacity: 0.75 }}><IconRocket size={18} /></span>
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Ready to get started?</div>
                     <div style={{ fontSize: 12, opacity: 0.55 }}>Head to the Recent Sessions tab and record your first Power session.</div>
@@ -4390,7 +4399,7 @@ export default function Dashboard() {
                 </div>)
                 : strengthRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>💥</span>
+                  <ModeIcon mode="power" size={26} style={{ opacity: 0.45 }} />
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No strength data yet</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Power sessions for your athletes. 3+ sessions per athlete generates a Strength Index ranking.</div>
                 </div>)
@@ -4437,7 +4446,7 @@ export default function Dashboard() {
                 </div>)
                 : reactionRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>⚡️</span>
+                  <ModeIcon mode="reaction" size={26} style={{ opacity: 0.45 }} />
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No reaction data yet</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Reaction sessions to start tracking response times. Rankings show avg and best reaction ms per athlete.</div>
                 </div>)
@@ -4470,7 +4479,7 @@ export default function Dashboard() {
               ) : leaderMetric === "volume" ? (
                 volumeInsightRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>🥊</span>
+                  <ModeIcon mode="volume" size={26} style={{ opacity: 0.45 }} />
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No volume data yet</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Volume sessions to track hit counts and output quality per athlete.</div>
                 </div>)
@@ -4510,7 +4519,7 @@ export default function Dashboard() {
               ) : leaderMetric === "target" ? (
                 targetInsightRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>🏹</span>
+                  <ModeIcon mode="target" size={26} style={{ opacity: 0.45 }} />
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No target data yet</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Target sessions to rank athletes by zone accuracy and correct-zone reaction time.</div>
                 </div>)
@@ -4564,7 +4573,7 @@ export default function Dashboard() {
                 </div>)
                 : accuracyRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>🎯</span>
+                  <ModeIcon mode="accuracy" size={26} style={{ opacity: 0.45 }} />
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No accuracy data yet</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 300, lineHeight: 1.6 }}>Record Accuracy sessions to track placement scores and avg offset. Each session logs accuracy % automatically.</div>
                 </div>)
@@ -4655,7 +4664,8 @@ export default function Dashboard() {
                 <div className="ts-mostRow">
                   <div className="ts-miLabel">
                     <div className="ts-miTitle" style={{ fontSize: 13 }}>
-                      {athleteImprovedMetric === "form" ? "📐 Form & Angle" : athleteImprovedMetric === "strength" ? "💥 Strength" : athleteImprovedMetric === "reaction" ? "⚡️ Reaction" : "🎯 Accuracy"}
+                      <ModeIcon mode={athleteImprovedMetric} size={13} style={{ marginRight: 6 }} />
+                      {athleteImprovedMetric === "form" ? "Form & Angle" : athleteImprovedMetric === "strength" ? "Strength" : athleteImprovedMetric === "reaction" ? "Reaction" : "Accuracy"}
                     </div>
                     <div className="ts-miSubtitle">needs 4+ sessions per athlete to compute trend</div>
                   </div>
@@ -4813,7 +4823,7 @@ export default function Dashboard() {
                 </div>
               ) : teamLeaderRows.length === 0 ? (
                 <div style={{ padding: "24px 16px", display: "flex", flexDirection: "column", alignItems: "center", gap: 8, textAlign: "center" }}>
-                  <span style={{ fontSize: 22 }}>🏅</span>
+                  <span style={{ display: "flex", opacity: 0.5 }}><IconTrophy size={24} /></span>
                   <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.65 }}>No team data for this mode</div>
                   <div style={{ fontSize: 12, opacity: 0.42, maxWidth: 320, lineHeight: 1.6 }}>Record sessions in this mode for athletes on your teams. Core teams aggregate all roster sessions; sub-teams pull from their member athletes.</div>
                 </div>
@@ -4928,7 +4938,8 @@ export default function Dashboard() {
                 <div className="ts-mostRow">
                   <div className="ts-miLabel">
                     <div className="ts-miTitle" style={{ fontSize: 13 }}>
-                      {teamImprovedMetric === "form" ? "📐 Form & Angle" : teamImprovedMetric === "strength" ? "💥 Strength" : teamImprovedMetric === "reaction" ? "⚡️ Reaction" : "🎯 Accuracy"}
+                      <ModeIcon mode={teamImprovedMetric} size={13} style={{ marginRight: 6 }} />
+                      {teamImprovedMetric === "form" ? "Form & Angle" : teamImprovedMetric === "strength" ? "Strength" : teamImprovedMetric === "reaction" ? "Reaction" : "Accuracy"}
                     </div>
                     <div className="ts-miSubtitle">needs 4+ sessions per team to compute trend</div>
                   </div>
@@ -5096,11 +5107,6 @@ export default function Dashboard() {
                         const trendIcon  = progress?.trend === "up" ? "↑" : progress?.trend === "down" ? "↓" : "→";
                         const trendLabel = progress?.trend === "up" ? "Improving" : progress?.trend === "down" ? "Declining" : "Stable";
 
-                        const metricIcon = progress?.metric === "accuracy"       ? "🎯"
-                          : progress?.metric === "reaction"       ? "⚡️"
-                          : progress?.metric === "targetAccuracy" ? "🏹"
-                          : progress?.metric === "targetReaction" ? "🏹"
-                          : "💥";
 
                         const metricLabel = progress?.metric === "targetAccuracy" ? "target acc"
                           : progress?.metric === "targetReaction" ? "target RT"
@@ -5169,7 +5175,7 @@ export default function Dashboard() {
                                       className={`ts-athletePill ts-modePill ts-modePill--power ts-modePill--${trend}`}
                                       title={`Power · ${sessions} sessions · peak SI ${peakIndex}/1000 · trend ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta} pts)`}
                                     >
-                                      <span className="ts-pillLabel">💥 SI</span>{peakIndex}
+                                      <span className="ts-pillLabel"><ModeIcon mode="power" size={10} style={{ marginRight: 4 }} />SI</span>{peakIndex}
                                       {trend !== "stable" && (
                                         <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}</span>
                                       )}
@@ -5184,7 +5190,7 @@ export default function Dashboard() {
                                       className={`ts-athletePill ts-modePill ts-modePill--reaction ts-modePill--${trend}`}
                                       title={`Reaction · ${sessions} sessions · avg ${avgMs}ms · ${trend === "up" ? "faster" : trend === "down" ? "slower" : "stable"} by ${Math.abs(delta)}ms`}
                                     >
-                                      <span className="ts-pillLabel">⚡ RT</span>{avgMs}<span style={{ opacity: 0.5, marginLeft: 2 }}>ms</span>
+                                      <span className="ts-pillLabel"><ModeIcon mode="reaction" size={10} style={{ marginRight: 4 }} />RT</span>{avgMs}<span style={{ opacity: 0.5, marginLeft: 2 }}>ms</span>
                                       {trend !== "stable" && (
                                         <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}ms</span>
                                       )}
@@ -5199,7 +5205,7 @@ export default function Dashboard() {
                                       className={`ts-athletePill ts-modePill ts-modePill--accuracy ts-modePill--${trend}`}
                                       title={`Accuracy · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
                                     >
-                                      <span className="ts-pillLabel">🎯 ACC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      <span className="ts-pillLabel"><ModeIcon mode="accuracy" size={10} style={{ marginRight: 4 }} />ACC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
                                       {trend !== "stable" && (
                                         <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
                                       )}
@@ -5214,7 +5220,7 @@ export default function Dashboard() {
                                       className="ts-athletePill ts-modePill ts-modePill--volume"
                                       title={`Volume · ${sessions} sessions · max ${maxEvents} events/session · avg ${avgEvents}`}
                                     >
-                                      <span className="ts-pillLabel">🥊 MAX</span>{maxEvents}
+                                      <span className="ts-pillLabel"><ModeIcon mode="volume" size={10} style={{ marginRight: 4 }} />MAX</span>{maxEvents}
                                     </span>
                                   );
                                 }
@@ -5226,7 +5232,7 @@ export default function Dashboard() {
                                       className={`ts-athletePill ts-modePill ts-modePill--target ts-modePill--${trend}`}
                                       title={`Target precision · ${sessions} sessions · avg ${avgPct}% · ${trend === "up" ? "improving" : trend === "down" ? "declining" : "stable"} (${delta > 0 ? "+" : ""}${delta}%)`}
                                     >
-                                      <span className="ts-pillLabel">🏹 PREC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
+                                      <span className="ts-pillLabel"><ModeIcon mode="target" size={10} style={{ marginRight: 4 }} />PREC</span>{avgPct}<span style={{ opacity: 0.5, marginLeft: 2 }}>%</span>
                                       {trend !== "stable" && (
                                         <span className="ts-modePillDelta">{trendArrow(trend)}{Math.abs(delta)}%</span>
                                       )}
@@ -5260,7 +5266,8 @@ export default function Dashboard() {
                                     fontSize: 10, opacity: 0.42, whiteSpace: "nowrap",
                                     textAlign: "right", paddingRight: 2,
                                   }}>
-                                    {metricIcon} {metricLabel} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
+                                    <ModeIcon mode={progress.metric} size={11} style={{ marginRight: 4 }} />
+                                    {metricLabel} · {progress.delta > 0 ? "+" : ""}{progress.delta} {progress.unit} · {progress.sessions} sess.
                                   </div>
                                 </div>
                               ) : athleteProgressLoading ? (

@@ -18,6 +18,12 @@ import {
   bleConnectFailed,
   bleDisconnected,
 } from "../lib/telemetryEvents";
+// Mode config — single source of truth, shared with the mobile session pages
+// and the rolodex so the three cannot drift apart.
+import { MODES, MODE_META, type SessionMode } from "../lib/sessionModes";
+import { ModeIcon } from "../components/modeIcon";
+import { IconBluetoothScan, IconSignalBars, IconUser, IconZap, IconFlame, IconThumbsUp, IconDumbbell } from "../components/icons";
+import tsPowerBolt from "../images/TS Logomark Power Bolt-01.png";
 import { useSignalAudio } from "../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../hooks/signalAudio";
 import {
@@ -79,38 +85,6 @@ const CHUNK_RE    = /^C(\d{2})\/(\d{2}):/;
 //   one Supabase row per slot.
 // Toggle: VITE_MULTIBAG=on   (default off — production sees today's UX)
 const MULTIBAG_ENABLED = ((import.meta as any).env?.VITE_MULTIBAG ?? "off") === "on";
-
-// ─── Mode config (mirrors hitSimulator) ──────────────────────────────────────
-const MODES = ["power", "accuracy", "reaction", "volume", "target"] as const;
-type SessionMode = typeof MODES[number];
-
-const MODE_META: Record<SessionMode, { icon: string; label: string; color: string; glow: string; desc: string }> = {
-  power: {
-    icon: "💥", label: "Power",
-    color: "#b400ff", glow: "rgba(180,0,255,0.55)",
-    desc: "Strike any zone. Every impact is captured — force and placement logged in real time.",
-  },
-  accuracy: {
-    icon: "🎯", label: "Accuracy",
-    color: "#00dcff", glow: "rgba(0,220,255,0.55)",
-    desc: "Precision mode. Each strike is scored by how close you land to the bullseye.",
-  },
-  reaction: {
-    icon: "⚡️", label: "Reaction",
-    color: "#ffcc00", glow: "rgba(255,200,0,0.55)",
-    desc: "Wait for the HIT! signal, then strike as fast as you can. Reaction time measured to impact.",
-  },
-  volume: {
-    icon: "🥊", label: "Volume",
-    color: "#ff6a00", glow: "rgba(255,106,0,0.55)",
-    desc: "Wait for the HIT! signal, then throw as many strikes as possible in 5 seconds. Score = total hits.",
-  },
-  target: {
-    icon: "🏹", label: "Target",
-    color: "#00ff88", glow: "rgba(0,255,136,0.55)",
-    desc: "Listen for the zone cue, then strike that section of the bag. Reaction time and accuracy both scored.",
-  },
-};
 
 // ─── Target mode — zone mapping ───────────────────────────────────────────────
 // Grid is 12 rows × 8 cols (1-indexed from ESP32).
@@ -599,7 +573,21 @@ function ReactionOverlay({ phase, reactionMs }: { phase: string; reactionMs: num
         {reactionMs}ms
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
-        {reactionMs < 250 ? "Elite ⚡" : reactionMs < 350 ? "Sharp 🔥" : reactionMs < 500 ? "Good 👍" : "Keep Training 💪"}
+        {(() => {
+          // One glyph per rating tier, mirroring the emoji this replaced:
+          // bolt / flame / thumb / dumbbell, fastest to slowest.
+          const [Glyph, label] =
+            reactionMs < 250 ? [IconZap, "Elite"]
+            : reactionMs < 350 ? [IconFlame, "Sharp"]
+            : reactionMs < 500 ? [IconThumbsUp, "Good"]
+            : [IconDumbbell, "Keep Training"];
+          return (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+              {label}
+              <Glyph size={13} />
+            </span>
+          );
+        })()}
       </div>
     </div>
   );
@@ -1674,7 +1662,7 @@ function BlePickerSheet({
               alignItems: "center", justifyContent: "center",
               padding: "32px 0", gap: 10,
             }}>
-              <div style={{ fontSize: 28, opacity: 0.25 }}>📡</div>
+              <div style={{ opacity: 0.25, display: "flex" }}><IconBluetoothScan size={30} /></div>
               <div style={{ fontSize: 13, color: "var(--muted)" }}>
                 {scanning ? "Looking for Trench bags…" : "No devices found. Make sure the bag is powered on and nearby."}
               </div>
@@ -1708,7 +1696,9 @@ function BlePickerSheet({
                   display: "flex", alignItems: "center", justifyContent: "center",
                   fontSize: 17, background: iconBg, border: iconBorder,
                 }}>
-                  {isBag ? "🥊" : "📶"}
+                  {isBag
+                    ? <img src={tsPowerBolt} alt="" style={{ width: 24, height: 24, objectFit: "contain" }} />
+                    : <IconSignalBars size={18} />}
                 </div>
 
                 {/* Name + ID */}
@@ -3908,7 +3898,9 @@ export default function Session() {
                             animation: active ? "tsModeBounce 320ms cubic-bezier(.25,.46,.45,.94)" : "none",
                           }}
                         >
-                          <span style={{ fontSize: 16, lineHeight: 1 }}>{meta.icon}</span>
+                          <span style={{ display: "flex", flexShrink: 0, color: active ? meta.color : "var(--muted)" }}>
+                            <meta.Icon size={16} />
+                          </span>
                           <div style={{ textAlign: "left", flex: 1 }}>
                             <div style={{ fontSize: 12, fontWeight: 700, color: active ? meta.color : "var(--text)" }}>
                               {meta.label}
@@ -4107,9 +4099,9 @@ export default function Session() {
                     border: `2px solid ${MODE_META[sessionMode].color}`,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     boxShadow: `0 0 24px 6px ${MODE_META[sessionMode].glow}`,
-                    fontSize: 22,
+                    color: MODE_META[sessionMode].color,
                   }}>
-                    {MODE_META[sessionMode].icon}
+                    <ModeIcon mode={sessionMode} size={26} />
                   </div>
                   <div style={{
                     fontSize: 15, fontWeight: 900, letterSpacing: "0.12em",
@@ -4352,7 +4344,9 @@ export default function Session() {
               }}>
                 {!selectedAthlete ? (
                   <>
-                    <div style={{ fontSize: 30, marginBottom: 10, opacity: 0.28 }}>👤</div>
+                    <div style={{ display: "flex", marginBottom: 10, opacity: 0.28, color: "var(--text)" }}>
+                      <IconUser size={32} />
+                    </div>
                     <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Select an athlete to begin</div>
                   </>
                 ) : (
@@ -4383,7 +4377,10 @@ export default function Session() {
           {/* Stats */}
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <span>{MODE_META[sessionMode].icon} {MODE_META[sessionMode].label} Session</span>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                <ModeIcon mode={sessionMode} size={13} color={MODE_META[sessionMode].color} />
+                {MODE_META[sessionMode].label} Session
+              </span>
               {(() => {
                 const toggleInk = isDark ? "255,255,255" : "20,20,40";
                 return (

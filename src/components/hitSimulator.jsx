@@ -1,7 +1,7 @@
 // src/components/hitSimulator.jsx
 import { useState, useEffect, useRef, useCallback } from "react";
 import tsLogoMark from "../images/TS Logo Enhancement Set 2-01.png";
-import { IconBullseye, IconGauge, IconStopwatch, IconStrikeRate, IconZoneGrid } from "./icons";
+import { IconBullseye, IconGauge, IconStopwatch, IconStrikeRate, IconZoneGrid, IconTrophy } from "./icons";
 
 // ─── Types & Constants ────────────────────────────────────────────────────────
 
@@ -422,7 +422,11 @@ function VolumeOverlay({ phase, remainingMs, hits, bestHits }) {
         {hits}
       </div>
       <div style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", marginTop: 6 }}>
-        {bestHits != null && hits >= bestHits ? "🏆 New best!" : `Best: ${bestHits ?? hits}`}
+        {bestHits != null && hits >= bestHits ? (
+          <>
+            <IconTrophy size={13} /> New best!
+          </>
+        ) : `Best: ${bestHits ?? hits}`}
       </div>
     </div>
   );

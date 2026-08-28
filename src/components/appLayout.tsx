@@ -14,6 +14,7 @@ import { useScrollToTop } from "../hooks/useScrollToTop";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
+import { IconSun, IconMoon } from "./icons";
 
 // ── Bottom nav tabs — point at the /m/* routes so native taps stay on the
 //    mobile pages even if the shell ever falls through to AppLayout.
@@ -56,7 +57,7 @@ export default function AppLayout() {
             aria-label="Toggle theme"
             style={{ width: 36, height: 36 }}
           >
-            {theme === "dark" ? "☀️" : "🌙"}
+            {theme === "dark" ? <IconSun size={18} /> : <IconMoon size={18} />}
           </button>
         </header>
 
