@@ -53,6 +53,14 @@ import {
   isUserCancel,
   type ScannedDevice,
 } from "../../bluetooth/adapter_native";
+import {
+  SCAN_PERIOD_MS_DEFAULT,
+  resolveScanTiming,
+  deviceModelFor,
+  resolveHasAccel,
+  isNativeCFor,
+  modelBadge,
+} from "../../bluetooth/models";
 
 import { ModeRolodex } from "../../components/modeRolodex";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
@@ -140,47 +148,11 @@ async function hmacSha256Hex(keyBytes: Uint8Array, msgBytes: Uint8Array): Promis
 const NUM_ROWS       = 12;
 const NUM_COLS       = 8;
 const FADE_TTL_MS    = 400;
-// SCAN_PERIOD_MS is now per-device — derived from the hello packet and stored in
-// deviceInfoRef so handleNotify always reads the correct value without closure staleness.
-// Used as a duration floor for single-frame events where t_start == t_end.
-// The constant below is a safe fallback before a hello has been received.
-const SCAN_PERIOD_MS_DEFAULT = 37;
-
-// Per-adapter scan timing, keyed by the hw string reported in the hello packet.
-// scanPeriodMs doubles as the SI rise-time floor — a contact can't be resolved
-// faster than one scan cycle — and samplingHz is persisted with each session.
-//   II  @ 80 MHz  MicroPython         → 37 ms (~27 Hz)
-//   III @ 160 MHz MicroPython (batch) → 8 ms  (~120 Hz)
-//   IV  @ native C, free-running scan → 2.5 ms (~400 Hz nominal)  ← fastest adapter
-//        SCAN_HZ_NOMINAL=400 in app_main.c; verified ~437 Hz on hardware. The IV
-//        firmware also reports its live measured rate in the hello "hz" field, so
-//        resolveScanTiming() below prefers that over the nominal when present.
-//        (BLE still flushes in batch mode on a 40 ms esp_timer; the scan loop runs
-//         flat-out on a dedicated core.)
-const SCAN_PROFILES: Record<string, { scanPeriodMs: number; samplingHz: number }> = {
-  "II":  { scanPeriodMs: 37,  samplingHz: 25  },
-  "III": { scanPeriodMs: 8,   samplingHz: 120 },
-  "IV":  { scanPeriodMs: 2.5, samplingHz: 400 },
-};
-// Resolve a scan profile for a hw string; unknown/missing hw falls back to Model II.
-function scanProfileFor(hw: string | undefined | null): { scanPeriodMs: number; samplingHz: number } {
-  return SCAN_PROFILES[hw ?? ""] ?? SCAN_PROFILES["II"];
-}
-// Resolve per-device scan timing. If the hello carries a live measured "hz" field
-// (Model IV native-C firmware), use it for samplingHz / scanPeriodMs; otherwise fall
-// back to the adapter's nominal profile. The SI ceiling stays fixed (SI_FASTEST_SCAN_HZ)
-// for cross-device comparability — only the per-device rise-time floor adapts here.
-function resolveScanTiming(hw: string | undefined | null, hz?: unknown): { scanPeriodMs: number; samplingHz: number } {
-  const base = scanProfileFor(hw);
-  if (typeof hz === "number" && Number.isFinite(hz) && hz > 0) {
-    return { samplingHz: hz, scanPeriodMs: +(1000 / hz).toFixed(3) };
-  }
-  return base;
-}
-// device_model string persisted with each session ("TSII" | "TSIII" | "TSIV").
-function deviceModelFor(hw: string | undefined | null): string {
-  return "TS" + (hw ?? "II");
-}
+// Per-adapter scan timing, model capabilities (accelerometer, native-C OTA profile)
+// and the hw badge all live in src/bluetooth/models.ts — one place to add the next
+// adapter generation, shared with session.tsx and mobile/session.tsx.
+// scanPeriodMs is read from deviceInfoRef so handleNotify never sees a stale closure;
+// it doubles as the duration floor for single-frame events where t_start == t_end.
 const VOLUME_WINDOW_MS  = 5000;   // 5-second recording window for volume mode
 const SESSION_MAX_MS    = 30_000; // hard cap — session auto-stops after 30 s
 const SESSION_WARN_MS   = 25_000; // warning fires 5 s before the cap
@@ -1312,12 +1284,13 @@ type SavedRecap = {
 type DeviceInfo = {
   id:           string;
   fw:           string;
-  hw:           string;        // "II" | "III" | "IV"
+  hw:           string;        // "II" | "III" | "IV" | "V"
   rows:         number;
   cols:         number;
-  mode:         string;        // "batch" (Model III / IV) | "single" (Model II)
-  scanPeriodMs: number;        // 2.5 ms (IV @ 400 Hz) | 8 ms (III @ 120 Hz) | 37 ms (II @ 27 Hz)
-  samplingHz:   number;        // 400 (IV, or live "hz") | 120 (III) | 25 (II)
+  mode:         string;        // "batch" (Model III / IV / V) | "single" (Model II)
+  scanPeriodMs: number;        // 2.5 ms (IV/V @ 400 Hz) | 8 ms (III @ 120 Hz) | 37 ms (II @ 27 Hz)
+  samplingHz:   number;        // 400 (IV/V, or live "hz") | 120 (III) | 25 (II)
+  hasAccel:     boolean;       // ADXL372 fitted — Model V only (hardware presence)
 } | null;
 
 // Extract a battery percentage (0–100) from any device frame. Firmware does not
@@ -2956,7 +2929,7 @@ export default function Home() {
 
   // ── Firmware version check — fires each time a device connects ───────────────
   // Fetches /firmware/manifest.json and looks up the entry for this device's hw
-  // model (II / III) so each model can be updated independently.
+  // model (II / III / IV / V) so each model can be updated independently.
   // Silent on network failure — OTA is optional, never blocks the session flow.
   useEffect(() => {
     if (!deviceInfo) {
@@ -3327,6 +3300,7 @@ export default function Home() {
         mode:         obj.mode ?? "single",
         scanPeriodMs: timing.scanPeriodMs,
         samplingHz:   timing.samplingHz,
+        hasAccel:     resolveHasAccel(hw, obj),
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
@@ -3373,7 +3347,7 @@ export default function Home() {
             hw:           info.hw,
             mode:         info.mode,
             // Keep features in sync for dashboards that read features->>'hw'
-            features:     { hw: info.hw, mode: info.mode },
+            features:     { hw: info.hw, mode: info.mode, has_accel: info.hasAccel },
           };
 
           // ── Claim: first time this device is seen by any program ─────────────
@@ -3658,6 +3632,7 @@ export default function Home() {
         mode:         obj.mode ?? "single",
         scanPeriodMs: timing.scanPeriodMs,
         samplingHz:   timing.samplingHz,
+        hasAccel:     resolveHasAccel(hw, obj),
       };
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
@@ -3848,7 +3823,7 @@ export default function Home() {
       setBleStatus("connected");
       bleConnectSucceeded({
         duration_ms: Date.now() - _bleT0,
-        device_model: deviceInfoRef.current?.hw === "III" ? "TSIII" : "TSII",
+        device_model: deviceModelFor(deviceInfoRef.current?.hw),
         attempt_n: connectAttempt + 1,
         slot: 0,
       });
@@ -4110,7 +4085,7 @@ export default function Home() {
     // SLOW: the original conservative, MTU-safe profile (128 B chunks, 30 ms).
     //   Universal fallback the user can pick if FAST errors out.
     // Default: FAST on model IV, SLOW on II/III (MicroPython — left untouched).
-    const mode: "fast" | "slow" = speed ?? (deviceInfo?.hw === "IV" ? "fast" : "slow");
+    const mode: "fast" | "slow" = speed ?? (isNativeCFor(deviceInfo?.hw) ? "fast" : "slow");
     const CHUNK_SIZE     = mode === "fast" ? 212 : 128;   // base64 chars (mult of 4)
     const CHUNK_DELAY_MS = mode === "fast" ? 0   : 30;
     setOtaMode(mode);
@@ -4958,16 +4933,12 @@ export default function Home() {
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
                       v{deviceInfo.fw}
                     </span>
-                    {/* Hardware generation badge — II / III / IV */}
+                    {/* Hardware generation badge — II / III / IV / V */}
                     {(() => {
-                      // Per-model accent + display rate. IV (native C) gets its own cyan
-                      // accent to stand apart from the green Model III, and shows its live
-                      // reported scan rate (from the hello "hz" field, nominal 400).
-                      const badge = deviceInfo.hw === "IV"
-                        ? { rgb: "0,224,255",  ink: "#0091b3", label: `IV · ${Math.round(deviceInfo.samplingHz)}Hz` }
-                        : deviceInfo.hw === "III"
-                        ? { rgb: "0,255,136",  ink: "#00965a", label: "III · 120Hz" }
-                        : { rgb: "180,0,255",  ink: "#8a00c2", label: "II · 27Hz" };
+                      // Per-model accent + display rate (shared with the session pages).
+                      // IV/V (native C) show their live reported scan rate from the hello
+                      // "hz" field rather than the nominal 400.
+                      const badge = modelBadge(deviceInfo.hw, deviceInfo.samplingHz);
                       // Light mode: the neon rgb reads fine on dark but washes out on
                       // white, so use a darker ink + stronger fill/border for contrast.
                       return (

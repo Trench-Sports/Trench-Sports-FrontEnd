@@ -45,6 +45,12 @@ import {
   isUserCancel,
   type ScannedDevice,
 } from "../bluetooth/adapter_native";
+import {
+  resolveScanTiming,
+  deviceModelFor,
+  resolveHasAccel,
+  modelBadge,
+} from "../bluetooth/models";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -704,12 +710,13 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 type DeviceInfo = {
   id:           string;
   fw:           string;
-  hw:           string;        // "II" | "III"
+  hw:           string;        // "II" | "III" | "IV" | "V"
   rows:         number;
   cols:         number;
-  mode:         string;        // "batch" (Model III) | "single" (Model II)
-  scanPeriodMs: number;        // 8 ms (Model III @ 120 Hz) | 37 ms (Model II @ 27 Hz)
-  samplingHz:   number;        // 120 (Model III) | 25 (Model II)
+  mode:         string;        // "batch" (III / IV / V) | "single" (Model II)
+  scanPeriodMs: number;        // 2.5 ms (IV/V @ 400 Hz) | 8 ms (III @ 120 Hz) | 37 ms (II @ 27 Hz)
+  samplingHz:   number;        // 400 (IV/V, or the live "hz" field) | 120 (III) | 25 (II)
+  hasAccel:     boolean;       // ADXL372 fitted — Model V only (hardware presence)
 } | null;
 
 type Athlete = {
@@ -1883,7 +1890,7 @@ export default function Session() {
 
   // ── Firmware version check — fires each time a device connects ───────────────
   // Fetches /firmware/manifest.json and looks up the entry for this device's hw
-  // model (II / III) so each model can be updated independently.
+  // model (II / III / IV / V) so each model can be updated independently.
   // Silent on network failure — OTA is optional, never blocks the session flow.
   useEffect(() => {
     if (!deviceInfo) {
@@ -2220,17 +2227,21 @@ export default function Session() {
     // ── Non-data control frames — handled before the hits path ────────────────
     if (obj.type === "hello") {
       // Derive per-device timing constants from the hello packet.
-      // Model III sends hw:"III" and mode:"batch"; Model II omits both fields.
-      const isModelIII    = obj.hw === "III";
+      // III / IV / V send hw + mode:"batch"; Model II omits both fields. The
+      // native-C adapters (IV / V) also report their live measured scan rate in
+      // "hz" — resolveScanTiming prefers it over the nominal SCAN_PROFILES entry.
+      const hw     = obj.hw ?? "II";
+      const timing = resolveScanTiming(hw, obj.hz);
       const info: DeviceInfo = {
         id:           obj.id,
         fw:           obj.fw,
-        hw:           obj.hw   ?? "II",
+        hw,
         rows:         obj.rows,
         cols:         obj.cols,
         mode:         obj.mode ?? "single",
-        scanPeriodMs: isModelIII ? 8  : 37,
-        samplingHz:   isModelIII ? 120 : 25,
+        scanPeriodMs: timing.scanPeriodMs,
+        samplingHz:   timing.samplingHz,
+        hasAccel:     resolveHasAccel(hw, obj),
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
@@ -2271,7 +2282,7 @@ export default function Session() {
             hw:           info.hw,
             mode:         info.mode,
             // Keep features in sync for dashboards that read features->>'hw'
-            features:     { hw: info.hw, mode: info.mode },
+            features:     { hw: info.hw, mode: info.mode, has_accel: info.hasAccel },
           };
 
           // ── Claim: first time this device is seen by any program ─────────────
@@ -2525,16 +2536,18 @@ export default function Session() {
 
     // hello packet — derive device info, mirror the primary handler's logic
     if (obj.type === "hello") {
-      const isModelIII = obj.hw === "III";
+      const hw     = obj.hw ?? "II";
+      const timing = resolveScanTiming(hw, obj.hz);
       slot.device = {
         id:           obj.id,
         fw:           obj.fw,
-        hw:           obj.hw   ?? "II",
+        hw,
         rows:         obj.rows,
         cols:         obj.cols,
         mode:         obj.mode ?? "single",
-        scanPeriodMs: isModelIII ? 8   : 37,
-        samplingHz:   isModelIII ? 120 : 25,
+        scanPeriodMs: timing.scanPeriodMs,
+        samplingHz:   timing.samplingHz,
+        hasAccel:     resolveHasAccel(hw, obj),
       };
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
@@ -2702,7 +2715,7 @@ export default function Session() {
       setBleStatus("connected");
       bleConnectSucceeded({
         duration_ms: Date.now() - _bleT0,
-        device_model: deviceInfoRef.current?.hw === "III" ? "TSIII" : "TSII",
+        device_model: deviceModelFor(deviceInfoRef.current?.hw),
         attempt_n: connectAttempt + 1,
         slot: 0,
       });
@@ -3182,7 +3195,7 @@ export default function Session() {
         mode:        sessionMode,
         // Derive hardware metadata from the hello packet — never hardcoded.
         // Falls back to Model II defaults when deviceInfo is unavailable.
-        deviceModel:  deviceInfo?.hw === "III" ? "TSIII" : "TSII",
+        deviceModel:  deviceModelFor(deviceInfo?.hw),
         samplingHz:   deviceInfo?.samplingHz   ?? 25,
         scanPeriodMs: deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
         // reaction live stats
@@ -3216,7 +3229,7 @@ export default function Session() {
         startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
         endedAtMs:   endedAt,
         mode:        sessionMode,
-        deviceModel: slot.device?.hw === "III" ? "TSIII" : "TSII",
+        deviceModel: deviceModelFor(slot.device?.hw),
         samplingHz:   slot.device?.samplingHz   ?? 25,
         scanPeriodMs: slot.device?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT,
         deviceId:    slot.device?.id,
@@ -3639,16 +3652,21 @@ export default function Session() {
                     <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
                       v{deviceInfo.fw}
                     </span>
-                    {/* Hardware generation badge — distinguishes Model II from Model III */}
-                    <span style={{
-                      fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                      color: deviceInfo.hw === "III" ? "#00ff88" : "#b400ff",
-                      background: deviceInfo.hw === "III" ? "rgba(0,255,136,0.12)" : "rgba(180,0,255,0.12)",
-                      border: `1px solid ${deviceInfo.hw === "III" ? "rgba(0,255,136,0.30)" : "rgba(180,0,255,0.30)"}`,
-                      borderRadius: 4, padding: "1px 5px",
-                    }}>
-                      {deviceInfo.hw === "III" ? "III · 120Hz" : "II · 27Hz"}
-                    </span>
+                    {/* Hardware generation badge — II / III / IV / V */}
+                    {(() => {
+                      const badge = modelBadge(deviceInfo.hw, deviceInfo.samplingHz);
+                      return (
+                        <span style={{
+                          fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
+                          color: `rgb(${badge.rgb})`,
+                          background: `rgba(${badge.rgb},0.12)`,
+                          border: `1px solid rgba(${badge.rgb},0.30)`,
+                          borderRadius: 4, padding: "1px 5px",
+                        }}>
+                          {badge.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                 )}
               </div>
