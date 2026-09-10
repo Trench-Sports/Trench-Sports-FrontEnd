@@ -5,7 +5,7 @@ type IconProps = {
   size?: number;
 };
 
-function SunIcon({ size = 18 }: IconProps): JSX.Element {
+function SunIcon({ size = 24 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z" stroke="currentColor" strokeWidth="2" />
@@ -19,7 +19,7 @@ function SunIcon({ size = 18 }: IconProps): JSX.Element {
   );
 }
 
-function MoonIcon({ size = 18 }: IconProps): JSX.Element {
+function MoonIcon({ size = 24 }: IconProps): JSX.Element {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <path

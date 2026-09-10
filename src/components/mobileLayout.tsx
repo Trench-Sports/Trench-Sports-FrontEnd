@@ -52,7 +52,7 @@ export default function MobileLayout() {
         <img
           src={logoSrc}
           alt="Trench Sports"
-          style={{ height: 36, borderRadius: 8, objectFit: "contain" }}
+          style={{ height: 48, borderRadius: 10, objectFit: "contain" }}
         />
         <span style={{ fontWeight: 950, fontSize: 17, letterSpacing: "-0.01em" }}>
           Trench Sports
@@ -61,9 +61,9 @@ export default function MobileLayout() {
           onClick={onToggleTheme}
           className="iconButton"
           aria-label="Toggle theme"
-          style={{ width: 36, height: 36 }}
+          style={{ width: 48, height: 48, borderRadius: 14 }}
         >
-          {theme === "dark" ? <IconSun size={18} /> : <IconMoon size={18} />}
+          {theme === "dark" ? <IconSun size={24} /> : <IconMoon size={24} />}
         </button>
       </header>
 
