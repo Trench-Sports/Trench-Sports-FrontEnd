@@ -1345,33 +1345,77 @@ type CellState = { mv: number; ts: number };
 type GridState  = Map<string, CellState>;    // key = "r,c"
 
 // ─── Chunk reassembler (mirrors ChunkAssembler in ble_connect.py) ────────────
+// True when `s` is a complete JSON value. Used to decide whether a buffer with
+// no trailing newline is a finished legacy record or a partial NDJSON chunk.
+function isCompleteJson(s: string): boolean {
+  try { JSON.parse(s); return true; } catch { return false; }
+}
+
 class ChunkAssembler {
   private total: number | null = null;
   private parts: Record<number, string> = {};
+  private buf = "";                       // carry-over across notifications
   private lastTs = Date.now();
 
-  push(text: string): string | null {
-    const m = CHUNK_RE.exec(text);
-    if (!m) { this.reset(); return text; }
+  /**
+   * Feed one raw BLE notification; returns every complete record it finished.
+   *
+   * Two framings share this path:
+   *  - Native-C (IV/V): NDJSON. Records split on raw byte boundaries with NO
+   *    per-chunk header, terminated by "\n". A 273-byte hello over a 247 MTU
+   *    always arrives as two notifications, so that newline is the only framing
+   *    signal there is - the caller must not trim it away.
+   *  - MicroPython (II/III): one whole JSON per notification, or "Cnn/NN:"
+   *    headers above 400 bytes. No trailing newline, so flush as soon as what
+   *    we hold parses as a complete record.
+   */
+  push(text: string): string[] {
+    this.buf += text;
+    this.lastTs = Date.now();
+    const out: string[] = [];
+
+    // NDJSON: every newline-terminated line is a finished record. A bare "\n"
+    // is the firmware's "I abandoned that record" signal - it flushes the
+    // partial line, which then fails to parse and is dropped by the caller.
+    let nl: number;
+    while ((nl = this.buf.indexOf("\n")) !== -1) {
+      const line = this.buf.slice(0, nl).trim();
+      this.buf   = this.buf.slice(nl + 1);
+      if (line) this.consume(line, out);
+    }
+
+    // Legacy: no newline is coming, so flush once the buffer is self-contained.
+    if (this.buf) {
+      const t = this.buf.trim();
+      if (CHUNK_RE.test(t) || isCompleteJson(t)) {
+        this.buf = "";
+        this.consume(t, out);
+      }
+    }
+    return out;
+  }
+
+  private consume(line: string, out: string[]) {
+    const m = CHUNK_RE.exec(line);
+    if (!m) { this.resetChunks(); out.push(line); return; }
     const idx     = parseInt(m[1], 10);
     const total   = parseInt(m[2], 10);
-    const payload = text.slice(m[0].length);
+    const payload = line.slice(m[0].length);
     if (this.total !== total) { this.total = total; this.parts = {}; }
     this.parts[idx] = payload;
-    this.lastTs = Date.now();
     if (Object.keys(this.parts).length === total) {
-      const out = Array.from({ length: total }, (_, i) => this.parts[i + 1] ?? "").join("");
-      this.reset();
-      return out;
+      const joined = Array.from({ length: total }, (_, i) => this.parts[i + 1] ?? "").join("");
+      this.resetChunks();
+      out.push(joined);
     }
-    return null;
   }
 
   maybeTimeout(ms = 2000) {
-    if (this.total !== null && Date.now() - this.lastTs > ms) this.reset();
+    if ((this.total !== null || this.buf !== "") && Date.now() - this.lastTs > ms) this.reset();
   }
 
-  private reset() { this.total = null; this.parts = {}; }
+  private resetChunks() { this.total = null; this.parts = {}; }
+  private reset() { this.resetChunks(); this.buf = ""; }
 }
 
 // ─── Multi-bag slot model ────────────────────────────────────────────────────
@@ -3274,14 +3318,17 @@ export default function Home() {
   // ── BLE notify handler ────────────────────────────────────────────────────────
   // Accepts a DataView directly — same signature used by both adapter paths.
   const handleNotify = useCallback((value: DataView) => {
-    const text = new TextDecoder().decode(value).trim();
-
+    // Raw text - deliberately NOT trimmed. "\n" is the NDJSON record delimiter
+    // the native-C firmware frames with; trimming it destroyed the only framing
+    // signal and silently dropped every record longer than one MTU - notably
+    // the 273-byte hello, which is why hw / scan rate / OTA never appeared.
+    const text = new TextDecoder().decode(value);
     assemblerRef.current.maybeTimeout();
-    const maybeJson = assemblerRef.current.push(text);
-    if (!maybeJson) return;
 
+    // One notification can finish zero, one, or several records.
+    for (const record of assemblerRef.current.push(text)) {
     let obj: any;
-    try { obj = JSON.parse(maybeJson); } catch { return; }
+    try { obj = JSON.parse(record); } catch { continue; }
 
     // ── Non-data control frames — handled before the hits path ────────────────
     if (obj.type === "hello") {
@@ -3599,6 +3646,7 @@ export default function Home() {
     setPeakMv(prev => Math.max(prev, batchMaxMv));               // all-time session peak (V tile)
 
     } // end for (batch dispatcher loop)
+    } // end for (NDJSON record loop)
   }, []);
 
   // ── BLE notify handler — SECONDARY slot (multi-bag) ──────────────────────────
@@ -3611,13 +3659,12 @@ export default function Home() {
     const slot = slotsRef.current.get(slotId);
     if (!slot) return;                                    // disconnected mid-frame — drop
 
-    const text = new TextDecoder().decode(value).trim();
+    const text = new TextDecoder().decode(value);   // no trim - see handleNotify
     slot.assembler.maybeTimeout();
-    const maybeJson = slot.assembler.push(text);
-    if (!maybeJson) return;
 
+    for (const record of slot.assembler.push(text)) {
     let obj: any;
-    try { obj = JSON.parse(maybeJson); } catch { return; }
+    try { obj = JSON.parse(record); } catch { continue; }
 
     // hello packet — derive device info, mirror the primary handler's logic
     if (obj.type === "hello") {
@@ -3680,6 +3727,7 @@ export default function Home() {
     // per-notification bump isn't needed for the live grid. We still bump every
     // 25 frames to keep the slot-list frame counter reasonably fresh.
     if (slot.frameIndex % 25 === 0) bumpSlots();
+    } // end for (NDJSON record loop)
   }, [bumpSlots]);
 
   // ── BLE connect / disconnect ──────────────────────────────────────────────────
