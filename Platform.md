@@ -107,12 +107,17 @@ function MyComponent() {
 
 ## 7. Capacitor config — important note
 
-Your current `capacitor.config.ts` points at your Vercel URL:
+Your current `capacitor.config.ts` points at the production domain:
 
 ```ts
 server: {
-  url: 'https://trench-sports-front-end.vercel.app',
-  cleartext: false
+  url: 'https://www.trenchsports.ai',   // CAP_ENV=preview → the -puce Vercel URL
+  cleartext: false,
+  allowNavigation: [
+    'www.trenchsports.ai',
+    'trenchsports.ai',
+    'trench-sports-front-end-puce.vercel.app',
+  ]
 }
 ```
 
