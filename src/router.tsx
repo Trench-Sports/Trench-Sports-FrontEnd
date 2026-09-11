@@ -197,7 +197,7 @@ export const router = createBrowserRouter([
   // ── Mobile shell — `/m/*` routes ──────────────────────────────────────────
   // Used by the Capacitor iOS shell and by anyone hitting /m/* in a browser
   // (e.g. http://localhost:5173/m/session,
-  //       https://trench-sports-front-end.vercel.app/m/session).
+  //       https://www.trenchsports.ai/m/session).
   //
   // /m/dashboard and /m/session both render the same MobileSwipeDeck instance.
   // They live under a shared parent layout-route so React Router preserves the
