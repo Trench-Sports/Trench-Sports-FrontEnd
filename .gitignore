@@ -16,3 +16,6 @@ sdkconfig.old
 
 # Local audit-agent output
 .audit/
+
+# Supabase CLI version-check cache
+supabase/.temp/
