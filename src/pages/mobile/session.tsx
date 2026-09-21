@@ -48,6 +48,14 @@ import {
   isNativeCFor,
   modelBadge,
 } from "../../bluetooth/models";
+import {
+  parseImpactFrame,
+  captureFromHello,
+  buildImpactRows,
+  summarizeImpacts,
+  type ImpactFrame,
+  type AccelCapture,
+} from "../../bluetooth/impacts";
 
 import { ModeRolodex } from "../../components/modeRolodex";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
@@ -1570,6 +1578,8 @@ type SlotState = {
   status:       "connecting" | "connected" | "disconnected" | "error";
   sessionId:    string;                    // assigned at session start (one row per slot)
   frames:       BleFrame[];                // own buffer; uploaded as its own session
+  impacts:      ImpactFrame[];             // TSA-V accelerometer impacts for this slot
+  accelCapture: AccelCapture | null;       // capture conditions from this slot's hello
   frameIndex:   number;                    // increments per accepted frame
   startedAtMs:  number | null;             // set at startSession() broadcast
   errorMessage: string | null;
@@ -1598,6 +1608,8 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     status:       "connected",
     sessionId:    "",        // populated at startSession
     frames:       [],
+    impacts:      [],
+    accelCapture: null,
     frameIndex:   0,
     startedAtMs:  null,
     errorMessage: null,
@@ -1872,6 +1884,9 @@ async function uploadSession(opts: {
   tgtBestCorrectMs?:     number | null;   // best RT for correct-zone hits only
   // physical device
   deviceId?:    string;
+  // TSA-V accelerometer (Model V). Empty / null on every other adapter.
+  impacts?:      ImpactFrame[];
+  accelCapture?: AccelCapture | null;
 }) {
   if (!supabase) throw new Error("Supabase client not initialised");
 
@@ -1883,6 +1898,7 @@ async function uploadSession(opts: {
     accHitsCount = 0, accScoreSum = 0,
     tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null, tgtBestCorrectMs = null,
     deviceId,
+    impacts = [], accelCapture = null,
   } = opts;
 
   const CHUNK = 500;
@@ -1916,6 +1932,26 @@ async function uploadSession(opts: {
     sessionUploadStageFailed({ session_id: sessionId, stage: "sessions", error_code: sessErr.message?.slice(0, 64) });
     throw new Error(`sessions: ${sessErr.message}`);
   }
+  // ── 1b. impact_events — TSA-V accelerometer (Model V only) ──────────────
+  // Written BEFORE the empty-frames return on purpose: the accelerometer runs
+  // its own FSM, so a strike can rail it without registering 96-node contact,
+  // and a session of only such hits is still worth keeping.
+  //
+  // A failure here does NOT throw, unlike every other stage. Accel data is
+  // additive, and the outbox replays the whole payload starting from a sessions
+  // insert that would now collide on its primary key — so throwing would turn a
+  // complete matrix upload into a queued payload that can never succeed. The
+  // stage failure is reported to telemetry instead.
+  const impactRows = buildImpactRows(sessionId, impacts, accelCapture);
+  for (let i = 0; i < impactRows.length; i += CHUNK) {
+    const { error } = await supabase.from("impact_events").insert(impactRows.slice(i, i + CHUNK));
+    if (error) {
+      sessionUploadStageFailed({ session_id: sessionId, stage: "impact_events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
+      console.warn(`[ACCEL] impact_events (chunk ${i}) failed, continuing: ${error.message}`);
+      break;
+    }
+  }
+
   if (frames.length === 0) return;
 
   // ── 2. events — enriched ──────────────────────────────────────────────────
@@ -2271,6 +2307,10 @@ async function uploadSession(opts: {
 
   const { error: sumErr } = await supabase.from("session_summaries").insert({
     session_id:          sessionId,
+    // accel_present / accel_g_range_g only. The three aggregate columns are
+    // defined over PRIMARY impacts and nothing has coalesced rebounds yet —
+    // see summarizeImpacts() and rollup_impacts_to_session_summary().
+    ...summarizeImpacts(accelCapture),
     program_id:          programId,
     ...(coreTeamId ? { core_team_id: coreTeamId } : {}),
     athlete_id:          athleteId,
@@ -3074,6 +3114,10 @@ export default function Session() {
 
   // Raw frames accumulated during session — written to Supabase on save
   const framesRef  = useRef<BleFrame[]>([]);
+  // TSA-V ADXL372 impacts for this session, plus the capture conditions they
+  // were detected under (read from hello). Cleared alongside framesRef.
+  const impactsRef      = useRef<ImpactFrame[]>([]);
+  const accelCaptureRef = useRef<AccelCapture | null>(null);
   const frameIndex = useRef(0);
 
   // captureRef tracks sessionActive without closure staleness
@@ -3309,6 +3353,9 @@ export default function Session() {
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
+      // Capture conditions for impact_events rows. Null when the adapter has no
+      // accelerometer, or declares one without usable detection thresholds.
+      accelCaptureRef.current = captureFromHello(obj, info.hasAccel, timing.samplingHz);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
@@ -3386,6 +3433,19 @@ export default function Session() {
       otaAuthRef.current?.(obj.type === "auth_ok");
       otaAuthRef.current = null;
       return;
+    }
+
+    // ── TSA-V accelerometer impact (Model V) ─────────────────────────────────
+    // send_impact() fires once per hit on the FSM falling edge, so the peak is
+    // final. The frame carries no "hits" array, so before this branch existed it
+    // fell through to the matrix path, normalised to an empty hit list and was
+    // silently discarded. Gated on captureRef exactly like matrix frames.
+    if (obj.type === "impact") {
+      if (captureRef.current) {
+        const imp = parseImpactFrame(obj);
+        if (imp) impactsRef.current.push(imp);
+      }
+      continue;
     }
 
     // ── Normalise both packet shapes into a list of { hits, t } frame objects ──
@@ -3624,9 +3684,19 @@ export default function Session() {
         samplingHz:   timing.samplingHz,
         hasAccel:     resolveHasAccel(hw, obj),
       };
+      slot.accelCapture = captureFromHello(obj, slot.device.hasAccel, timing.samplingHz);
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
       return;
+    }
+
+    // TSA-V accelerometer impact — same handling as the primary path, per slot.
+    if (obj.type === "impact") {
+      if (captureRef.current) {
+        const imp = parseImpactFrame(obj);
+        if (imp) slot.impacts.push(imp);
+      }
+      continue;
     }
 
     // Normalise both packet shapes — same logic as handleNotify
@@ -4172,6 +4242,7 @@ export default function Session() {
 
     sessionIdRef.current = genSessionId();
     framesRef.current    = [];
+    impactsRef.current    = [];
     frameIndex.current   = 0;
     feedCounter.current  = 0;
     // Reset accuracy
@@ -4222,6 +4293,7 @@ export default function Session() {
       for (const slot of slotsRef.current.values()) {
         slot.sessionId   = genSessionId();
         slot.frames      = [];
+        slot.impacts     = [];
         slot.frameIndex  = 0;
         slot.startedAtMs = startTimeRef.current;
         // Clear the live matrix heatmap + stats for the new session.
@@ -4381,6 +4453,8 @@ export default function Session() {
         coreTeamId:  selectedAthlete.core_team_id ?? null,
         createdBy:   userId,
         frames:      framesRef.current,
+        impacts:      impactsRef.current,
+        accelCapture: accelCaptureRef.current,
         startedAtMs: startTimeRef.current ?? endedAt,
         endedAtMs:   endedAt,
         mode:        sessionMode,
@@ -4419,6 +4493,8 @@ export default function Session() {
         coreTeamId:  slotAthlete.core_team_id ?? null,
         createdBy:   userId,
         frames:      slot.frames,
+        impacts:      slot.impacts,
+        accelCapture: slot.accelCapture,
         startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
         endedAtMs:   endedAt,
         mode:        sessionMode,
@@ -4483,6 +4559,7 @@ export default function Session() {
       session_id: sessionIdRef.current,
     });
     framesRef.current  = [];
+    impactsRef.current  = [];
     frameIndex.current = 0;
     feedCounter.current = 0;
     setFeed([]);

@@ -18,7 +18,7 @@ import { track } from "./telemetry";
 
 type Platform = "web" | "ios";
 type ConnectErrorClass = "cancel" | "gatt" | "adapter" | "timeout" | "unknown";
-type UploadStage = "sessions" | "events" | "event_cells" | "session_summaries";
+type UploadStage = "sessions" | "events" | "event_cells" | "impact_events" | "session_summaries";
 type StopReason = "user" | "auto_timeout" | "disconnect" | "error";
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
