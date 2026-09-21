@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { authLoginSucceeded, authLoginFailed } from "../lib/telemetryEvents";
+import { publicUrl } from "../lib/publicOrigin";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -121,9 +122,9 @@ export default function LoginPage() {
 
     setBusy(true);
     try {
-      // You can customize redirectTo to your actual reset page route
+      // Public site, not window.location.origin — see src/lib/publicOrigin.ts.
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: publicUrl("reset-password"),
       });
       if (error) {
         setErr(error.message || "Could not send reset email.");

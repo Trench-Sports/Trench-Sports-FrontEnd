@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import Modal from "./modal";
 import { supabase } from "../supabaseClient";
 import { inviteCreated, inviteRevoked } from "../lib/telemetryEvents";
+import { publicUrl } from "../lib/publicOrigin";
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
@@ -891,7 +892,10 @@ export default function ProgramModal({ open, onClose }) {
  */
 function inviteUrl(invite) {
   if (!invite?.token) return null;
-  return `${window.location.origin}/invite/${invite.token}`;
+  // Public site, not window.location.origin. This URL's whole purpose is to be
+  // pasted into a text message or email and opened by someone else, so it can
+  // never be the bundled app's capacitor://localhost origin.
+  return publicUrl(`invite/${invite.token}`);
 }
 
 /** "Expires in 2 days" / "Expires in 5 hours" — list rows want relative, not absolute. */

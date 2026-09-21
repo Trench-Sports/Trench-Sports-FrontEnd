@@ -105,7 +105,7 @@ Defined in `supabase/schema.sql`. Key tables: `programs` (the billing/tenant roo
 ├── public/                   # Static assets served as-is (incl. OTA firmware bundles)
 ├── ios/                      # Capacitor iOS project (Xcode)
 ├── server.js                 # Express static host for the built dist/ (EB)
-├── capacitor.config.ts       # Capacitor config (points iOS shell at the Vercel URL)
+├── capacitor.config.ts       # Capacitor config (prod BUNDLES dist/; dev/preview load a remote URL)
 ├── vite.config.ts            # Vite config
 ├── vercel.json               # Vercel SPA rewrites + Bluetooth Permissions-Policy header
 └── .ebextensions/            # Elastic Beanstalk build config (legacy)
@@ -151,17 +151,19 @@ Vercel runs `vite build` (`vercel-build` script) and serves `dist/`. `vercel.jso
 
 ### iOS (Capacitor + TestFlight)
 
-`capacitor.config.ts` currently points the iOS shell at the live Vercel URL (`server.url`), so the app loads the deployed web build — no rebuild needed for content changes.
-
-For a fully offline/bundled build, remove the `server` block, then:
+**Production builds bundle `dist/` into the binary.** They set no `server.url`, so the app runs from `capacitor://localhost` and serves the assets `cap sync` copied into the native project.
 
 ```bash
-npm run build
-npx cap sync ios
-npx cap open ios       # opens Xcode to archive for TestFlight
+npm run cap:prod      # build dist/ + sync it into the native project
+npm run preflight     # prove the repo is archivable — exit 0 or stop
+npx cap open ios      # then Product ▸ Archive
 ```
 
-See `Platform.md` for platform-detection details and Xcode status-bar notes.
+`npm run cap:dev` and `npm run cap:preview` still load a remote URL — live reload and on-device smoke testing are the reason those modes exist. **Only those two modes set `server.url`. Do not add it back to the production path**: when the UI is fetched at runtime, every deploy changes the reviewed app without review, which is App Review Guideline 2.5.2 and is enforced by removal rather than rejection.
+
+Two consequences of bundling: firmware under `public/firmware/**` now ships inside the IPA, so a firmware bump is an App Store release; and because `capacitor://localhost` is a different origin from the website, any URL that leaves the app must be absolute — use `publicUrl()` from `src/lib/publicOrigin.ts`.
+
+Full archive and submission procedure: `app-store/RUNBOOK.md`. See `Platform.md` for platform-detection details and Xcode status-bar notes.
 
 ### Elastic Beanstalk (legacy)
 

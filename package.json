@@ -20,6 +20,8 @@
     "ios:prod": "npm run build && cap sync ios && cap open ios",
     "ios:preview": "CAP_ENV=preview npm run build && CAP_ENV=preview cap sync ios && cap open ios",
     "typecheck": "tsc --noEmit",
+    "preflight": "node scripts/preflight-archive.mjs",
+    "shots:appstore": "node scripts/appstore-screenshots.mjs",
     "audit": "node scripts/audit.mjs",
     "audit:working": "node scripts/audit.mjs --working",
     "prepare": "simple-git-hooks"

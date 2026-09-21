@@ -6,8 +6,15 @@
 	<string>$(CAPACITOR_DEBUG)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
+
+	<!-- Home-screen name, independent of the App Store listing name (that one
+	     is set in App Store Connect and can be longer).
+	     ⚠️ "Trench Sports" is 13 characters; iOS truncates home-screen labels
+	     at roughly 12 and will render it "Trench Spo…". If that bothers you,
+	     change this one string to "Trench" — nothing else depends on it. -->
 	<key>CFBundleDisplayName</key>
-	<string>Trench Demo</string>
+	<string>Trench Sports</string>
+
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,17 +31,41 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>NSBluetoothAlwaysUsageDescription</key>
-	<string>Trench needs Bluetooth to connect to the adapter.</string>
 
-	<!-- ✅ FIX 1: arm64 replaces armv7. All iPhones since 2013 are arm64.     -->
+	<!-- ── Permission purpose strings ──────────────────────────────────────── -->
+	<!-- Apple rejects vague purpose strings (Guideline 5.1.1). Each one below   -->
+	<!-- names WHAT is accessed and WHY, in the user's terms, not ours.          -->
+
+	<!-- BLE. Required: the app's entire capture path is a Bluetooth link to the -->
+	<!-- Trench adapter. Without this key the first scan kills the app.          -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Trench Sports connects to your Trench adapter over Bluetooth to record impacts from the training bag in real time.</string>
+
+	<!-- Location. Required: src/pages/mobile/home.tsx calls                     -->
+	<!-- navigator.geolocation.getCurrentPosition() at session start to stamp    -->
+	<!-- the session with where it was recorded (Settings ▸ Location, on by      -->
+	<!-- default). A WKWebView geolocation call with no purpose string here      -->
+	<!-- terminates the app, so this key is load-bearing, not cosmetic.          -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Trench Sports tags each training session with the location it was recorded so coaches can tell field, weight-room and facility sessions apart. You can turn this off in Session Settings.</string>
+
+	<!-- ── Export compliance ───────────────────────────────────────────────── -->
+	<!-- The app uses only HTTPS/TLS, which is exempt encryption. Declaring it   -->
+	<!-- here stops App Store Connect asking the compliance question on every    -->
+	<!-- single build upload. If you ever add non-exempt cryptography (your own  -->
+	<!-- cipher, or encryption beyond protecting the transport), this must       -->
+	<!-- change to <true/> and you must file a CCATS/year-end report.            -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+
+	<!-- ✅ arm64 replaces armv7. All iPhones since 2013 are arm64.             -->
 	<!-- armv7 would block modern devices and cause App Store warnings.         -->
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>
 	</array>
 
-	<!-- ✅ FIX 2: Light status bar text/icons (white) for your dark UI.        -->
+	<!-- ✅ Light status bar text/icons (white) for your dark UI.               -->
 	<!-- UIViewControllerBasedStatusBarAppearance = false lets this key take    -->
 	<!-- effect globally. Capacitor's WKWebView will respect it.               -->
 	<key>UIViewControllerBasedStatusBarAppearance</key>
@@ -46,12 +77,40 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+
+	<!-- iPhone: PORTRAIT ONLY for 1.0.                                         -->
+	<!-- Landscape was advertised here, which means App Review rotates the      -->
+	<!-- device and judges what it sees. home.tsx and session.tsx do carry a    -->
+	<!-- short-screen branch (@media max-height:520px) so the capture screens   -->
+	<!-- would have survived — but login, onboarding and the dashboard have no  -->
+	<!-- landscape handling at all, and those are the screens a reviewer hits   -->
+	<!-- first. Advertising an orientation the app does not actually support is -->
+	<!-- a 2.4.x rejection.                                                     -->
+	<!-- To restore landscape later: add the two Landscape strings back, and    -->
+	<!-- check login/onboarding/dashboard rotated on a real device first.       -->
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
-		<string>UIInterfaceOrientationLandscapeLeft</string>
-		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- iPad: ALL FOUR orientations are mandatory, not a preference.            -->
+	<!-- TARGETED_DEVICE_FAMILY is "1,2" (iPhone + iPad), so App Store          -->
+	<!-- validation enforces the iPad multitasking rule: an iPad app must       -->
+	<!-- advertise Portrait, PortraitUpsideDown, LandscapeLeft and              -->
+	<!-- LandscapeRight, or upload fails with error 90474. Removing any one of  -->
+	<!-- these four strings will break the next archive upload.                 -->
+	<!--                                                                        -->
+	<!-- The old opt-out (UIRequiresFullScreen = true) no longer works: under    -->
+	<!-- the iOS 26 SDK that key is ignored and every iPad app is resizable.     -->
+	<!-- The only way back to portrait-only is TARGETED_DEVICE_FAMILY = 1        -->
+	<!-- (iPhone-only, iPad runs it in compatibility mode).                      -->
+	<!--                                                                        -->
+	<!-- ⚠️ OPEN RISK: the app has no iPad or landscape layout. isMobile()       -->
+	<!-- returns true whenever Capacitor is native (src/lib/isMobile.ts), so an  -->
+	<!-- iPad renders the phone UI stretched across 1024–1366pt. home.tsx and    -->
+	<!-- session.tsx have a short-screen branch (@media max-height:520px), but   -->
+	<!-- login, onboarding and the dashboard have no landscape handling at all,  -->
+	<!-- and those are the first screens a reviewer sees. Guideline 2.4.x /      -->
+	<!-- 4.0 risk. The real fix is an iPad breakpoint before review.             -->
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>

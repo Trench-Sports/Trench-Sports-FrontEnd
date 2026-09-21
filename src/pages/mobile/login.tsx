@@ -2,6 +2,7 @@
 import React, { useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../../supabaseClient";
+import { publicUrl } from "../../lib/publicOrigin";
 
 type LoginForm = {
   email: string;
@@ -96,9 +97,12 @@ export default function LoginPage() {
 
     setBusy(true);
     try {
-      // You can customize redirectTo to your actual reset page route
+      // Must be the public site, NOT window.location.origin: in a bundled
+      // native build the origin is capacitor://localhost, which Supabase will
+      // reject as an unlisted redirect. The reset link is opened from an email,
+      // on whatever device the coach has to hand — it has to land on the web.
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: publicUrl("reset-password"),
       });
       if (error) {
         setErr(error.message || "Could not send reset email.");

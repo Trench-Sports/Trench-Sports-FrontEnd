@@ -107,26 +107,40 @@ function MyComponent() {
 
 ## 7. Capacitor config — important note
 
-Your current `capacitor.config.ts` points at the production domain:
+> ⚠️ **This section used to say the opposite.** It previously told you to keep
+> `server.url` for TestFlight. That is no longer correct and must not be done.
 
-```ts
-server: {
-  url: 'https://www.trenchsports.ai',   // CAP_ENV=preview → the -puce Vercel URL
-  cleartext: false,
-  allowNavigation: [
-    'www.trenchsports.ai',
-    'trenchsports.ai',
-    'trench-sports-front-end-puce.vercel.app',
-  ]
-}
-```
+`capacitor.config.ts` is environment-aware, and **production bundles `dist/`
+into the binary** — no `server` key at all, so the app runs from
+`capacitor://localhost`.
 
-**For TestFlight**, keep this. The app loads your live Vercel deploy.
-For a **fully offline/bundled build**, remove the `server` block and run:
+| Command | `CAP_ENV` | What the app loads |
+|---|---|---|
+| `npm run cap:dev` | `development` | `http://localhost:5173` (live reload) |
+| `npm run cap:preview` | `preview` | the `-puce` Vercel deployment |
+| `npm run cap:prod` | *(unset)* | **the bundled `dist/`. This is what you archive.** |
+
+An unrecognised `CAP_ENV` falls through to bundled, so a typo produces a
+shippable build rather than a remote-loading one.
+
+**Do not add `server.url` back to the production path.** When the UI is fetched
+at runtime, every Vercel deploy changes the reviewed app without review — App
+Review Guideline 2.5.2, enforced by removal rather than rejection. `npm run
+preflight` fails the build if a remote-loading config reaches the native
+project.
+
+`allowNavigation` in particular must not survive into a bundled build. Its job
+was to keep an apex→www redirect inside the WKWebView while the app *was* the
+website. Bundled, it does the opposite: any in-app link to `trenchsports.ai`
+navigates the webview off the bundle and onto the live site, permanently, taking
+the native BLE bridge with it. `src/pages/terms.tsx` contains exactly such a
+link.
+
 ```bash
-npm run build && npx cap sync ios
+npm run cap:prod && npm run preflight && npx cap open ios
 ```
-Then open in Xcode and archive for TestFlight.
+
+Full procedure: `app-store/RUNBOOK.md`.
 
 ---
 
