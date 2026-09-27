@@ -62,7 +62,9 @@ import {
   modelBadge,
 } from "../../bluetooth/models";
 import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
+import { muteImuTelemetry } from "../../bluetooth/imuTelemetry";
 import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
+import BagInfoPills from "../../components/bagInfoPills";
 import {
   parseImpactFrame,
   captureFromHello,
@@ -3396,6 +3398,9 @@ export default function Home() {
       const helloBatt = parseBatteryPct(obj);
       if (helloBatt !== undefined) setBatteryPct(helloBatt);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
+      // The app never reads {"type":"imu"}; stop the 10 Hz stream to save the
+      // bag's battery. Re-sent on every hello — the bag forgets it on reboot.
+      if (info.hasAccel) void muteImuTelemetry(connRef.current, getCharUuids().RX);
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
       //   1. Claimed by a different program → disconnect immediately, show error.
@@ -3737,6 +3742,7 @@ export default function Home() {
       const slotBatt = parseBatteryPct(obj);
       if (slotBatt !== undefined) slot.batteryPct = slotBatt;
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
+      if (slot.device.hasAccel) void muteImuTelemetry(slot.conn, getCharUuids().RX);
       bumpSlots();
       return;
     }
@@ -5045,42 +5051,13 @@ export default function Home() {
                            : bleStatus === "scanning"   ? "0 0 6px 3px rgba(255,200,0,0.45)" : "none",
                   animation: bleStatus === "scanning" ? "tsBlink 1s ease-in-out infinite" : "none",
                 }} />
-                <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600 }}>{statusConfig.label}</span>
+                <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600, whiteSpace: "nowrap" }}>{statusConfig.label}</span>
                 {deviceInfo && bleStatus === "connected" && (
-                  <div style={{
-                    marginLeft: "auto",
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "2px 9px", borderRadius: 7,
-                    background: isDark ? "rgba(180,0,255,0.10)" : "rgba(180,0,255,0.08)",
-                    border: isDark ? "1px solid rgba(180,0,255,0.25)" : "1px solid rgba(180,0,255,0.45)",
-                    fontSize: 11, fontWeight: 700, color: isDark ? "#b400ff" : "#8a00c2",
-                  }}>
-                    {deviceInfo.id}
-                    <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
-                      v{deviceInfo.fw}
-                    </span>
-                    {/* Hardware generation badge — II / III / IV / V */}
-                    {(() => {
-                      // Per-model accent + display rate (shared with the session pages).
-                      // IV/V (native C) show their live reported scan rate from the hello
-                      // "hz" field rather than the nominal 400.
-                      const badge = modelBadge(deviceInfo.hw, deviceInfo.samplingHz);
-                      // Light mode: the neon rgb reads fine on dark but washes out on
-                      // white, so use a darker ink + stronger fill/border for contrast.
-                      return (
-                        <span style={{
-                          fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                          color: isDark ? `rgb(${badge.rgb})` : badge.ink,
-                          background: isDark ? `rgba(${badge.rgb},0.12)` : `rgba(${badge.rgb},0.18)`,
-                          border: isDark ? `1px solid rgba(${badge.rgb},0.30)` : `1px solid rgba(${badge.rgb},0.55)`,
-                          borderRadius: 4, padding: "1px 5px",
-                        }}>
-                          {badge.label}
-                        </span>
-                      );
-                    })()}
-                    <BatteryBadge pct={batteryPct} isDark={isDark} />
-                  </div>
+                  <BagInfoPills
+                    id={deviceInfo.id} fw={deviceInfo.fw}
+                    hw={deviceInfo.hw} samplingHz={deviceInfo.samplingHz}
+                    batteryPct={batteryPct} isDark={isDark}
+                  />
                 )}
               </div>
 

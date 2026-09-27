@@ -50,9 +50,22 @@ export function scanProfileFor(hw: string | undefined | null): ScanTiming {
 // fall back to the adapter's nominal profile. The SI ceiling stays fixed
 // (SI_FASTEST_SCAN_HZ) for cross-device comparability — only the per-device
 // rise-time floor adapts here.
+//
+// A reported hz below half the nominal is not trusted. Firmware before 1.4.5-c
+// filled "hz" from the last 1 s window with any frames in it, which is the
+// partial window a session stops in, so the hello after a reconnect could say
+// e.g. 119 on a ~437 Hz Model V. Stored as sampling_hz, that also made the
+// rise-time floor 3-4x too long. No healthy IV/V scans below 200 Hz (the
+// slowest measured unit ran ~332), so the nominal is the better number there.
+const MIN_TRUSTED_HZ_FRACTION = 0.5;
+
 export function resolveScanTiming(hw: string | undefined | null, hz?: unknown): ScanTiming {
   const base = scanProfileFor(hw);
   if (typeof hz === "number" && Number.isFinite(hz) && hz > 0) {
+    if (hz < base.samplingHz * MIN_TRUSTED_HZ_FRACTION) {
+      console.warn(`[BLE] hello hz=${hz} implausible for hw=${hw} — using nominal ${base.samplingHz}`);
+      return base;
+    }
     return { samplingHz: hz, scanPeriodMs: +(1000 / hz).toFixed(3) };
   }
   return base;
