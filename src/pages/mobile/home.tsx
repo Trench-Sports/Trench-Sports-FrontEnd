@@ -62,6 +62,7 @@ import {
   modelBadge,
 } from "../../bluetooth/models";
 import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
+import { muteImuTelemetry } from "../../bluetooth/imuTelemetry";
 import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
 import BagInfoPills from "../../components/bagInfoPills";
 import {
@@ -3397,6 +3398,9 @@ export default function Home() {
       const helloBatt = parseBatteryPct(obj);
       if (helloBatt !== undefined) setBatteryPct(helloBatt);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
+      // The app never reads {"type":"imu"}; stop the 10 Hz stream to save the
+      // bag's battery. Re-sent on every hello — the bag forgets it on reboot.
+      if (info.hasAccel) void muteImuTelemetry(connRef.current, getCharUuids().RX);
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
       //   1. Claimed by a different program → disconnect immediately, show error.
@@ -3738,6 +3742,7 @@ export default function Home() {
       const slotBatt = parseBatteryPct(obj);
       if (slotBatt !== undefined) slot.batteryPct = slotBatt;
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
+      if (slot.device.hasAccel) void muteImuTelemetry(slot.conn, getCharUuids().RX);
       bumpSlots();
       return;
     }
