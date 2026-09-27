@@ -61,6 +61,8 @@ import {
   isNativeCFor,
   modelBadge,
 } from "../../bluetooth/models";
+import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
+import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
 import {
   parseImpactFrame,
   captureFromHello,
@@ -1301,20 +1303,6 @@ type DeviceInfo = {
   hasAccel:     boolean;       // ADXL372 fitted — Model V only (hardware presence)
 } | null;
 
-// Extract a battery percentage (0–100) from any device frame. Firmware does not
-// report battery today, so the exact field name is not yet fixed — accept the
-// common candidates (`batt` / `battery` / `soc` / `batt_pct`) so whichever key
-// the firmware ships lights up the indicator with no further frontend change.
-// Returns null when no recognized field is present or the value isn't a finite
-// number, which keeps the UI in its "no reading" (hidden) state.
-function parseBatteryPct(obj: any): number | null {
-  if (!obj || typeof obj !== "object") return null;
-  const raw = obj.batt ?? obj.battery ?? obj.soc ?? obj.batt_pct ?? obj.battery_pct;
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return null;
-  return Math.max(0, Math.min(100, Math.round(n)));
-}
-
 type Athlete = {
   id: string;
   first_name: string;
@@ -1445,6 +1433,7 @@ type SlotState = {
   frames:       BleFrame[];                // own buffer; uploaded as its own session
   impacts:      ImpactFrame[];             // TSA-V accelerometer impacts for this slot
   accelCapture: AccelCapture | null;       // capture conditions from this slot's hello
+  batteryPct:   number | null;             // 0–100 from hello / {type:"batt"}; null = no reading
   frameIndex:   number;                    // increments per accepted frame
   startedAtMs:  number | null;             // set at startSession() broadcast
   errorMessage: string | null;
@@ -1470,6 +1459,7 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     sessionId:    "",        // populated at startSession
     frames:       [],
     impacts:      [],
+    batteryPct:   null,
     accelCapture: null,
     frameIndex:   0,
     startedAtMs:  null,
@@ -2967,6 +2957,8 @@ export default function Home() {
   // fake number. Populated by parseBatteryPct() from the hello packet or a
   // periodic {type:"batt"} frame; cleared on every disconnect.
   const [batteryPct,   setBatteryPct]   = useState<number | null>(null);
+  // Low-battery warnings the coach closed, bag key → level dismissed at.
+  const [battDismissed, setBattDismissed] = useState<Record<string, BattAlertLevel>>({});
 
   // ── OTA ───────────────────────────────────────────────────────────────────────
   type OtaState = "idle" | "available" | "updating" | "done" | "error";
@@ -3402,7 +3394,7 @@ export default function Home() {
       // actually present so a batt-less hello doesn't wipe a reading that a
       // periodic {type:"batt"} frame already delivered.
       const helloBatt = parseBatteryPct(obj);
-      if (helloBatt != null) setBatteryPct(helloBatt);
+      if (helloBatt !== undefined) setBatteryPct(helloBatt);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
@@ -3483,12 +3475,12 @@ export default function Home() {
       return;
     }
     // ── Battery telemetry ──────────────────────────────────────────────────
-    // Dedicated periodic frame, e.g. { type:"batt", batt:83 }. Firmware does
-    // not send this yet; when it does, the indicator updates live with no
-    // further change here. Ignore malformed values (parseBatteryPct → null).
+    // Periodic frame from TSA-V fw 1.4.4-c+, every 30 s:
+    // { type:"batt", batt_mv:3912, batt_pct:64 }. batt_pct null = no cell →
+    // clear the reading. See src/bluetooth/battery.ts.
     if (obj.type === "batt" || obj.type === "battery") {
       const pct = parseBatteryPct(obj);
-      if (pct != null) setBatteryPct(pct);
+      if (pct !== undefined) setBatteryPct(pct);
       return;
     }
 
@@ -3742,9 +3734,18 @@ export default function Home() {
         hasAccel:     resolveHasAccel(hw, obj),
       };
       slot.accelCapture = captureFromHello(obj, slot.device.hasAccel, timing.samplingHz);
+      const slotBatt = parseBatteryPct(obj);
+      if (slotBatt !== undefined) slot.batteryPct = slotBatt;
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
       return;
+    }
+
+    // Battery telemetry — same frame as the primary path, per slot.
+    if (obj.type === "batt" || obj.type === "battery") {
+      const pct = parseBatteryPct(obj);
+      if (pct !== undefined) { slot.batteryPct = pct; bumpSlots(); }
+      continue;
     }
 
     // TSA-V accelerometer impact — same handling as the primary path, per slot.
@@ -5078,45 +5079,7 @@ export default function Home() {
                         </span>
                       );
                     })()}
-                    {/* Battery — only when the device has reported a level this  */}
-                    {/* connection. Hidden (not zeroed) when no reading exists.    */}
-                    {batteryPct != null && (() => {
-                      // Green ≥50, amber 20–49, red <20.
-                      const c = batteryPct >= 50 ? { rgb: "0,255,136", ink: "#00965a" }
-                              : batteryPct >= 20 ? { rgb: "255,200,0", ink: "#a67c00" }
-                              :                     { rgb: "255,68,68", ink: "#c0392b" };
-                      return (
-                        <span
-                          title={`Bag battery: ${batteryPct}%`}
-                          style={{
-                            display: "inline-flex", alignItems: "center", gap: 4,
-                            fontSize: 9, fontWeight: 800, letterSpacing: "0.04em",
-                            color: isDark ? `rgb(${c.rgb})` : c.ink,
-                            background: isDark ? `rgba(${c.rgb},0.12)` : `rgba(${c.rgb},0.18)`,
-                            border: isDark ? `1px solid rgba(${c.rgb},0.30)` : `1px solid rgba(${c.rgb},0.55)`,
-                            borderRadius: 4, padding: "1px 5px",
-                          }}
-                        >
-                          {/* Battery glyph: body + proportional fill + terminal nub */}
-                          <span style={{
-                            position: "relative", width: 16, height: 8,
-                            border: "1px solid currentColor", borderRadius: 2,
-                            display: "inline-block", boxSizing: "border-box",
-                          }}>
-                            <span style={{
-                              position: "absolute", top: 1, left: 1, bottom: 1,
-                              width: `calc(${batteryPct}% - 2px)`, minWidth: 1,
-                              background: "currentColor", borderRadius: 1,
-                            }} />
-                            <span style={{
-                              position: "absolute", right: -3, top: 2, bottom: 2,
-                              width: 2, background: "currentColor", borderRadius: 1,
-                            }} />
-                          </span>
-                          {batteryPct}%
-                        </span>
-                      );
-                    })()}
+                    <BatteryBadge pct={batteryPct} isDark={isDark} />
                   </div>
                 )}
               </div>
@@ -5176,8 +5139,9 @@ export default function Home() {
                           boxShadow: s.status === "connected" ? "0 0 4px 1px rgba(0,255,136,0.5)" : "none",
                         }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                          <div style={{ fontWeight: 600, color: "var(--text)", display: "flex", alignItems: "center", gap: 6 }}>
                             {s.device?.id ?? s.bleName}
+                            <BatteryBadge pct={s.batteryPct} isDark={isDark} />
                           </div>
                           <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace" }}>
                             {s.device?.hw ? `${s.device.hw} · ` : ""}
@@ -5203,6 +5167,17 @@ export default function Home() {
               {/* Mode selector — visible once connected, locked during active session */}
               {bleStatus === "connected" && (
                 <>
+                  {/* ── Low-battery warning — primary bag + every slot ─────────── */}
+                  <LowBatteryBanner
+                    alerts={lowBatteryAlerts([
+                      { key: deviceInfo?.id ?? "primary", label: deviceInfo?.id ?? "Bag 1", pct: batteryPct },
+                      ...(MULTIBAG_ENABLED ? [...slotsRef.current.values()].map(sl => ({
+                        key: sl.device?.id ?? sl.id, label: sl.device?.id ?? sl.bleName, pct: sl.batteryPct,
+                      })) : []),
+                    ], battDismissed)}
+                    onDismiss={a => setBattDismissed(d => ({ ...d, [a.key]: a.level }))}
+                  />
+
                   {/* ── OTA firmware banner ─────────────────────────────────── */}
                   {otaState === "available" && !sessionActive && (
                     <div style={{
