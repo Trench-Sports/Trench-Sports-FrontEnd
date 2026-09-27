@@ -4,11 +4,16 @@
 // desktop session page, the mobile session page and mobile home. Protocol and
 // thresholds live in src/bluetooth/battery.ts.
 
+import type React from "react";
 import { batteryTone, BATT_LOW_PCT, type BattAlert } from "../bluetooth/battery";
 
 // Glyph (body + proportional fill + terminal nub) and percentage. Renders
 // nothing when the bag has not reported a level — hidden, never zeroed.
-export default function BatteryBadge({ pct, isDark }: { pct: number | null | undefined; isDark: boolean }) {
+export default function BatteryBadge({ pct, isDark, style }: {
+  pct: number | null | undefined;
+  isDark: boolean;
+  style?: React.CSSProperties;  // layout overrides, e.g. to size it as a BagInfoPills cell
+}) {
   if (pct == null) return null;
   const c = batteryTone(pct);
   return (
@@ -21,6 +26,7 @@ export default function BatteryBadge({ pct, isDark }: { pct: number | null | und
         background: isDark ? `rgba(${c.rgb},0.12)` : `rgba(${c.rgb},0.18)`,
         border: isDark ? `1px solid rgba(${c.rgb},0.30)` : `1px solid rgba(${c.rgb},0.55)`,
         borderRadius: 4, padding: "1px 5px",
+        ...style,
       }}
     >
       <span style={{

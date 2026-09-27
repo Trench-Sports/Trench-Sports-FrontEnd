@@ -50,6 +50,7 @@ import {
 } from "../../bluetooth/models";
 import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
 import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
+import BagInfoPills from "../../components/bagInfoPills";
 import {
   parseImpactFrame,
   captureFromHello,
@@ -5241,37 +5242,13 @@ export default function Session() {
                            : bleStatus === "scanning"   ? "0 0 6px 3px rgba(255,200,0,0.45)" : "none",
                   animation: bleStatus === "scanning" ? "tsBlink 1s ease-in-out infinite" : "none",
                 }} />
-                <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600 }}>{statusConfig.label}</span>
+                <span style={{ fontSize: 13, color: statusConfig.color, fontWeight: 600, whiteSpace: "nowrap" }}>{statusConfig.label}</span>
                 {deviceInfo && bleStatus === "connected" && (
-                  <div style={{
-                    marginLeft: "auto",
-                    display: "inline-flex", alignItems: "center", gap: 5,
-                    padding: "2px 9px", borderRadius: 7,
-                    background: "rgba(180,0,255,0.10)",
-                    border: "1px solid rgba(180,0,255,0.25)",
-                    fontSize: 11, fontWeight: 700, color: "#b400ff",
-                  }}>
-                    {deviceInfo.id}
-                    <span style={{ fontWeight: 400, color: "var(--muted)", fontSize: 10 }}>
-                      v{deviceInfo.fw}
-                    </span>
-                    {/* Hardware generation badge — II / III / IV / V */}
-                    {(() => {
-                      const badge = modelBadge(deviceInfo.hw, deviceInfo.samplingHz);
-                      return (
-                        <span style={{
-                          fontSize: 9, fontWeight: 800, letterSpacing: "0.06em",
-                          color: `rgb(${badge.rgb})`,
-                          background: `rgba(${badge.rgb},0.12)`,
-                          border: `1px solid rgba(${badge.rgb},0.30)`,
-                          borderRadius: 4, padding: "1px 5px",
-                        }}>
-                          {badge.label}
-                        </span>
-                      );
-                    })()}
-                    <BatteryBadge pct={batteryPct} isDark={isDark} />
-                  </div>
+                  <BagInfoPills
+                    id={deviceInfo.id} fw={deviceInfo.fw}
+                    hw={deviceInfo.hw} samplingHz={deviceInfo.samplingHz}
+                    batteryPct={batteryPct} isDark={isDark}
+                  />
                 )}
               </div>
 
