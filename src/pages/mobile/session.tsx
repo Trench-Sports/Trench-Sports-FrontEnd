@@ -48,6 +48,8 @@ import {
   isNativeCFor,
   modelBadge,
 } from "../../bluetooth/models";
+import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
+import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
 import {
   parseImpactFrame,
   captureFromHello,
@@ -1580,6 +1582,7 @@ type SlotState = {
   frames:       BleFrame[];                // own buffer; uploaded as its own session
   impacts:      ImpactFrame[];             // TSA-V accelerometer impacts for this slot
   accelCapture: AccelCapture | null;       // capture conditions from this slot's hello
+  batteryPct:   number | null;             // 0–100 from hello / {type:"batt"}; null = no reading
   frameIndex:   number;                    // increments per accepted frame
   startedAtMs:  number | null;             // set at startSession() broadcast
   errorMessage: string | null;
@@ -1609,6 +1612,7 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     sessionId:    "",        // populated at startSession
     frames:       [],
     impacts:      [],
+    batteryPct:   null,
     accelCapture: null,
     frameIndex:   0,
     startedAtMs:  null,
@@ -2938,6 +2942,13 @@ export default function Session() {
   const [bleStatus,    setBleStatus]    = useState<BleStatus>("idle");
   const [bleSupported, setBleSupported] = useState(true);
   const [deviceInfo,   setDeviceInfo]   = useState<DeviceInfo>(null);
+  // Primary bag battery, 0–100. null = no reading this connection (older
+  // firmware, or no cell on J3.3) — the badge hides rather than showing a fake
+  // number. From hello or the periodic {type:"batt"} frame; cleared on every
+  // disconnect alongside deviceInfo. See src/bluetooth/battery.ts.
+  const [batteryPct,   setBatteryPct]   = useState<number | null>(null);
+  // Low-battery warnings the coach closed, bag key → level dismissed at.
+  const [battDismissed, setBattDismissed] = useState<Record<string, BattAlertLevel>>({});
 
   // ── OTA ───────────────────────────────────────────────────────────────────────
   type OtaState = "idle" | "available" | "updating" | "done" | "error";
@@ -3353,6 +3364,10 @@ export default function Session() {
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
+      // Battery rides on the hello from fw 1.4.4-c. Only apply when present so a
+      // batt-less hello (older firmware) doesn't wipe a reading.
+      const helloBatt = parseBatteryPct(obj);
+      if (helloBatt !== undefined) setBatteryPct(helloBatt);
       // Capture conditions for impact_events rows. Null when the adapter has no
       // accelerometer, or declares one without usable detection thresholds.
       accelCaptureRef.current = captureFromHello(obj, info.hasAccel, timing.samplingHz);
@@ -3377,6 +3392,7 @@ export default function Session() {
           if (existing?.program_id && existing.program_id !== myProgramId) {
             console.warn(`[devices] ${deviceId} is claimed by another program — blocking`);
             setDeviceInfo(null);
+            setBatteryPct(null);
             deviceInfoRef.current = null;
             setBleStatus("disconnected");
             setBleError("This device is registered to a different program and can't be used here.");
@@ -3427,6 +3443,15 @@ export default function Session() {
     if (obj.type === "auth_chal") {
       otaChalRef.current?.(typeof obj.nonce === "string" ? obj.nonce : null);
       otaChalRef.current = null;
+      return;
+    }
+    // ── Battery telemetry ──────────────────────────────────────────────────
+    // Periodic frame from TSA-V fw 1.4.4-c+, every 30 s:
+    // { type:"batt", batt_mv:3912, batt_pct:64 }. batt_pct null = no cell →
+    // clear the reading. See src/bluetooth/battery.ts.
+    if (obj.type === "batt" || obj.type === "battery") {
+      const pct = parseBatteryPct(obj);
+      if (pct !== undefined) setBatteryPct(pct);
       return;
     }
     if (obj.type === "auth_ok" || obj.type === "auth_err") {
@@ -3685,9 +3710,18 @@ export default function Session() {
         hasAccel:     resolveHasAccel(hw, obj),
       };
       slot.accelCapture = captureFromHello(obj, slot.device.hasAccel, timing.samplingHz);
+      const slotBatt = parseBatteryPct(obj);
+      if (slotBatt !== undefined) slot.batteryPct = slotBatt;
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
       bumpSlots();
       return;
+    }
+
+    // Battery telemetry — same frame as the primary path, per slot.
+    if (obj.type === "batt" || obj.type === "battery") {
+      const pct = parseBatteryPct(obj);
+      if (pct !== undefined) { slot.batteryPct = pct; bumpSlots(); }
+      continue;
     }
 
     // TSA-V accelerometer impact — same handling as the primary path, per slot.
@@ -3827,6 +3861,7 @@ export default function Session() {
             });
             setBleStatus("disconnected");
             setDeviceInfo(null);
+            setBatteryPct(null);
             captureRef.current = false;
             connRef.current    = null;
             setSessionActive(false);
@@ -3857,6 +3892,7 @@ export default function Session() {
           });
           setBleStatus("disconnected");
           setDeviceInfo(null);
+          setBatteryPct(null);
           captureRef.current = false;
           connRef.current    = null;
           setSessionActive(false);
@@ -3935,6 +3971,7 @@ export default function Session() {
     // the next connection if a different hardware generation reconnects
     // before its hello packet arrives.
     setDeviceInfo(null);
+    setBatteryPct(null);
     deviceInfoRef.current = null;
     setBleStatus("disconnected");
   }, []);
@@ -5233,6 +5270,7 @@ export default function Session() {
                         </span>
                       );
                     })()}
+                    <BatteryBadge pct={batteryPct} isDark={isDark} />
                   </div>
                 )}
               </div>
@@ -5292,8 +5330,9 @@ export default function Session() {
                           boxShadow: s.status === "connected" ? "0 0 4px 1px rgba(0,255,136,0.5)" : "none",
                         }} />
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, color: "var(--text)" }}>
+                          <div style={{ fontWeight: 600, color: "var(--text)", display: "flex", alignItems: "center", gap: 6 }}>
                             {s.device?.id ?? s.bleName}
+                            <BatteryBadge pct={s.batteryPct} isDark={isDark} />
                           </div>
                           <div style={{ fontSize: 10, color: "var(--muted)", fontFamily: "monospace" }}>
                             {s.device?.hw ? `${s.device.hw} · ` : ""}
@@ -5319,6 +5358,17 @@ export default function Session() {
               {/* Mode selector — visible once connected, locked during active session */}
               {bleStatus === "connected" && (
                 <>
+                  {/* ── Low-battery warning — primary bag + every slot ─────────── */}
+                  <LowBatteryBanner
+                    alerts={lowBatteryAlerts([
+                      { key: deviceInfo?.id ?? "primary", label: deviceInfo?.id ?? "Bag 1", pct: batteryPct },
+                      ...(MULTIBAG_ENABLED ? [...slotsRef.current.values()].map(sl => ({
+                        key: sl.device?.id ?? sl.id, label: sl.device?.id ?? sl.bleName, pct: sl.batteryPct,
+                      })) : []),
+                    ], battDismissed)}
+                    onDismiss={a => setBattDismissed(d => ({ ...d, [a.key]: a.level }))}
+                  />
+
                   {/* ── OTA firmware banner ─────────────────────────────────── */}
                   {otaState === "available" && !sessionActive && (
                     <div style={{
