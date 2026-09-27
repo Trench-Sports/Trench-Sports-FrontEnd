@@ -535,9 +535,9 @@ export function IconBoxingGlove({ size = 24, className }: IconProps) {
 export function IconBluetoothScan({ size = 24, className }: IconProps) {
   return (
     <svg {...base(size)} className={className}>
-      <path d="m6 7 9 9-4.5 4.5V2.5L15 7l-9 9" />
-      <path d="M19.5 9.2a4 4 0 0 1 0 5.6" />
-      <path d="M22 6.7a7.5 7.5 0 0 1 0 10.6" />
+      <path d="m3 7 9 9-4.5 4.5V2.5L12 7l-9 9" />
+      <path d="M16.5 9.2a4 4 0 0 1 0 5.6" />
+      <path d="M19 6.7a7.5 7.5 0 0 1 0 10.6" />
     </svg>
   );
 }
