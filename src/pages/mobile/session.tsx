@@ -57,6 +57,7 @@ import {
   captureFromHello,
   buildImpactRows,
   summarizeImpacts,
+  processSessionImpacts,
   type ImpactFrame,
   type AccelCapture,
 } from "../../bluetooth/impacts";
@@ -1958,7 +1959,11 @@ async function uploadSession(opts: {
     }
   }
 
-  if (frames.length === 0) return;
+  if (frames.length === 0) {
+    // No events or summary to roll onto, but rebounds still get coalesced.
+    await processSessionImpacts(supabase, sessionId, impactRows.length);
+    return;
+  }
 
   // ── 2. events — enriched ──────────────────────────────────────────────────
   // Pre-compute per-event derived values in one pass. eventTimingFromFrame
@@ -2374,6 +2379,9 @@ async function uploadSession(opts: {
     sessionUploadStageFailed({ session_id: sessionId, stage: "session_summaries", error_code: sumErr.message?.slice(0, 64) });
     throw new Error(`session_summaries: ${sumErr.message}`);
   }
+
+  // ── 5. impact post-processing — after the last insert it depends on ───────
+  await processSessionImpacts(supabase, sessionId, impactRows.length);
 
   sessionUploadSucceeded({
     session_id:  sessionId,

@@ -81,9 +81,10 @@
 -- Deliberately NOT in this file:
 --   • impact_waveforms — blocked on the FIFO drain path (see §1, sample_source).
 --   • The Strength Index function — blocked on waveforms and on WS6.
---   • Any automatic call of the §5-§8 functions from the client. The pairing
---     window is still a guess (see §6); running it on upload would bake that
---     guess into production data before it is measured.
+--   • The call of the §5-§8 functions on upload. That is
+--     supabase/process_session_impacts.sql, which runs them at the provisional
+--     windows and fully recomputes, so re-running with measured windows later
+--     leaves no trace of the guess (see §6).
 -- ───────────────────────────────────────────────────────────────────────────
 
 
@@ -447,8 +448,10 @@ comment on function public.mark_impact_rebounds(text, integer) is
 -- It is left at 60 anyway, because narrowing a guess to a different guess is
 -- not an improvement. Instead every match records pair_delta_ms, so the real
 -- distribution is queryable from production data (§9) — run wide once, read
--- the p99, then re-run narrow. Do NOT call this automatically on upload until
--- that number exists.
+-- the p99, then re-run narrow with reprocess_session_impacts() — calling this
+-- function again does nothing, since it only pairs rows where event_id is null.
+-- It IS now called on upload at this provisional window, via
+-- process_session_impacts.sql, which clears pairings before re-linking.
 --
 -- p_primaries_only: rebounds are additional FSM edges of a strike the matrix
 -- saw once, so letting them compete for events manufactures mispairs. Run
@@ -545,10 +548,9 @@ comment on function public.rollup_impacts_to_events(text) is
 -- ───────────────────────────────────────────────────────────────────────────
 -- §8. Recompute the session_summaries rollup
 -- ───────────────────────────────────────────────────────────────────────────
--- The app writes these inline with its summary insert (they are pure
--- aggregates over impacts it already holds, and need no pairing). This exists
--- for backfill and repair, and to recompute after mark_impact_rebounds()
--- changes which rows are primary.
+-- The app does NOT write these inline: they are defined over primary impacts,
+-- which only exist after mark_impact_rebounds(). process_session_impacts.sql
+-- runs this after upload; call it directly for backfill and repair.
 create or replace function public.rollup_impacts_to_session_summary(p_session_id text)
 returns integer
 language plpgsql
@@ -712,7 +714,7 @@ notify pgrst, 'reload schema';
 --      select public.link_impacts_to_events('<session_id>', 60);
 --      select * from public.impact_pair_delta_stats('<session_id>');   -- read p99
 --      select * from public.impact_seq_gaps('<session_id>');           -- loss floor
---      select public.link_impacts_to_events('<session_id>', <p99>);    -- re-run narrow
---      select public.rollup_impacts_to_events('<session_id>');
---      select public.rollup_impacts_to_session_summary('<session_id>');
+--      select public.reprocess_session_impacts('<session_id>', 150, <p99>);  -- re-run narrow
+--    (reprocess_session_impacts is in process_session_impacts.sql; it clears
+--     the first pass's pairings, then re-runs every step including both rollups.)
 -- 4. An anon upload from /m/home writes impact_events rows without error.
