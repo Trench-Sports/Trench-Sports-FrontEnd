@@ -45,6 +45,13 @@
 //     (mark_impact_rebounds) so it can be retuned and re-run over existing
 //     data without an app release.
 //   • Impulse and jerk. Not derivable from a peak.
+//
+// processSessionImpacts() at the bottom is the one exception to "pure": it is
+// the post-upload RPC, kept here so the three uploadSession() copies share one
+// call instead of three.
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { sessionUploadStageFailed } from "../lib/telemetryEvents";
 
 export type ImpactFrame = {
   // null on fw < 1.4.2-c, which did not number its records.
@@ -291,9 +298,9 @@ export function countImpactSeqGaps(ordered: ImpactFrame[]): number {
  * counts into those columns would inflate impact_count and deflate
  * mean_impact_g_mg, which is the specific error this design set out to avoid.
  *
- * They stay NULL until rollup_impacts_to_session_summary() runs after
- * mark_impact_rebounds(). NULL reads as "not measured"; a wrong number does
- * not announce itself at all.
+ * They stay NULL until processSessionImpacts() runs after upload (which
+ * runs mark_impact_rebounds() then rollup_impacts_to_session_summary()). NULL
+ * reads as "not measured"; a wrong number does not announce itself at all.
  *
  * accel_present is a fact from hello, not an inference from row count: an
  * adapter with an accelerometer that recorded zero impacts is a real and
@@ -305,4 +312,31 @@ export function summarizeImpacts(capture: AccelCapture | null): object {
     accel_present:   capture.present,
     accel_g_range_g: capture.gRangeG,
   };
+}
+
+/**
+ * Run the SQL impact pipeline for one uploaded session: rebound coalescing,
+ * pairing to matrix events, and the events / session_summaries accel rollups
+ * (supabase/process_session_impacts.sql).
+ *
+ * Call it after the LAST insert of the upload — pairing needs the events rows
+ * and the summary rollup needs the session_summaries row. Skipped when there
+ * were no impact rows, since every step would be a no-op.
+ *
+ * Never throws, for the same reason the impact_events insert does not: the
+ * matrix upload is already complete, and the outbox replays from a sessions
+ * insert that would now collide. A failure is reported to telemetry and the
+ * session can be re-run server side with reprocess_session_impacts().
+ */
+export async function processSessionImpacts(
+  client: SupabaseClient,
+  sessionId: string,
+  impactRowCount: number,
+): Promise<void> {
+  if (impactRowCount === 0) return;
+  const { error } = await client.rpc("process_session_impacts", { p_session_id: sessionId });
+  if (error) {
+    sessionUploadStageFailed({ session_id: sessionId, stage: "impact_processing", error_code: error.message?.slice(0, 64) });
+    console.warn(`[ACCEL] process_session_impacts failed, continuing: ${error.message}`);
+  }
 }
