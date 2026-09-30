@@ -51,10 +51,11 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <p>
-          You must be at least 13 years old to use the Services. Users between the ages of 13 and
-          17 may only use the Services as part of a program administered by an authorized Admin
-          whose account is in good standing. Users under 13 are not permitted to create personal
-          profiles or submit personal information.
+          You must be at least 18 years old to create an account or otherwise use the Services.
+          By creating an account, you represent that you are 18 or older. Individuals under 18 may
+          not create accounts, and we will close any account we learn belongs to someone under 18.
+          Athletes under 18 may only appear in the Services as roster records created and managed
+          by an authorized Admin or Coach of a Participating Organization.
         </p>
         <p>
           If you are signing up on behalf of a team, program, or organization (a "Participating
@@ -434,7 +435,7 @@ export default function Terms() {
               <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
                 <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
               </svg>
-              Last updated: March 2026
+              Last updated: September 2026
             </div>
             <div className="ts-termsMetaPill">
               <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>

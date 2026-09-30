@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { onboardingStepCompleted, inviteRedeemed, inviteRejected } from "../lib/telemetryEvents";
 import { readInvite, clearInvite, tokenPrefix, type StashedInvite } from "../lib/inviteToken";
+import { ageFromDob, isAdultDob, maxAdultDob, UNDERAGE_MESSAGE } from "../lib/age";
 
 type Role = "coach" | "admin";
 type Step = 0 | 1;
@@ -59,7 +60,7 @@ function isProfileBackgroundComplete(p: any) {
     if (v === null || v === undefined) return false;
     if (typeof v === "string" && !v.trim()) return false;
   }
-  return true;
+  return isAdultDob(p.date_of_birth);
 }
 
 function onlyDigits(s: string) {
@@ -138,7 +139,7 @@ export default function Onboarding() {
       position.trim() &&
       city.trim() &&
       stateVal.trim() &&
-      dob.trim()
+      isAdultDob(dob)
     );
   }, [position, city, stateVal, dob]);
 
@@ -252,6 +253,7 @@ export default function Onboarding() {
   async function saveBackground() {
     setError(null);
     if (!supabase) return setError("Supabase is not configured.");
+    if (dob && ageFromDob(dob) !== null && !isAdultDob(dob)) return setError(UNDERAGE_MESSAGE);
     if (!backgroundOk) return setError("Please fill in all required fields.");
 
     setBusy(true);
@@ -653,7 +655,15 @@ export default function Onboarding() {
 
             <label className="ts-field">
               <span>Date of birth</span>
-              <input type="date" value={dob} onChange={(e) => setDob(e.target.value)} />
+              <input
+                type="date"
+                value={dob}
+                onChange={(e) => setDob(e.target.value)}
+                max={maxAdultDob()}
+              />
+              {dob && ageFromDob(dob) !== null && !isAdultDob(dob) ? (
+                <div className="ts-hintBad">{UNDERAGE_MESSAGE}</div>
+              ) : null}
             </label>
 
             {error ? <div className="ts-error">{error}</div> : null}

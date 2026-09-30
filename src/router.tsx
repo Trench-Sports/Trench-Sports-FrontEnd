@@ -28,6 +28,7 @@ import MobileSwipeDeck from "./components/mobileSwipeDeck";
 import { supabase } from "./supabaseClient";
 import { platform } from "./platform";
 import { track } from "./lib/telemetry";
+import { isAdultDob } from "./lib/age";
 
 const REQUIRED_FIELDS = ["first_name", "last_name", "position", "city", "state", "date_of_birth"] as const;
 
@@ -39,7 +40,8 @@ function isComplete(p: any) {
     if (v === null || v === undefined) return false;
     if (typeof v === "string" && !v.trim()) return false;
   }
-  return true;
+  // Under-18 (or garbage) DOB → back to onboarding, which refuses to proceed.
+  return isAdultDob(p.date_of_birth);
 }
 
 // ── Onboarding gate. `mobile` controls which path family to redirect to. ────

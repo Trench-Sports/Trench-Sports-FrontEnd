@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { authSignupSucceeded, authSignupFailed } from "../lib/telemetryEvents";
 import { readInvite, type StashedInvite } from "../lib/inviteToken";
+import { ageFromDob, isAdultDob, maxAdultDob, UNDERAGE_MESSAGE } from "../lib/age";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -45,6 +46,7 @@ export default function Signup() {
   const [role, setRole] = useState<Role>("coach");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [dob, setDob] = useState(""); // yyyy-mm-dd
 
   // Coach invite link (see docs/coach-invite-links-plan.md §4.3). When present,
   // the role picker disappears and role is hard-coded to "coach" — the program
@@ -72,6 +74,7 @@ export default function Signup() {
   const pwOk = pwScore >= 3;
   const matchOk = pw.length > 0 && pw === pw2;
   const passwordsReady = pwOk && matchOk;
+  const dobUnderage = dob.length > 0 && ageFromDob(dob) !== null && !isAdultDob(dob);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -79,6 +82,9 @@ export default function Signup() {
 
     if (!firstName.trim()) return setError("Please enter your first name.");
     if (!lastName.trim()) return setError("Please enter your last name.");
+    if (!dob) return setError("Please enter your date of birth.");
+    if (ageFromDob(dob) === null) return setError("Please enter a valid date of birth.");
+    if (!isAdultDob(dob)) return setError(UNDERAGE_MESSAGE);
     if (!email.trim()) return setError("Please enter your email.");
     if (!pwOk) return setError("Password is too weak. Try 12+ chars with mixed types.");
     if (!matchOk) return setError("Passwords do not match.");
@@ -107,6 +113,7 @@ export default function Signup() {
             role: effectiveRole,
             first_name: firstName.trim(),
             last_name: lastName.trim(),
+            date_of_birth: dob,
             email: email.trim().toLowerCase(),
           },
           { onConflict: "user_id" }
@@ -173,6 +180,18 @@ export default function Signup() {
                 />
               </label>
             </div>
+
+            <label className="ts-field">
+              <span>Date of birth</span>
+              <input
+                type="date"
+                value={dob}
+                onChange={(e) => setDob(e.target.value)}
+                max={maxAdultDob()}
+                autoComplete="bday"
+              />
+              {dobUnderage ? <div className="ts-hintBad">{UNDERAGE_MESSAGE}</div> : null}
+            </label>
 
             {/* 2) Then role + email. The role picker is hidden for invited
                 coaches — their role is stamped server-side at redemption. */}
