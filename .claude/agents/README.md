@@ -87,7 +87,7 @@ Make it permanent by setting `AUDIT_BLOCKING=1` in the hook environment.
 The pre-push hook runs `npm run typecheck && node scripts/audit.mjs` — the fast,
 deterministic typecheck **blocks** the push if it fails, then the agents review
 the diff (warn-only). The former ~60-error backlog is cleared (missing
-`@types/react`/`@types/web-bluetooth`, dead `src/App_old.tsx` excluded, `.d.ts`
+`@types/react`/`@types/web-bluetooth`, dead `src/App_old.tsx` removed, `.d.ts`
 shims for the legacy `.jsx` components — see `src/components/*.d.ts`).
 
 `tsc` remains clean; keep it that way. If a legitimate change needs to land past

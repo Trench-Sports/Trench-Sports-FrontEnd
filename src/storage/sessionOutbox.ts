@@ -13,8 +13,6 @@
 //   3. flush(uploader) replays every queued payload when connectivity returns
 //      (window "online" event, app mount, or a periodic safety interval) and
 //      removes each one only after a successful upload.
-//
-// Mirrors the IndexedDB conventions already used by rawRecorder.ts.
 
 import * as ev from "../lib/telemetryEvents";
 

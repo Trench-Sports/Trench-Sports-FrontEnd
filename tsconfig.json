@@ -15,6 +15,5 @@
     "strict": true,
     "types": ["vite/client", "web-bluetooth"]
   },
-  "include": ["src"],
-  "exclude": ["src/App_old.tsx"]
+  "include": ["src"]
 }
