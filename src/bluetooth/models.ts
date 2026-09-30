@@ -82,9 +82,11 @@ export function deviceModelFor(hw: string | undefined | null): string {
 // /CS_ACCEL on GPIO17). II / III / IV have none.
 export const MODELS_WITH_ACCEL = new Set(["V"]);
 
-// Hardware presence only. Build B firmware does not read the ADXL372 yet, so a
-// V device reports no accelerometer data until that lands — gate any UI that
-// renders accel values on actual data arriving, not on this flag alone.
+// Hardware presence only — the fallback resolveHasAccel() uses when hello does
+// not declare "accel". Current native-C firmware does read the ADXL372 and
+// sends {"type":"impact"} records, but a V whose accelerometer failed to init
+// says "accel":false in hello — gate any UI that renders accel values on
+// resolveHasAccel() or actual data arriving, not on this flag alone.
 export function hasAccelFor(hw: string | undefined | null): boolean {
   return MODELS_WITH_ACCEL.has(hw ?? "");
 }
