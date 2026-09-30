@@ -2,11 +2,10 @@
 
 The web and iOS client for the Trench Sports smart heavy-bag platform. It connects to a Trench Sports impact sensor over **Bluetooth Low Energy (BLE)**, streams strike data in real time, computes live force/pressure metrics on-device, and syncs completed training sessions to **Supabase**.
 
-The same React codebase ships three ways:
+The same React codebase ships two ways:
 
 - **Web** (desktop + mobile browser) — deployed to **Vercel**.
 - **iOS app** — the web build wrapped in a **Capacitor** native shell.
-- **Legacy server host** — an Express static server (`server.js`) for AWS Elastic Beanstalk. Vercel is now the primary web target.
 
 ---
 
@@ -20,7 +19,7 @@ The same React codebase ships three ways:
 | Backend / auth / DB | Supabase (Postgres + Auth + RLS) |
 | Device I/O | Web Bluetooth (browser) / `@capacitor-community/bluetooth-le` (native) |
 | Native shell | Capacitor 8 (iOS) |
-| Web server | Express + compression (`server.js`) |
+| Web hosting | Vercel (static SPA) |
 | On-device storage | IndexedDB |
 
 Node **24.x** is required (see `engines` in `package.json`).
@@ -43,7 +42,6 @@ Create a `.env` file in the repo root (see [Environment variables](#environment-
 | `npm run dev` | Vite dev server with hot reload (port 5173) |
 | `npm run build` | Production build → `dist/` |
 | `npm run preview` | Serve the built `dist/` locally (port 4173) |
-| `npm start` | Run the Express production server (`server.js`, port 8080) |
 
 ---
 
@@ -66,11 +64,11 @@ Routing is split into two shells:
 
 This is the core of the app. A training session flows through four layers:
 
-1. **Bluetooth (`src/bluetooth/`)** — `adapter.ts` is a façade that dispatches to `adapter_web.ts` (Web Bluetooth) or `adapter_native.ts` (Capacitor BLE) depending on platform. The sensor speaks the Nordic UART Service (NUS): the app writes commands on the RX characteristic and receives newline-delimited NDJSON on the TX (notify) characteristic. `protocol.ts` reassembles notification chunks into complete lines; `commands.ts` sends sanitized commands.
+1. **Bluetooth (`src/bluetooth/`)** — `adapter.ts` is a façade that dispatches to `adapter_web.ts` (Web Bluetooth) or `adapter_native.ts` (Capacitor BLE) depending on platform. The sensor speaks the Nordic UART Service (NUS): the app writes commands on the RX characteristic and receives newline-delimited NDJSON on the TX (notify) characteristic.
 
-2. **Processing (`src/processing/`)** — incoming NDJSON is parsed by `normalize.ts` into typed messages (`session_start`, `sample`, `ack`, …). `calibration.ts` converts raw sensor voltage into pressure (kPa) and force (N) using a linear or piecewise model plus sensor geometry. `liveMetrics.ts` maintains a live per-cell grid (peak force, hit counts) for real-time UI feedback. `eventBuilder.ts` segments the sample stream into discrete strike "events" with duration, impulse, rise/decay time, and angle.
+2. **Processing (`src/processing/`)** — incoming NDJSON is parsed by `normalize.ts` into typed messages (`session_start`, `sample`, `ack`, …). `calibration.ts` converts raw sensor voltage into pressure (kPa) and force (N) using a linear or piecewise model plus sensor geometry. `eventBuilder.ts` segments the sample stream into discrete strike "events" with duration, impulse, rise/decay time, and angle.
 
-3. **Storage (`src/storage/`)** — `rawRecorder.ts` writes the raw NDJSON stream to IndexedDB in chunks as it arrives, so nothing is lost if the app closes mid-session. `sessionOutbox.ts` is an offline upload queue: if a completed session can't reach Supabase (no connectivity), the full payload is persisted to IndexedDB and replayed automatically when the device comes back online.
+3. **Storage (`src/storage/`)** — `sessionOutbox.ts` is an offline upload queue: if a completed session can't reach Supabase (no connectivity), the full payload is persisted to IndexedDB and replayed automatically when the device comes back online.
 
 4. **Sync (`src/supabaseClient.ts`)** — completed sessions and their derived events are uploaded to Supabase. The client is exported as nullable so the app still runs without credentials.
 
@@ -89,14 +87,13 @@ Defined in `supabase/schema.sql`. Key tables: `programs` (the billing/tenant roo
 │   ├── router.tsx            # React Router route tree (web + /m mobile shells)
 │   ├── platform.ts           # Runtime platform detection (native/web/mobile)
 │   ├── supabaseClient.ts     # Nullable Supabase client
-│   ├── app.tsx               # Root app component
-│   ├── bluetooth/            # BLE adapters (web + native), NUS protocol, commands
-│   ├── processing/           # NDJSON normalize → calibration → live metrics → events
-│   ├── storage/              # IndexedDB raw recorder + offline upload outbox
+│   ├── bluetooth/            # BLE adapters (web + native), models, battery, impacts
+│   ├── processing/           # NDJSON normalize → calibration → events
+│   ├── storage/              # IndexedDB offline upload outbox
 │   ├── pages/                # Route pages; pages/mobile/* are the /m variants
 │   ├── components/           # Shared UI (layouts, grids, modals, session controls)
 │   ├── hooks/                # usePlatform, signalAudio
-│   ├── lib/                  # sessionModes, sessionSettings, themeManager, isMobile
+│   ├── lib/                  # sessionModes, sessionSettings, themeManager, telemetry
 │   ├── images/               # Logos + native app icons
 │   └── styles.css            # Global styles
 ├── tools/                    # SERVER-SIDE ONLY scripts (service-role key — never bundled)
@@ -104,11 +101,9 @@ Defined in `supabase/schema.sql`. Key tables: `programs` (the billing/tenant roo
 ├── firmware-src/             # ESP32 device firmware (model_IV, C)
 ├── public/                   # Static assets served as-is (incl. OTA firmware bundles)
 ├── ios/                      # Capacitor iOS project (Xcode)
-├── server.js                 # Express static host for the built dist/ (EB)
 ├── capacitor.config.ts       # Capacitor config (prod BUNDLES dist/; dev/preview load a remote URL)
 ├── vite.config.ts            # Vite config
-├── vercel.json               # Vercel SPA rewrites + Bluetooth Permissions-Policy header
-└── .ebextensions/            # Elastic Beanstalk build config (legacy)
+└── vercel.json               # Vercel SPA rewrites + Bluetooth Permissions-Policy header
 ```
 
 > ⚠️ **`tools/` is server-side only.** `tools/processSession.ts` uses the Supabase **service-role key**, which bypasses all RLS. Never import from `tools/` into `src/`, and never put the service-role key behind a `VITE_` name. See `tools/README.md`.
@@ -139,13 +134,13 @@ VITE_DEMO_MODE=false
 
 Server-side scripts in `tools/` read `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` from `tools/.env` (never committed).
 
-> **Web Bluetooth requires a secure context (HTTPS).** It works on `localhost` for development, but any deployed environment must serve over HTTPS. The `Permissions-Policy: bluetooth=(self)` header is set in both `vercel.json` and `server.js`.
+> **Web Bluetooth requires a secure context (HTTPS).** It works on `localhost` for development, but any deployed environment must serve over HTTPS. The `Permissions-Policy: bluetooth=(self)` header is set in `vercel.json`.
 
 ---
 
 ## Building and deploying
 
-### Vercel (primary web target)
+### Vercel (web)
 
 Vercel runs `vite build` (`vercel-build` script) and serves `dist/`. `vercel.json` rewrites all routes to `index.html` for SPA routing and sets the Bluetooth permissions header. Pushing to the connected branch deploys automatically.
 
@@ -163,16 +158,7 @@ npx cap open ios      # then Product ▸ Archive
 
 Two consequences of bundling: firmware under `public/firmware/**` now ships inside the IPA, so a firmware bump is an App Store release; and because `capacitor://localhost` is a different origin from the website, any URL that leaves the app must be absolute — use `publicUrl()` from `src/lib/publicOrigin.ts`.
 
-Full archive and submission procedure: `app-store/RUNBOOK.md`. See `Platform.md` for platform-detection details and Xcode status-bar notes.
-
-### Elastic Beanstalk (legacy)
-
-```bash
-npm run build          # produce dist/
-npm start              # or: node server.js  → http://localhost:8080
-```
-
-`server.js` is an Express server that serves `dist/` with compression, an SPA fallback, and a `GET /health` endpoint (returns `ok`) for load-balancer checks. `.ebextensions/01_env.config` sets `NPM_USE_PRODUCTION=false` so EB installs devDependencies and can run the Vite build on-instance. Because Web Bluetooth needs HTTPS, attach an ACM certificate to the EB load balancer and force HTTPS redirects.
+Full archive and submission procedure: `app-store/RUNBOOK.md`. Platform detection lives in `src/platform.ts`.
 
 ---
 

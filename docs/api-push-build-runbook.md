@@ -586,9 +586,9 @@ change — but three things in this repo need adjusting:
 (`package.json:7`), which is a supported Vercel runtime — no `runtime` field
 needed.
 
-**Local dev gotcha:** `server.js:45` is `app.get("*", …)` serving `index.html`,
-so `npm start` will swallow `/api/*`. Use `vercel dev` for API work, or add an
-`/api` guard to `server.js`. Don't debug a 200-with-HTML for an hour.
+**Local dev gotcha:** `vite` / `vite preview` serve `index.html` for unknown
+routes, so they will swallow `/api/*`. Use `vercel dev` for API work. Don't
+debug a 200-with-HTML for an hour.
 
 **4b. One middleware, every route through it.** `api/_lib/withKey.ts`:
 
