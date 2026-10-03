@@ -473,6 +473,13 @@ begin
     return new;
   end if;
 
+  -- Outbox replay: the row is already stored and the insert will resolve to
+  -- ON CONFLICT DO NOTHING. It was counted when it was first written.
+  -- (idempotent_session_upload.sql — keep the two copies identical.)
+  if exists (select 1 from public.sessions where id = new.id) then
+    return new;
+  end if;
+
   v_limit := public.effective_limit(new.program_id, 'maxSessionsPerMonth');
   if v_limit is null then
     return new;

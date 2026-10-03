@@ -1182,7 +1182,12 @@ async function uploadSession(opts: {
   sessionUploadStarted({ session_id: sessionId, event_count: frames.length, raw_bytes: _rawBytes });
 
   // ── 1. sessions ────────────────────────────────────────────────────────────
-  const { error: sessErr } = await supabase.from("sessions").insert({
+  // Every stage writes with ON CONFLICT DO NOTHING so the outbox can replay a
+  // payload whose earlier attempt got partway in. A plain insert here collided
+  // on sessions_pkey and left the session stuck half-written, retried forever.
+  // The natural keys for event_cells / impact_events are unique indexes from
+  // supabase/idempotent_session_upload.sql.
+  const { error: sessErr } = await supabase.from("sessions").upsert({
     id:            sessionId,
     program_id:    programId,
     athlete_id:    athleteId,
@@ -1197,7 +1202,7 @@ async function uploadSession(opts: {
     mode,
     raw:           _rawArr,
     ...(deviceId ? { device_id: deviceId } : {}),
-  });
+  }, { onConflict: "id", ignoreDuplicates: true });
   if (sessErr) {
     sessionUploadStageFailed({ session_id: sessionId, stage: "sessions", error_code: sessErr.message?.slice(0, 64) });
     throw new Error(`sessions: ${sessErr.message}`);
@@ -1208,15 +1213,13 @@ async function uploadSession(opts: {
   // and a session of only such hits is still worth keeping.
   //
   // A failure here does NOT throw, unlike every other stage. Accel data is
-  // additive, and the outbox replays the whole payload starting from a sessions
-  // insert that would now collide on its primary key — so throwing would turn a
-  // complete matrix upload into a queued payload that can never succeed. The
-  // stage failure is reported to telemetry instead.
+  // additive, so it never holds back a complete matrix upload; the stage
+  // failure is reported to telemetry instead.
   const impactRows = buildImpactRows(sessionId, impacts, accelCapture);
   const impactUpload: ImpactUpload = { rowsBuilt: impactRows.length, rowsInserted: 0 };
   for (let i = 0; i < impactRows.length; i += CHUNK) {
     const chunk = impactRows.slice(i, i + CHUNK);
-    const { error } = await supabase.from("impact_events").insert(chunk);
+    const { error } = await supabase.from("impact_events").upsert(chunk, { onConflict: "session_id,t_onset_ms", ignoreDuplicates: true });
     if (error) {
       sessionUploadStageFailed({ session_id: sessionId, stage: "impact_events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
       console.warn(`[ACCEL] impact_events (chunk ${i}) failed, continuing: ${error.message}`);
@@ -1332,7 +1335,7 @@ async function uploadSession(opts: {
   });
 
   for (let i = 0; i < eventRows.length; i += CHUNK) {
-    const { error } = await supabase.from("events").insert(eventRows.slice(i, i + CHUNK));
+    const { error } = await supabase.from("events").upsert(eventRows.slice(i, i + CHUNK), { onConflict: "event_id", ignoreDuplicates: true });
     if (error) {
       sessionUploadStageFailed({ session_id: sessionId, stage: "events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
       throw new Error(`events (chunk ${i}): ${error.message}`);
@@ -1356,7 +1359,7 @@ async function uploadSession(opts: {
     }
   }
   for (let i = 0; i < cellRows.length; i += CHUNK) {
-    const { error } = await supabase.from("event_cells").insert(cellRows.slice(i, i + CHUNK));
+    const { error } = await supabase.from("event_cells").upsert(cellRows.slice(i, i + CHUNK), { onConflict: "event_id,r,c", ignoreDuplicates: true });
     if (error) {
       sessionUploadStageFailed({ session_id: sessionId, stage: "event_cells", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
       throw new Error(`event_cells (chunk ${i}): ${error.message}`);
@@ -1582,7 +1585,7 @@ async function uploadSession(opts: {
     };
   })();
 
-  const { error: sumErr } = await supabase.from("session_summaries").insert({
+  const { error: sumErr } = await supabase.from("session_summaries").upsert({
     session_id:          sessionId,
     // accel_present / accel_g_range_g / accel_capture only. The three
     // aggregate columns are defined over PRIMARY impacts and nothing has
@@ -1641,7 +1644,7 @@ async function uploadSession(opts: {
       rise_time_ms:  riseVals.length  ? statSummary(riseVals)  : null,
       decay_time_ms: decayVals.length ? statSummary(decayVals) : null,
     },
-  });
+  }, { onConflict: "session_id", ignoreDuplicates: true });
   if (sumErr) {
     sessionUploadStageFailed({ session_id: sessionId, stage: "session_summaries", error_code: sumErr.message?.slice(0, 64) });
     throw new Error(`session_summaries: ${sumErr.message}`);
