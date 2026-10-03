@@ -62,7 +62,7 @@ import {
   modelBadge,
 } from "../../bluetooth/models";
 import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../../bluetooth/battery";
-import { muteImuTelemetry } from "../../bluetooth/imuTelemetry";
+import { configureImu, applyImuCfg } from "../../bluetooth/imuTelemetry";
 import BatteryBadge, { LowBatteryBanner } from "../../components/batteryBadge";
 import BagInfoPills from "../../components/bagInfoPills";
 import {
@@ -70,8 +70,10 @@ import {
   captureFromHello,
   buildImpactRows,
   summarizeImpacts,
+  captureDiagnostics,
   processSessionImpacts,
   type ImpactFrame,
+  type ImpactUpload,
   type AccelCapture,
 } from "../../bluetooth/impacts";
 
@@ -1435,6 +1437,7 @@ type SlotState = {
   sessionId:    string;                    // assigned at session start (one row per slot)
   frames:       BleFrame[];                // own buffer; uploaded as its own session
   impacts:      ImpactFrame[];             // TSA-V accelerometer impacts for this slot
+  impactRejects: number;                   // impact frames parseImpactFrame refused
   accelCapture: AccelCapture | null;       // capture conditions from this slot's hello
   batteryPct:   number | null;             // 0–100 from hello / {type:"batt"}; null = no reading
   frameIndex:   number;                    // increments per accepted frame
@@ -1462,6 +1465,7 @@ function createSlot(slotId: SlotId, bleName: string, conn: AdapterConnection): S
     sessionId:    "",        // populated at startSession
     frames:       [],
     impacts:      [],
+    impactRejects: 0,
     batteryPct:   null,
     accelCapture: null,
     frameIndex:   0,
@@ -1866,6 +1870,9 @@ async function uploadSession(opts: {
   deviceId?:    string;
   // TSA-V accelerometer (Model V). Empty / null on every other adapter.
   impacts?:      ImpactFrame[];
+  // Impact frames parseImpactFrame refused. Optional so payloads queued in
+  // the outbox before this field existed still replay.
+  impactRejects?: number;
   accelCapture?: AccelCapture | null;
 }) {
   if (!supabase) throw new Error("Supabase client not initialised");
@@ -1879,7 +1886,7 @@ async function uploadSession(opts: {
     accHitsCount = 0, accScoreSum = 0,
     tgtAttempts = 0, tgtCorrectHits = 0, tgtCorrectSumMs = 0, tgtBestMs = null, tgtBestCorrectMs = null,
     deviceId,
-    impacts = [], accelCapture = null,
+    impacts = [], impactRejects = 0, accelCapture = null,
   } = opts;
 
   const CHUNK = 500;
@@ -1926,18 +1933,21 @@ async function uploadSession(opts: {
   // complete matrix upload into a queued payload that can never succeed. The
   // stage failure is reported to telemetry instead.
   const impactRows = buildImpactRows(sessionId, impacts, accelCapture);
+  const impactUpload: ImpactUpload = { rowsBuilt: impactRows.length, rowsInserted: 0 };
   for (let i = 0; i < impactRows.length; i += CHUNK) {
-    const { error } = await supabase.from("impact_events").insert(impactRows.slice(i, i + CHUNK));
+    const chunk = impactRows.slice(i, i + CHUNK);
+    const { error } = await supabase.from("impact_events").insert(chunk);
     if (error) {
       sessionUploadStageFailed({ session_id: sessionId, stage: "impact_events", error_code: error.message?.slice(0, 64), chunk_index: i / CHUNK });
       console.warn(`[ACCEL] impact_events (chunk ${i}) failed, continuing: ${error.message}`);
       break;
     }
+    impactUpload.rowsInserted += chunk.length;
   }
 
   if (frames.length === 0) {
     // No events or summary to roll onto, but rebounds still get coalesced.
-    await processSessionImpacts(supabase, sessionId, impactRows.length);
+    await processSessionImpacts(supabase, sessionId, impactUpload, accelCapture);
     return;
   }
 
@@ -2297,10 +2307,11 @@ async function uploadSession(opts: {
 
   const { error: sumErr } = await supabase.from("session_summaries").insert({
     session_id:          sessionId,
-    // accel_present / accel_g_range_g only. The three aggregate columns are
-    // defined over PRIMARY impacts and nothing has coalesced rebounds yet —
-    // see summarizeImpacts() and rollup_impacts_to_session_summary().
-    ...summarizeImpacts(accelCapture),
+    // accel_present / accel_g_range_g / accel_capture only. The three
+    // aggregate columns are defined over PRIMARY impacts and nothing has
+    // coalesced rebounds yet — see summarizeImpacts() and
+    // rollup_impacts_to_session_summary().
+    ...summarizeImpacts(accelCapture, captureDiagnostics(impacts, impactRejects, accelCapture, impactUpload)),
     program_id:          programId,
     ...(coreTeamId ? { core_team_id: coreTeamId } : {}),
     athlete_id:          athleteId,
@@ -2361,7 +2372,7 @@ async function uploadSession(opts: {
   }
 
   // ── 5. impact post-processing — after the last insert it depends on ───────
-  await processSessionImpacts(supabase, sessionId, impactRows.length);
+  await processSessionImpacts(supabase, sessionId, impactUpload, accelCapture);
 
   sessionUploadSucceeded({
     session_id:  sessionId,
@@ -3143,6 +3154,7 @@ export default function Home() {
   // TSA-V ADXL372 impacts for this session, plus the capture conditions they
   // were detected under (read from hello). Cleared alongside framesRef.
   const impactsRef      = useRef<ImpactFrame[]>([]);
+  const impactRejectsRef = useRef(0);
   const accelCaptureRef = useRef<AccelCapture | null>(null);
   const frameIndex = useRef(0);
 
@@ -3407,8 +3419,14 @@ export default function Home() {
       if (helloBatt !== undefined) setBatteryPct(helloBatt);
       console.log(`[BLE] hello hw=${info.hw} mode=${info.mode} scanPeriodMs=${info.scanPeriodMs}`);
       // The app never reads {"type":"imu"}; stop the 10 Hz stream to save the
-      // bag's battery. Re-sent on every hello — the bag forgets it on reboot.
-      if (info.hasAccel) void muteImuTelemetry(connRef.current, getCharUuids().RX);
+      // bag's battery, and apply the dev threshold override if one is set.
+      // Re-sent on every hello — the bag forgets both on reboot.
+      if (info.hasAccel) {
+        const sent = accelCaptureRef.current;
+        void configureImu(connRef.current, getCharUuids().RX, sent).then(next => {
+          if (next && accelCaptureRef.current === sent) accelCaptureRef.current = next;
+        });
+      }
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
       //   1. Claimed by a different program → disconnect immediately, show error.
@@ -3497,6 +3515,15 @@ export default function Home() {
       return;
     }
 
+    // ── TSA-V imu_cfg (fw >= 1.4.6-c) ────────────────────────────────────────
+    // The device's reply to configureImu(): the thresholds actually in force.
+    // Recorded as confirmed capture conditions — see applyImuCfg().
+    if (obj.type === "imu_cfg") {
+      const next = applyImuCfg(accelCaptureRef.current, obj);
+      if (next) accelCaptureRef.current = next;
+      continue;
+    }
+
     // ── TSA-V accelerometer impact (Model V) ─────────────────────────────────
     // send_impact() fires once per hit on the FSM falling edge, so the peak is
     // final. The frame carries no "hits" array, so before this branch existed it
@@ -3506,6 +3533,7 @@ export default function Home() {
       if (captureRef.current) {
         const imp = parseImpactFrame(obj);
         if (imp) impactsRef.current.push(imp);
+        else impactRejectsRef.current++;
       }
       continue;
     }
@@ -3750,7 +3778,12 @@ export default function Home() {
       const slotBatt = parseBatteryPct(obj);
       if (slotBatt !== undefined) slot.batteryPct = slotBatt;
       console.log(`[BLE/slot ${slotId}] hello hw=${slot.device.hw} mode=${slot.device.mode}`);
-      if (slot.device.hasAccel) void muteImuTelemetry(slot.conn, getCharUuids().RX);
+      if (slot.device.hasAccel) {
+        const sent = slot.accelCapture;
+        void configureImu(slot.conn, getCharUuids().RX, sent).then(next => {
+          if (next && slot.accelCapture === sent) slot.accelCapture = next;
+        });
+      }
       bumpSlots();
       return;
     }
@@ -3762,11 +3795,19 @@ export default function Home() {
       continue;
     }
 
+    // TSA-V imu_cfg — same handling as the primary path, per slot.
+    if (obj.type === "imu_cfg") {
+      const next = applyImuCfg(slot.accelCapture, obj);
+      if (next) slot.accelCapture = next;
+      continue;
+    }
+
     // TSA-V accelerometer impact — same handling as the primary path, per slot.
     if (obj.type === "impact") {
       if (captureRef.current) {
         const imp = parseImpactFrame(obj);
         if (imp) slot.impacts.push(imp);
+        else slot.impactRejects++;
       }
       continue;
     }
@@ -4337,6 +4378,7 @@ export default function Home() {
     sessionIdRef.current = genSessionId();
     framesRef.current    = [];
     impactsRef.current    = [];
+    impactRejectsRef.current = 0;
     frameIndex.current   = 0;
     feedCounter.current  = 0;
     // Reset accuracy
@@ -4389,6 +4431,7 @@ export default function Home() {
         slot.sessionId   = genSessionId();
         slot.frames      = [];
         slot.impacts     = [];
+        slot.impactRejects = 0;
         slot.frameIndex  = 0;
         slot.startedAtMs = startTimeRef.current;
         // Clear the live matrix heatmap + stats for the new session.
@@ -4538,6 +4581,7 @@ export default function Home() {
         location:    geoRef.current,
         frames:      framesRef.current,
         impacts:      impactsRef.current,
+        impactRejects: impactRejectsRef.current,
         accelCapture: accelCaptureRef.current,
         startedAtMs: startTimeRef.current ?? endedAt,
         endedAtMs:   endedAt,
@@ -4580,6 +4624,7 @@ export default function Home() {
         location:    geoRef.current,
         frames:      slot.frames,
         impacts:      slot.impacts,
+        impactRejects: slot.impactRejects,
         accelCapture: slot.accelCapture,
         startedAtMs: slot.startedAtMs ?? startTimeRef.current ?? endedAt,
         endedAtMs:   endedAt,
@@ -4704,6 +4749,7 @@ export default function Home() {
     });
     framesRef.current  = [];
     impactsRef.current  = [];
+    impactRejectsRef.current = 0;
     frameIndex.current = 0;
     feedCounter.current = 0;
     setFeed([]);

@@ -551,6 +551,8 @@ comment on function public.rollup_impacts_to_events(text) is
 -- The app does NOT write these inline: they are defined over primary impacts,
 -- which only exist after mark_impact_rebounds(). process_session_impacts.sql
 -- runs this after upload; call it directly for backfill and repair.
+-- Zero-impact behaviour added by accel_capture_diagnostics.sql, which carries
+-- the same definition for projects that already ran this file.
 create or replace function public.rollup_impacts_to_session_summary(p_session_id text)
 returns integer
 language plpgsql
@@ -564,7 +566,7 @@ begin
            impact_count     = agg.n,
            peak_g_mg        = agg.peak_mg,
            mean_impact_g_mg = agg.mean_mg,
-           accel_g_range_g  = agg.g_range
+           accel_g_range_g  = coalesce(agg.g_range, s.accel_g_range_g)
       from (
             select count(*)::integer            as n,
                    max(peak_mg)::integer        as peak_mg,
@@ -575,7 +577,7 @@ begin
                and rebound_of is null
            ) agg
      where s.session_id = p_session_id
-       and agg.n > 0;
+       and (agg.n > 0 or s.accel_present is true);
 
     get diagnostics v_rows = row_count;
     return v_rows;
@@ -584,8 +586,10 @@ $$;
 
 comment on function public.rollup_impacts_to_session_summary(text) is
     'Recomputes the session_summaries accel rollup over PRIMARY impacts only. '
-    'Does not write accel_present = false — absence of rows is not evidence the '
-    'adapter lacked an accelerometer. The app sets false from hello.';
+    'Writes impact_count = 0 (peaks NULL) when accel_present is already true '
+    'and there are no rows. Does not write accel_present = false — absence of '
+    'rows is not evidence the adapter lacked an accelerometer. The app sets '
+    'that from hello.';
 
 
 -- ───────────────────────────────────────────────────────────────────────────
