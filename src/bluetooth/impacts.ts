@@ -81,6 +81,15 @@ export type AccelCapture = {
   sampleSource: AccelSampleSource;
   fwVersion:    string | null;
   hwRev:        string | null;
+  // "firmware" = the thresholds as the device reported them, not set by this
+  // app. "dev_override" = a dev build replaced them over BLE after hello
+  // (configureImu in imuTelemetry.ts), so hello's values are NOT the ones
+  // detection ran under.
+  thresholdSource: "firmware" | "dev_override";
+  // true once the device itself echoed impactOnMg / impactOffMg in an
+  // {"type":"imu_cfg"} reply (fw >= 1.4.6-c). false = taken from hello, or
+  // assumed from a successful write on firmware that does not reply.
+  thresholdConfirmed: boolean;
 };
 
 // Mirrors the CHECK constraints in supabase/accel_events.sql. A frame that
@@ -192,6 +201,8 @@ export function captureFromHello(
     sampleSource,
     fwVersion:    typeof hello?.fw === "string" ? hello.fw : null,
     hwRev:        typeof hello?.hw === "string" ? hello.hw : null,
+    thresholdSource: "firmware",
+    thresholdConfirmed: false,
   };
 }
 
@@ -224,13 +235,7 @@ export function buildImpactRows(
     return [];
   }
 
-  const byOnset = new Map<number, ImpactFrame>();
-  for (const i of impacts) {
-    const prev = byOnset.get(i.tOnsetMs);
-    if (!prev || i.peakMg > prev.peakMg) byOnset.set(i.tOnsetMs, i);
-  }
-
-  const ordered = [...byOnset.values()].sort((a, b) => a.tOnsetMs - b.tOnsetMs);
+  const ordered = dedupeImpacts(impacts);
 
   const missing = countImpactSeqGaps(ordered);
   if (missing > 0) {
@@ -268,6 +273,19 @@ export function buildImpactRows(
 }
 
 /**
+ * One frame per onset, the larger peak winning, in onset order. A collision
+ * means a duplicated BLE record — see buildImpactRows().
+ */
+export function dedupeImpacts(impacts: ImpactFrame[]): ImpactFrame[] {
+  const byOnset = new Map<number, ImpactFrame>();
+  for (const i of impacts) {
+    const prev = byOnset.get(i.tOnsetMs);
+    if (!prev || i.peakMg > prev.peakMg) byOnset.set(i.tOnsetMs, i);
+  }
+  return [...byOnset.values()].sort((a, b) => a.tOnsetMs - b.tOnsetMs);
+}
+
+/**
  * How many impact records the device sent that never arrived.
  *
  * Sums the positive holes between consecutive sequence numbers rather than
@@ -290,13 +308,102 @@ export function countImpactSeqGaps(ordered: ImpactFrame[]): number {
 }
 
 /**
+ * What happened to the impact frames of one session, from BLE to insert.
+ *
+ * Without this a session with impact_count NULL could mean any of: nothing
+ * crossed the threshold, the frames were malformed, hello was lost so the rows
+ * were discarded, or the insert failed — and session ses_1790871892578_t17ff
+ * (2026-10-01) could not be told apart from any of them. Each count here rules
+ * one of those out.
+ *
+ * The capture conditions are repeated on purpose. impact_events stamps them on
+ * every row, but a session with zero impacts has no rows, and "0 impacts at a
+ * 5 g trigger" is a different observation from "0 impacts at 2 g".
+ */
+export type AccelCaptureDiagnostics = {
+  v:                    1;
+  frames_received:      number;   // {"type":"impact"} frames seen during the session
+  frames_rejected:      number;   // malformed, or would violate a table CHECK
+  duplicates_dropped:   number;   // same onset twice — duplicated BLE record
+  discarded_no_capture: number;   // valid frames thrown away because hello was unusable
+  rows_built:           number;
+  rows_inserted:        number;   // < rows_built means the impact_events insert failed
+  seq_first:            number | null;
+  seq_last:             number | null;
+  seq_missing:          number;   // floor — see countImpactSeqGaps()
+  capture: {
+    impact_on_mg:   number;
+    impact_off_mg:  number;
+    hpf:            boolean;
+    g_range_g:      number;
+    sample_rate_hz: number | null;
+    sample_source:  AccelSampleSource;
+    fw_version:     string | null;
+    hw_rev:         string | null;
+    threshold_source: AccelCapture["thresholdSource"];
+    threshold_confirmed: boolean;
+  } | null;
+};
+
+// How the impact_events stage of one upload went.
+export type ImpactUpload = {
+  rowsBuilt:    number;
+  rowsInserted: number;
+};
+
+/**
+ * Build session_summaries.accel_capture. Null for an adapter with no
+ * accelerometer that also sent nothing — there is nothing to diagnose, and a
+ * diagnostics object on a Model II session would read as an accelerometer
+ * that saw nothing.
+ */
+export function captureDiagnostics(
+  impacts: ImpactFrame[],
+  rejected: number,
+  capture: AccelCapture | null,
+  upload: ImpactUpload,
+): AccelCaptureDiagnostics | null {
+  const present = !!capture?.present;
+  if (!present && impacts.length === 0 && rejected === 0) return null;
+
+  const ordered = dedupeImpacts(impacts);
+  const seqs    = ordered.map(i => i.seq).filter((s): s is number => s !== null);
+
+  return {
+    v:                    1,
+    frames_received:      impacts.length + rejected,
+    frames_rejected:      rejected,
+    duplicates_dropped:   impacts.length - ordered.length,
+    discarded_no_capture: present ? 0 : ordered.length,
+    rows_built:           upload.rowsBuilt,
+    rows_inserted:        upload.rowsInserted,
+    seq_first:            seqs.length ? Math.min(...seqs) : null,
+    seq_last:             seqs.length ? Math.max(...seqs) : null,
+    seq_missing:          countImpactSeqGaps(ordered),
+    capture: capture && present ? {
+      impact_on_mg:   capture.impactOnMg,
+      impact_off_mg:  capture.impactOffMg,
+      hpf:            capture.hpf,
+      g_range_g:      capture.gRangeG,
+      sample_rate_hz: capture.sampleRateHz,
+      sample_source:  capture.sampleSource,
+      fw_version:     capture.fwVersion,
+      hw_rev:         capture.hwRev,
+      threshold_source: capture.thresholdSource,
+      threshold_confirmed: capture.thresholdConfirmed,
+    } : null,
+  };
+}
+
+/**
  * The session_summaries accel_* fields this client is entitled to assert.
  *
- * Only two of the five, and that is the point. impact_count, peak_g_mg and
- * mean_impact_g_mg are defined over PRIMARY impacts — rows where rebound_of is
- * null — and nothing has coalesced rebounds at this stage. Writing raw FSM edge
- * counts into those columns would inflate impact_count and deflate
- * mean_impact_g_mg, which is the specific error this design set out to avoid.
+ * accel_present, accel_g_range_g and accel_capture — and that is the point.
+ * impact_count, peak_g_mg and mean_impact_g_mg are defined over PRIMARY
+ * impacts — rows where rebound_of is null — and nothing has coalesced rebounds
+ * at this stage. Writing raw FSM edge counts into those columns would inflate
+ * impact_count and deflate mean_impact_g_mg, which is the specific error this
+ * design set out to avoid.
  *
  * They stay NULL until processSessionImpacts() runs after upload (which
  * runs mark_impact_rebounds() then rollup_impacts_to_session_summary()). NULL
@@ -304,13 +411,17 @@ export function countImpactSeqGaps(ordered: ImpactFrame[]): number {
  *
  * accel_present is a fact from hello, not an inference from row count: an
  * adapter with an accelerometer that recorded zero impacts is a real and
- * different observation from an adapter that has none.
+ * different observation from an adapter that has none. accel_capture is
+ * written even without a usable hello, since impacts arriving with nothing to
+ * stamp them with is exactly the case it exists to expose.
  */
-export function summarizeImpacts(capture: AccelCapture | null): object {
-  if (!capture) return {};
+export function summarizeImpacts(
+  capture: AccelCapture | null,
+  diagnostics: AccelCaptureDiagnostics | null = null,
+): object {
   return {
-    accel_present:   capture.present,
-    accel_g_range_g: capture.gRangeG,
+    ...(capture ? { accel_present: capture.present, accel_g_range_g: capture.gRangeG } : {}),
+    ...(diagnostics ? { accel_capture: diagnostics } : {}),
   };
 }
 
@@ -320,20 +431,30 @@ export function summarizeImpacts(capture: AccelCapture | null): object {
  * (supabase/process_session_impacts.sql).
  *
  * Call it after the LAST insert of the upload — pairing needs the events rows
- * and the summary rollup needs the session_summaries row. Skipped when there
- * were no impact rows, since every step would be a no-op.
+ * and the summary rollup needs the session_summaries row.
+ *
+ * Runs whenever hello declared an accelerometer, including with zero impact
+ * rows: the rollup then writes impact_count = 0, so NULL is left meaning "not
+ * measured" and nothing else (supabase/accel_capture_diagnostics.sql).
+ *
+ * Skipped when the impact_events insert did not land in full. The rollup would
+ * then count only what arrived — a zero, or a partial total — and store it as
+ * though it were the session's real count. Leaving the counts NULL is honest;
+ * accel_capture.rows_inserted records the shortfall, and the session can be
+ * re-run server side with reprocess_session_impacts() once the rows are in.
  *
  * Never throws, for the same reason the impact_events insert does not: the
  * matrix upload is already complete, and the outbox replays from a sessions
- * insert that would now collide. A failure is reported to telemetry and the
- * session can be re-run server side with reprocess_session_impacts().
+ * insert that would now collide. A failure is reported to telemetry.
  */
 export async function processSessionImpacts(
   client: SupabaseClient,
   sessionId: string,
-  impactRowCount: number,
+  upload: ImpactUpload,
+  capture: AccelCapture | null,
 ): Promise<void> {
-  if (impactRowCount === 0) return;
+  if (upload.rowsInserted < upload.rowsBuilt) return;
+  if (upload.rowsBuilt === 0 && !capture?.present) return;
   const { error } = await client.rpc("process_session_impacts", { p_session_id: sessionId });
   if (error) {
     sessionUploadStageFailed({ session_id: sessionId, stage: "impact_processing", error_code: error.message?.slice(0, 64) });

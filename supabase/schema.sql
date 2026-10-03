@@ -234,6 +234,10 @@ CREATE TABLE public.session_summaries (
   peak_g_mg integer,
   mean_impact_g_mg integer,
   accel_g_range_g smallint,
+  -- Per-session impact capture diagnostics, written by the app at upload
+  -- (supabase/accel_capture_diagnostics.sql). impact_count = 0 with this set
+  -- means "detected none"; NULL counts mean not measured or insert fell short.
+  accel_capture jsonb CHECK (accel_capture IS NULL OR jsonb_typeof(accel_capture) = 'object'::text),
   CONSTRAINT session_summaries_pkey PRIMARY KEY (session_id),
   CONSTRAINT session_summaries_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions(id),
   CONSTRAINT session_summaries_program_id_fkey FOREIGN KEY (program_id) REFERENCES public.programs(id),

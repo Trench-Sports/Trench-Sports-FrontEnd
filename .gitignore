@@ -3,6 +3,9 @@ dist
 .DS_Store
 *.log
 
+# Per-developer Vite overrides (e.g. VITE_ACCEL_THRESH_MG) — .env itself is tracked
+.env*.local
+
 # Server-side tooling secrets — NEVER commit (holds SUPABASE_SERVICE_ROLE_KEY)
 tools/.env
 tools/.env.*
