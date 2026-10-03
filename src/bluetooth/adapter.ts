@@ -107,6 +107,16 @@ export async function startNotifications(
   return startNotificationsWeb(conn, uuid, onValue);
 }
 
+// One write at a time per connection. Web Bluetooth rejects a write issued
+// while another GATT operation is in flight ("GATT operation already in
+// progress"), and fire-and-forget writes race: on 2026-10-03 sendLedColor() on
+// connect and configureImu() on hello landed ~90 ms apart, the LED write won,
+// and the imu command (stream mute + dev threshold) never reached the bag —
+// confirmed on TS-A058's serial log, which shows cmd=led and no cmd=imu.
+// Every caller that awaited its own writes (OTA, start/stop) was already
+// sequential, so queueing costs them nothing.
+const writeChains = new WeakMap<AdapterConnection, Promise<unknown>>();
+
 export async function writeUtf8(
   conn: AdapterConnection,
   characteristicUuid: string,
@@ -116,8 +126,15 @@ export async function writeUtf8(
   const uuid = normalizeUuid(characteristicUuid);
   if (!uuid) throw new Error("Missing write characteristic UUID (VITE_BLE_CHAR_UUID_RX).");
 
-  if (conn.kind === "native") return writeUtf8Native(conn, uuid, text, opts);
-  return writeUtf8Web(conn, uuid, text, opts);
+  const write = () => conn.kind === "native"
+    ? writeUtf8Native(conn, uuid, text, opts)
+    : writeUtf8Web(conn, uuid, text, opts);
+  // Chain on the previous write's settlement, success or failure — one failed
+  // write must not wedge every write after it.
+  const prev = writeChains.get(conn) ?? Promise.resolve();
+  const next = prev.then(write, write);
+  writeChains.set(conn, next.catch(() => {}));
+  return next;
 }
 
 // ─── Multi-bag helper ────────────────────────────────────────────────────────
