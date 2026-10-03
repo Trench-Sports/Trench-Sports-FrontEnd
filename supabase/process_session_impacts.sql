@@ -174,8 +174,8 @@ notify pgrst, 'reload schema';
 --             has_function_privilege(r.rolname, p.oid, 'execute') as can_exec
 --        from pg_proc p cross join pg_roles r
 --       where p.proname in ('process_session_impacts', 'reprocess_session_impacts',
-                           'mark_impact_rebounds', 'link_impacts_to_events',
-                           'rollup_impacts_to_events', 'rollup_impacts_to_session_summary')
+--                         'mark_impact_rebounds', 'link_impacts_to_events',
+--                         'rollup_impacts_to_events', 'rollup_impacts_to_session_summary')
 --         and r.rolname in ('anon', 'authenticated');
 -- 2. On a session with impacts, twice — the second result must match the first:
 --      select public.reprocess_session_impacts('<session_id>');
