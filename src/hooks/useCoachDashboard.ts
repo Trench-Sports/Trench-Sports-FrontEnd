@@ -2574,3 +2574,5 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
     chartEntityOptionsFor,
   };
 }
+
+export type CoachDashboard = ReturnType<typeof useCoachDashboard>;
