@@ -224,7 +224,7 @@ function ImpactCounter({ value, prefix = "", suffix = "", label, started }: {
 // the loop is seamless (CSS scrolls one full set, then the copy takes over with no
 // visible jump). Hovering anywhere over the row pauses the scroll.
 function TestimonialMarquee({ items }: { items: Testimonial[] }) {
-  const row = [...items, ...items]; // duplicate for a seamless loop
+  const row = [...items, ...items]; // duplicate for a seamless loop 
 
   return (
     <div className="ts-quoteMarquee">
