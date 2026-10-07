@@ -8,6 +8,7 @@ import EditProfileModal from "../../components/editProfile";
 import ProgramModal from "../../components/program";
 import ManageTeamModal from "../../components/manageTeam";
 import { supabase } from "../../supabaseClient";
+import { fetchSessionRows, fetchLeaderboardRowsByMode, fetchSessionRowsByTeam } from "../../lib/sessionSummaries";
 import StrikeCompass from "../../components/strikeCompass";
 import { IconGauge, IconBullseye, IconStopwatch, IconTrendUp, IconBarChart, IconBoxingGlove, IconRocket, IconTrophy, IconCompass, IconClipboard, IconPencil, IconPlay, type IconProps } from "../../components/icons";
 import { ModeIcon } from "../../components/modeIcon";
@@ -361,13 +362,14 @@ export default function Dashboard() {
       try {
         // Fetch all sessions across all modes in one round-trip.
         // num_events powers the volume pill (max hits in a single session).
-        // Reads go through tiered_session_summaries() instead of the table.
+        // Reads go through tiered_session_rows() (list-view columns of
+        // tiered_session_summaries(), arrays stripped) instead of the table.
         // Program scope, coach core-team scope, the tier's entitled mode set
         // and its history window are all applied inside the function
         // (supabase/entitlements.sql §6a), and the gated columns are revoked
         // from the client outright — so none of the filters that used to live
         // here are load-bearing for access control any more.
-        const { data: progressRows } = await supabase!.rpc("tiered_session_summaries");
+        const { data: progressRows } = await fetchSessionRows();
 
         // The RPC orders newest-first; this aggregation wants oldest-first so
         // the early-vs-late trend split below reads in chronological order.
@@ -618,7 +620,7 @@ export default function Dashboard() {
         // Tier-scoped read. Sessions recorded in a mode the program is not
         // entitled to never appear in this list — the rows are dropped
         // server-side, not filtered here.
-        const { data, error } = await supabase!.rpc("tiered_session_summaries");
+        const { data, error } = await fetchSessionRows();
         if (error) throw error;
 
         setRecentSessions(
@@ -1242,27 +1244,22 @@ export default function Dashboard() {
     setVolumeInsightRows([]);
     setTargetInsightRows([]);
 
-    // One tier-scoped call per mode. The RPC applies program and core-team
-    // scoping itself, so the only thing passed here is the narrowing the user
-    // actually asked for. A tier that has not unlocked a mode gets an empty
-    // array back — the Volume and Target calls simply return nothing below
-    // Tier III, which is what starves the fatigue tracker of its inputs.
+    // One tier-scoped call for all five modes, split by mode client-side.
+    // The RPC applies program and core-team scoping itself, so the only
+    // thing passed here is the narrowing the user actually asked for. A tier
+    // that has not unlocked a mode gets an empty array for it — Volume and
+    // Target come back empty below Tier III, which is what starves the
+    // fatigue tracker of its inputs.
     const range = leaderRangeDays;
-    const qStrength = supabase!.rpc("tiered_session_summaries", { p_mode: "power",    p_range_days: range });
-    const qReaction = supabase!.rpc("tiered_session_summaries", { p_mode: "reaction", p_range_days: range });
-    const qAccuracy = supabase!.rpc("tiered_session_summaries", { p_mode: "accuracy", p_range_days: range });
-    const qVolume   = supabase!.rpc("tiered_session_summaries", { p_mode: "volume",   p_range_days: range });
-    const qTarget   = supabase!.rpc("tiered_session_summaries", { p_mode: "target",   p_range_days: range });
 
     (async () => {
       try {
-        const [strengthRes, reactionRes, accuracyRes, volumeRes, targetRes] = await Promise.all([
-          qStrength,
-          qReaction,
-          qAccuracy,
-          qVolume,
-          qTarget,
-        ]);
+        const byMode = await fetchLeaderboardRowsByMode(range);
+        const strengthRes = byMode.power;
+        const reactionRes = byMode.reaction;
+        const accuracyRes = byMode.accuracy;
+        const volumeRes   = byMode.volume;
+        const targetRes   = byMode.target;
 
         // ── Strength ────────────────────────────────────────────────────────────
         if (!strengthRes.error && strengthRes.data) {
@@ -1478,25 +1475,18 @@ export default function Dashboard() {
                          : teamLeaderMetric;
 
         const rows: TeamLeaderRow[] = [];
+        // One call for every team, bucketed client-side: a core team by
+        // core_team_id, a sub-team by its roster. Both only narrow the
+        // tier-scoped result, so an id from outside the program gets nothing.
+        const rowsByTeam = await fetchSessionRowsByTeam(allTeams, subTeamMembers, {
+          mode: modeFilter,
+          rangeDays: leaderRangeDays,
+        });
 
         for (const team of allTeams) {
           const isCore = team.team_type === "core";
 
-          // A core team scopes by core_team_id; a sub-team scopes by its
-          // roster. Both narrow the tier-scoped result rather than widening
-          // it, so an id from outside the program still returns nothing.
-          let athleteIds: string[] | null = null;
-          if (!isCore) {
-            athleteIds = subTeamMembers.get(team.id) ?? [];
-            if (athleteIds.length === 0) continue;
-          }
-
-          const { data } = await supabase!.rpc("tiered_session_summaries", {
-            p_mode: modeFilter,
-            p_range_days: leaderRangeDays,
-            p_athlete_ids: athleteIds,
-            p_core_team_id: isCore ? team.id : null,
-          });
+          const data = rowsByTeam.get(team.id);
           if (!data || data.length === 0) continue;
 
           if (teamLeaderMetric === "strength") {
@@ -1602,21 +1592,15 @@ export default function Dashboard() {
                          : teamImprovedMetric === "form"     ? null
                          : teamImprovedMetric;
         const improved: TeamImprovedRow[] = [];
+        const rowsByTeam = await fetchSessionRowsByTeam(teams, subTeamMembers, {
+          mode: modeFilter,
+          rangeDays: leaderRangeDays,
+        });
 
         for (const team of teams) {
           const isCore = team.team_type === "core";
-          let athleteIds: string[] | null = null;
-          if (!isCore) {
-            athleteIds = subTeamMembers.get(team.id) ?? [];
-            if (athleteIds.length === 0) continue;
-          }
-
-          const { data: teamRows } = await supabase!.rpc("tiered_session_summaries", {
-            p_mode: modeFilter,
-            p_range_days: leaderRangeDays,
-            p_athlete_ids: athleteIds,
-            p_core_team_id: isCore ? team.id : null,
-          });
+          if (!rowsByTeam.has(team.id)) continue;
+          const teamRows = rowsByTeam.get(team.id)!;
 
           // Oldest-first: the improvement split below compares the first half
           // of a team's history against the last.
@@ -2188,8 +2172,8 @@ export default function Dashboard() {
 
     (async () => {
       try {
-        const { data: analysisRows, error } = await supabase!.rpc("tiered_session_summaries", {
-          p_athlete_ids: [analysisAthleteId],
+        const { data: analysisRows, error } = await fetchSessionRows({
+          athleteIds: [analysisAthleteId],
         });
 
         if (error) throw error;
@@ -2349,9 +2333,9 @@ export default function Dashboard() {
                          : athleteImprovedMetric === "form"     ? null  // all modes
                          : athleteImprovedMetric;
 
-        const { data: improvedRows } = await supabase!.rpc("tiered_session_summaries", {
-          p_mode: modeFilter,
-          p_range_days: leaderRangeDays,
+        const { data: improvedRows } = await fetchSessionRows({
+          mode: modeFilter,
+          rangeDays: leaderRangeDays,
         });
 
         // Oldest-first: Most Improved compares the first half of each
@@ -2481,11 +2465,11 @@ export default function Dashboard() {
       metric === "accuracy" ? "accuracy" :
       metric === "reaction" ? "reaction" : null;
 
-    const { data: chartRows, error } = await supabase.rpc("tiered_session_summaries", {
-      p_mode: modeFilter,
-      p_athlete_ids:
+    const { data: chartRows, error } = await fetchSessionRows({
+      mode: modeFilter,
+      athleteIds:
         entity.kind === "athlete" ? [entity.id] : (isSubTeam ? athleteIds : null),
-      p_core_team_id: entity.kind === "team" && !isSubTeam ? entity.id : null,
+      coreTeamId: entity.kind === "team" && !isSubTeam ? entity.id : null,
     });
     if (error || !chartRows) return [];
 
