@@ -4410,7 +4410,7 @@ html.is-native .ts-webOnly {
 /* Input & Select */
 .ts-demoInput,
 .ts-demoSelect {
-  background: rgba(255, 255, 255, 0.04);
+  background-color: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
   padding: 10px 12px;
@@ -4430,7 +4430,7 @@ html.is-native .ts-webOnly {
 .ts-demoInput:focus,
 .ts-demoSelect:focus {
   border-color: rgba(180, 0, 255, 0.5);
-  background: rgba(180, 0, 255, 0.05);
+  background-color: rgba(180, 0, 255, 0.05);
 }
 
 /* Select arrow */
@@ -4532,7 +4532,7 @@ html.is-native .ts-webOnly {
 
 :root[data-theme="light"] .ts-demoInput,
 :root[data-theme="light"] .ts-demoSelect {
-  background: rgba(20, 20, 40, 0.03);
+  background-color: rgba(20, 20, 40, 0.03);
   border-color: rgba(20, 20, 40, 0.14);
   color: var(--text);
 }
@@ -4544,7 +4544,7 @@ html.is-native .ts-webOnly {
 :root[data-theme="light"] .ts-demoInput:focus,
 :root[data-theme="light"] .ts-demoSelect:focus {
   border-color: rgba(180, 0, 255, 0.5);
-  background: rgba(180, 0, 255, 0.04);
+  background-color: rgba(180, 0, 255, 0.04);
 }
 
 :root[data-theme="light"] .ts-demoSelect {
