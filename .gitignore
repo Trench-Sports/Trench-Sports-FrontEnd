@@ -21,3 +21,5 @@ sdkconfig.old
 
 # Supabase CLI version-check cache
 supabase/.temp/
+.vercel
+.env*
