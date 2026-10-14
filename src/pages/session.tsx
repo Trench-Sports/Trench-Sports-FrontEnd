@@ -56,6 +56,8 @@ import { parseBatteryPct, lowBatteryAlerts, type BattAlertLevel } from "../bluet
 import { configureImu, applyImuCfg } from "../bluetooth/imuTelemetry";
 import BatteryBadge, { LowBatteryBanner } from "../components/batteryBadge";
 import BagInfoPills from "../components/bagInfoPills";
+import { BagShellArt, bagTorsoStyle } from "../components/bagShell";
+import { BAG_ASPECT, BAG_FILL, SHELL_CLIP } from "../tools/bagShape";
 import {
   parseImpactFrame,
   captureFromHello,
@@ -2700,8 +2702,8 @@ export default function Session() {
 
     // Spawn ripples — match the mirrored grid: data C8 at visual-left, data C1 at visual-right.
     // (ESP32 numbers columns from the opposite side; display is flipped to show C1 on viewer's left.)
-    // Rows: R12 top, R1 bottom. Padding: 28px top, 6px bottom/sides.
-    const gridPadTop    = 28;
+    // Rows: R12 top, R1 bottom. Padding: 6px all round, inside the torso box.
+    const gridPadTop    = 6;
     const gridPadBottom = 6;
     const gridPadSide   = 6;
     const newRipples = hits.map(([r, c, mv]) => {
@@ -3769,7 +3771,7 @@ export default function Session() {
     /* Wave 2 #4 (refined) — Focus mode lifts the 1100px page cap and
        shrinks the page padding so the bag can grow to fill the viewport.
        The bag itself is then clamped by .ts-ses-layout--focused .ts-ses-bagWrap
-       (see <style> block) using min(100%, (100dvh - chrome) * 0.72) so it
+       (see <style> block) using min(100%, (100dvh - chrome) * BAG_ASPECT) so it
        respects the user's viewport height too. */
     <div
       className={focused ? "ts-ses-page ts-ses-page--focused" : "ts-ses-page"}
@@ -4353,17 +4355,14 @@ export default function Session() {
             // gates itself behind sessionActive.
             onDoubleClick={() => setFocused(f => !f)}
             style={{
-              boxShadow: bleStatus === "connected"
-                ? `0 0 40px -10px ${MODE_META[sessionMode].glow.replace("0.55","0.35")}, inset 0 0 60px -20px ${MODE_META[sessionMode].glow.replace("0.55","0.12")}`
-                : "none",
-              borderColor: bleStatus === "connected"
-                ? `${MODE_META[sessionMode].color}44`
-                : "var(--panel-border)",
               // Wave 2 #4 (refined) — also transition `width` so the bag
               // visibly scales between focus / unfocus instead of snapping.
-              transition: "border-color 300ms, box-shadow 300ms, width 380ms cubic-bezier(.25,.46,.45,.94)",
+              transition: "width 380ms cubic-bezier(.25,.46,.45,.94)",
             }}
           >
+            {/* TSB-400 shell + screen print; edge picks up the mode colour when live. */}
+            <BagShellArt edge={bleStatus === "connected" ? MODE_META[sessionMode].color : undefined} />
+
             {/* Wave 2 #5 — MiniStatStrip. Top-left glass pills with live hits,
                 peak voltage, and elapsed time. pointerEvents:none so it never
                 blocks the bag. Sized to fit between the left edge and the
@@ -4481,110 +4480,104 @@ export default function Session() {
               </div>
             )}
 
-            {/* Bag label */}
-            <div style={{
-              position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
-              fontSize: 9, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase",
-              opacity: 0.30, pointerEvents: "none", zIndex: 4, whiteSpace: "nowrap",
-            }}>
-              Heavy Bag — {NUM_ROWS} × {NUM_COLS} Grid
-            </div>
-
-            {/* Accuracy rings overlay */}
-            {sessionMode === "accuracy" && (
-              <div style={{
-                position: "absolute", inset: 0, pointerEvents: "none",
-                display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3,
-              }}>
-                {[
-                  { size: "20%",  color: "rgba(0,255,120,0.60)" },
-                  { size: "40%",  color: "rgba(0,220,255,0.38)" },
-                  { size: "62%",  color: "rgba(255,160,0,0.28)" },
-                  { size: "84%",  color: "rgba(255,60,60,0.20)" },
-                ].map((r, i) => (
-                  <div key={i} style={{
-                    position: "absolute",
-                    width: r.size, paddingBottom: r.size,
-                    borderRadius: "50%",
-                    border: `1px solid ${r.color}`,
-                    left: "50%", top: "50%",
-                    transform: "translate(-50%, -50%)",
-                  }} />
-                ))}
+            {/* Grid-aligned guides sit on the torso, where the sensor pad is. */}
+            <div style={{ ...bagTorsoStyle, pointerEvents: "none" }}>
+              {/* Accuracy rings overlay */}
+              {sessionMode === "accuracy" && (
                 <div style={{
-                  position: "absolute", width: 10, height: 10, borderRadius: "50%",
-                  background: "rgba(0,255,120,0.9)",
-                  boxShadow: "0 0 10px 4px rgba(0,255,120,0.5)",
-                }} />
-              </div>
-            )}
+                  position: "absolute", inset: 0, pointerEvents: "none",
+                  display: "flex", alignItems: "center", justifyContent: "center", zIndex: 3,
+                }}>
+                  {[
+                    { size: "20%",  color: "rgba(0,255,120,0.60)" },
+                    { size: "40%",  color: "rgba(0,220,255,0.38)" },
+                    { size: "62%",  color: "rgba(255,160,0,0.28)" },
+                    { size: "84%",  color: "rgba(255,60,60,0.20)" },
+                  ].map((r, i) => (
+                    <div key={i} style={{
+                      position: "absolute",
+                      width: r.size, paddingBottom: r.size,
+                      borderRadius: "50%",
+                      border: `1px solid ${r.color}`,
+                      left: "50%", top: "50%",
+                      transform: "translate(-50%, -50%)",
+                    }} />
+                  ))}
+                  <div style={{
+                    position: "absolute", width: 10, height: 10, borderRadius: "50%",
+                    background: "rgba(0,255,120,0.9)",
+                    boxShadow: "0 0 10px 4px rgba(0,255,120,0.5)",
+                  }} />
+                </div>
+              )}
 
-            {/* Target mode — 3×3 zone grid lines + 1–9 number labels
-                (always visible when mode is active so athletes can map the
-                spoken cue number to a physical region of the bag).
-                zIndex 8 so the labels float above the pre-start "Tap to
-                Start" backdrop (zIndex 7). Rendered before the cue overlays
-                below so an active TargetOverlay (also zIndex 8) cleanly
-                covers these large numbers during signal/result phases. */}
-            {sessionMode === "target" && (
-              <div style={{
-                position: "absolute", inset: 0, pointerEvents: "none", zIndex: 8,
-                padding: "28px 6px 6px", boxSizing: "border-box",
-              }}>
-                {/* Horizontal dividers at 1/3 and 2/3 */}
-                {[1, 2].map(i => (
-                  <div key={`h${i}`} style={{
-                    position: "absolute", left: 6, right: 6,
-                    top: `calc(28px + (100% - 34px) * ${i / 3})`,
-                    height: 1,
-                    background: "rgba(0,255,136,0.18)",
-                  }} />
-                ))}
-                {/* Vertical dividers at 1/3 and 2/3 */}
-                {[1, 2].map(i => (
-                  <div key={`v${i}`} style={{
-                    position: "absolute", top: 28, bottom: 6,
-                    left: `calc(6px + (100% - 12px) * ${i / 3})`,
-                    width: 1,
-                    background: "rgba(0,255,136,0.18)",
-                  }} />
-                ))}
-                {/* 1–9 number labels — one per zone, centered inside each
-                    1/3 × 1/3 section. Phone-keypad order: row 0 = 1/2/3, etc.
-                    `translate(-50%, -50%)` anchors the number on the cell's
-                    midpoint so the digit visually sits dead-center even as
-                    the bag resizes responsively. */}
-                {[0, 1, 2].map(rowIdx =>
-                  [0, 1, 2].map(colIdx => {
-                    const num = rowIdx * 3 + colIdx + 1;
-                    return (
-                      <div
-                        key={`n${num}`}
-                        style={{
-                          position: "absolute",
-                          // Vertical center of cell: padding-top (28px) +
-                          // (rowIdx + 0.5) thirds of usable height.
-                          top:  `calc(28px + (100% - 34px) * ${rowIdx + 0.5} / 3)`,
-                          // Horizontal center of cell: padding-left (6px) +
-                          // (colIdx + 0.5) thirds of usable width.
-                          left: `calc(6px + (100% - 12px) * ${colIdx + 0.5} / 3)`,
-                          transform: "translate(-50%, -50%)",
-                          fontSize: 36,
-                          fontWeight: 900,
-                          color: "rgba(0,255,136,0.45)",
-                          fontVariantNumeric: "tabular-nums",
-                          letterSpacing: "-0.04em",
-                          textShadow: "0 0 12px rgba(0,255,136,0.35)",
-                          lineHeight: 1,
-                        }}
-                      >
-                        {num}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            )}
+              {/* Target mode — 3×3 zone grid lines + 1–9 number labels
+                  (always visible when mode is active so athletes can map the
+                  spoken cue number to a physical region of the bag).
+                  zIndex 8 so the labels float above the pre-start "Tap to
+                  Start" backdrop (zIndex 7). Rendered before the cue overlays
+                  below so an active TargetOverlay (also zIndex 8) cleanly
+                  covers these large numbers during signal/result phases. */}
+              {sessionMode === "target" && (
+                <div style={{
+                  position: "absolute", inset: 0, pointerEvents: "none", zIndex: 8,
+                  padding: 6, boxSizing: "border-box",
+                }}>
+                  {/* Horizontal dividers at 1/3 and 2/3 */}
+                  {[1, 2].map(i => (
+                    <div key={`h${i}`} style={{
+                      position: "absolute", left: 6, right: 6,
+                      top: `calc(6px + (100% - 12px) * ${i / 3})`,
+                      height: 1,
+                      background: "rgba(0,255,136,0.18)",
+                    }} />
+                  ))}
+                  {/* Vertical dividers at 1/3 and 2/3 */}
+                  {[1, 2].map(i => (
+                    <div key={`v${i}`} style={{
+                      position: "absolute", top: 6, bottom: 6,
+                      left: `calc(6px + (100% - 12px) * ${i / 3})`,
+                      width: 1,
+                      background: "rgba(0,255,136,0.18)",
+                    }} />
+                  ))}
+                  {/* 1–9 number labels — one per zone, centered inside each
+                      1/3 × 1/3 section. Phone-keypad order: row 0 = 1/2/3, etc.
+                      `translate(-50%, -50%)` anchors the number on the cell's
+                      midpoint so the digit visually sits dead-center even as
+                      the bag resizes responsively. */}
+                  {[0, 1, 2].map(rowIdx =>
+                    [0, 1, 2].map(colIdx => {
+                      const num = rowIdx * 3 + colIdx + 1;
+                      return (
+                        <div
+                          key={`n${num}`}
+                          style={{
+                            position: "absolute",
+                            // Vertical center of cell: padding-top (28px) +
+                            // (rowIdx + 0.5) thirds of usable height.
+                            top:  `calc(6px + (100% - 12px) * ${rowIdx + 0.5} / 3)`,
+                            // Horizontal center of cell: padding-left (6px) +
+                            // (colIdx + 0.5) thirds of usable width.
+                            left: `calc(6px + (100% - 12px) * ${colIdx + 0.5} / 3)`,
+                            transform: "translate(-50%, -50%)",
+                            fontSize: 36,
+                            fontWeight: 900,
+                            color: "rgba(0,255,136,0.45)",
+                            fontVariantNumeric: "tabular-nums",
+                            letterSpacing: "-0.04em",
+                            textShadow: "0 0 12px rgba(0,255,136,0.35)",
+                            lineHeight: 1,
+                          }}
+                        >
+                          {num}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Reaction overlay */}
             {sessionMode === "reaction" && sessionActive && (
@@ -4609,14 +4602,14 @@ export default function Session() {
               />
             )}
 
-            {/* Hit grid — fills the bag */}
-            <div style={{ position: "absolute", inset: 0 }}>
+            {/* Hit grid — torso-wide, full height, like the sensor pad */}
+            <div style={bagTorsoStyle}>
               <div style={{
                 display: "grid",
                 gridTemplateColumns: `repeat(${NUM_COLS}, 1fr)`,
                 gridTemplateRows: `repeat(${NUM_ROWS}, 1fr)`,
                 gap: 3,
-                padding: "28px 6px 6px",
+                padding: 6,
                 width: "100%",
                 height: "100%",
                 boxSizing: "border-box",
@@ -4672,7 +4665,6 @@ export default function Session() {
                   })
                 )}
               </div>
-            </div>
 
             {/* Impact ripples */}
             {ripples.map(r => (
@@ -4685,6 +4677,7 @@ export default function Session() {
                 onDone={() => removeRipple(r.id)}
               />
             ))}
+            </div>
 
             {/* Bottom glow edge */}
             <div style={{
@@ -4699,23 +4692,24 @@ export default function Session() {
               <div style={{
                 position: "absolute", inset: 0, display: "flex", flexDirection: "column",
                 alignItems: "center", justifyContent: "center",
-                background: "rgba(7,7,10,0.78)", backdropFilter: "blur(6px)",
-                borderRadius: 16, zIndex: 5, pointerEvents: "none",
+                // Light veil, no blur: the shell, print and grid stay readable while idle.
+                background: "rgba(7,7,10,0.32)",
+                zIndex: 5, pointerEvents: "none",
               }}>
                 {!selectedAthlete ? (
                   <>
-                    <div style={{ display: "flex", marginBottom: 10, opacity: 0.28, color: "var(--text)" }}>
+                    <div style={{ display: "flex", marginBottom: 10, opacity: 0.6, color: "#fff" }}>
                       <IconUser size={32} />
                     </div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Select an athlete to begin</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", opacity: 0.85 }}>Select an athlete to begin</div>
                   </>
                 ) : (
                   <>
                     <div style={{
                       width: 52, height: 52, borderRadius: "50%",
-                      border: "2px solid rgba(180,0,255,0.28)",
+                      border: "2px solid rgba(180,0,255,0.6)",
                       display: "flex", alignItems: "center", justifyContent: "center",
-                      marginBottom: 12, opacity: 0.38,
+                      marginBottom: 12, opacity: 0.85,
                     }}>
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
                         <path d="M8.5 12.5c2-2 5-2 7 0" stroke="rgba(255,255,255,0.7)" strokeWidth="1.8" strokeLinecap="round"/>
@@ -4723,7 +4717,7 @@ export default function Session() {
                         <circle cx="12" cy="16" r="1.5" fill="rgba(255,255,255,0.6)" />
                       </svg>
                     </div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: "var(--text)", opacity: 0.55 }}>Connect bag to see impacts</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#fff", opacity: 0.85 }}>Connect bag to see impacts</div>
                   </>
                 )}
               </div>
@@ -4968,9 +4962,9 @@ export default function Session() {
 
         /* Wave 2 #4 (refined) — Adaptive zoom for focus mode.
            The bag is clamped by BOTH viewport-width and viewport-height so it
-           fits any device while preserving its 0.72 aspect ratio (W:H).
+           fits any device while preserving its bag-shell aspect ratio (W:H).
            - 100% fills the now-full-width middle column (page cap is lifted).
-           - (100dvh - chrome) * 0.72 caps width by available viewport height,
+           - (100dvh - chrome) * ${BAG_ASPECT} caps width by available viewport height,
              so on tall mobile screens / short desktop windows the bag never
              overflows vertically. min() picks whichever is smaller.
            Chrome budget (~96px) accounts for: page padding (8 top + 8 bottom),
@@ -4986,23 +4980,23 @@ export default function Session() {
           /* dvh is the dynamic viewport unit — it accounts for mobile URL bars
              showing/hiding without layout jumps. Falls back via the @supports
              check below for very old browsers. */
-          width: min(100%, calc((100vh - 96px) * 0.72));
+          width: min(100%, calc((100vh - 96px) * ${BAG_ASPECT}));
           margin: 0 auto;
         }
         @supports (height: 100dvh) {
           .ts-ses-layout--focused .ts-ses-bagWrap {
-            width: min(100%, calc((100dvh - 96px) * 0.72));
+            width: min(100%, calc((100dvh - 96px) * ${BAG_ASPECT}));
           }
         }
         /* On very narrow / short screens (small phones in landscape) the
            default chrome budget is too generous — give the bag more room. */
         @media (max-height: 520px) {
           .ts-ses-layout--focused .ts-ses-bagWrap {
-            width: min(100%, calc((100vh - 70px) * 0.72));
+            width: min(100%, calc((100vh - 70px) * ${BAG_ASPECT}));
           }
           @supports (height: 100dvh) {
             .ts-ses-layout--focused .ts-ses-bagWrap {
-              width: min(100%, calc((100dvh - 70px) * 0.72));
+              width: min(100%, calc((100dvh - 70px) * ${BAG_ASPECT}));
             }
           }
         }
@@ -5069,21 +5063,18 @@ export default function Session() {
         /* ── Bag wrap — mirrors ts-sim-bagWrap exactly ── */
         .ts-ses-bagWrap {
           position: relative;
-          border-radius: 16px;
           overflow: hidden;
-          border: 1px solid var(--panel-border);
-          background: var(--panel);
-          backdrop-filter: blur(12px);
-          aspect-ratio: 0.72;
+          /* TSB-400 silhouette (src/tools/bagShape.ts). clip-path keeps every
+             full-bag overlay inside the shell. */
+          aspect-ratio: ${BAG_ASPECT};
+          clip-path: ${SHELL_CLIP};
+          background: ${BAG_FILL};
           user-select: none;
         }
 
         /* ── Cells — mirrors ts-sim-cell ── */
         .ts-ses-cell {
           border: 1px solid rgba(255,255,255,0.12);
-        }
-        :root[data-theme="light"] .ts-ses-cell {
-          border-color: rgba(0,0,0,0.12);
         }
 
         /* ── Onboarding flow glow / bounce ── */
