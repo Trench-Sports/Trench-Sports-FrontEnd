@@ -7,6 +7,7 @@ import { Skel } from "./Skel";
 import StrikeCompass from "../strikeCompass";
 import { IconCompass } from "../icons";
 import { LockBadge } from "../lockedFeature";
+import { BagShellArt, bagShellStyle, bagTorsoStyle } from "../bagShell";
 import type { CoachDashboard } from "../../hooks/useCoachDashboard";
 
 export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
@@ -280,64 +281,52 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
           <div className="ts-heatmapBagCol">
             <div
               className="ts-dash-bagWrap"
-              style={{
-                boxShadow: !heatmapLoading
-                  ? `0 0 40px -10px ${modeGlow.replace("0.55","0.30")}, inset 0 0 60px -20px ${modeGlow.replace("0.55","0.10")}`
-                  : "none",
-                borderColor: !heatmapLoading
-                  ? modeAccent + "55"
-                  : "var(--panel-border, rgba(255,255,255,0.10))",
-              }}
+              // Shell overrides the page's rectangular .ts-dash-bagWrap box.
+              style={{ ...bagShellStyle, border: "none", borderRadius: 0, backdropFilter: "none" }}
             >
-              {/* Bag label */}
-              <div style={{
-                position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)",
-                fontSize: 9, fontWeight: 700, letterSpacing: "0.18em", textTransform: "uppercase",
-                opacity: 0.28, pointerEvents: "none", zIndex: 4, whiteSpace: "nowrap",
-                color: "currentColor",
-              }}>
-                Heavy Bag — 12 × 8 Grid
-              </div>
+              <BagShellArt edge={!heatmapLoading ? modeAccent : undefined} />
 
-              {/* Target mode zone overlay — highlights cued zone on active event */}
-              {(() => {
-                const m = (sessionSummary?.mode ?? "power").toLowerCase();
-                if (m !== "target" || !activeEvent?.targetZone) return null;
-                const z = activeEvent.targetZone;
-                // Map zone to grid row/col ranges (1-indexed, matching ESP32)
-                const rowRange = z.row === "top" ? [9,12] : z.row === "middle" ? [5,8] : [1,4];
-                // Column direction is mirrored: C8 renders leftmost, C1 rightmost
-                const colRange = z.col === "left" ? [7,8] : z.col === "center" ? [3,6] : [1,2];
-                const correct  = activeEvent.zoneCorrect;
-                const zColor   = correct === true  ? "#00ff88"
-                               : correct === false ? "#ff6060"
-                               : "#00ff88";
-                // Compute overlay position relative to the 12-row × 8-col grid
-                // Grid padding: 28px top, 6px bottom/sides
-                const padTop = 28; const padBot = 6; const padSide = 6;
-                const rowFrac = (ri: number) => (12 - ri + 0.5) / 12;  // visual top fraction for row ri
-                const colFrac = (ci: number) => (8 - ci + 0.5) / 8;    // visual left fraction (mirrored: C8=left)
-                const top1 = rowFrac(rowRange[1]);   // top edge = highest row (largest r = higher on grid)
-                const top2 = rowFrac(rowRange[0] - 1);
-                const left1 = colFrac(colRange[1]);   // left edge = highest col number (renders leftmost)
-                const left2 = colFrac(colRange[0] - 1);
-                return (
-                  <div style={{
-                    position: "absolute",
-                    top:    `calc(${padTop}px + (100% - ${padTop + padBot}px) * ${top1})`,
-                    left:   `calc(${padSide}px + (100% - ${padSide * 2}px) * ${left1})`,
-                    width:  `calc((100% - ${padSide * 2}px) * ${left2 - left1})`,
-                    height: `calc((100% - ${padTop + padBot}px) * ${top2 - top1})`,
-                    border: `2px solid ${zColor}`,
-                    background: `${zColor}18`,
-                    borderRadius: 6,
-                    pointerEvents: "none",
-                    zIndex: 6,
-                    transition: "border-color 200ms, background 200ms",
-                    boxShadow: `0 0 12px 2px ${zColor}44`,
-                  }} />
-                );
-              })()}
+              <div style={{ ...bagTorsoStyle, pointerEvents: "none" }}>
+                {/* Target mode zone overlay — highlights cued zone on active event */}
+                {(() => {
+                  const m = (sessionSummary?.mode ?? "power").toLowerCase();
+                  if (m !== "target" || !activeEvent?.targetZone) return null;
+                  const z = activeEvent.targetZone;
+                  // Map zone to grid row/col ranges (1-indexed, matching ESP32)
+                  const rowRange = z.row === "top" ? [9,12] : z.row === "middle" ? [5,8] : [1,4];
+                  // Column direction is mirrored: C8 renders leftmost, C1 rightmost
+                  const colRange = z.col === "left" ? [7,8] : z.col === "center" ? [3,6] : [1,2];
+                  const correct  = activeEvent.zoneCorrect;
+                  const zColor   = correct === true  ? "#00ff88"
+                                 : correct === false ? "#ff6060"
+                                 : "#00ff88";
+                  // Compute overlay position relative to the 12-row × 8-col grid
+                  // Grid padding: 6px all round, inside the torso box
+                  const padTop = 6; const padBot = 6; const padSide = 6;
+                  const rowFrac = (ri: number) => (12 - ri + 0.5) / 12;  // visual top fraction for row ri
+                  const colFrac = (ci: number) => (8 - ci + 0.5) / 8;    // visual left fraction (mirrored: C8=left)
+                  const top1 = rowFrac(rowRange[1]);   // top edge = highest row (largest r = higher on grid)
+                  const top2 = rowFrac(rowRange[0] - 1);
+                  const left1 = colFrac(colRange[1]);   // left edge = highest col number (renders leftmost)
+                  const left2 = colFrac(colRange[0] - 1);
+                  return (
+                    <div style={{
+                      position: "absolute",
+                      top:    `calc(${padTop}px + (100% - ${padTop + padBot}px) * ${top1})`,
+                      left:   `calc(${padSide}px + (100% - ${padSide * 2}px) * ${left1})`,
+                      width:  `calc((100% - ${padSide * 2}px) * ${left2 - left1})`,
+                      height: `calc((100% - ${padTop + padBot}px) * ${top2 - top1})`,
+                      border: `2px solid ${zColor}`,
+                      background: `${zColor}18`,
+                      borderRadius: 6,
+                      pointerEvents: "none",
+                      zIndex: 6,
+                      transition: "border-color 200ms, background 200ms",
+                      boxShadow: `0 0 12px 2px ${zColor}44`,
+                    }} />
+                  );
+                })()}
+              </div>
 
               {/* Loading overlay */}
               {heatmapLoading && (
@@ -351,14 +340,14 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                 </div>
               )}
 
-              {/* Hit grid — 12 rows × 8 cols */}
-              <div style={{ position: "absolute", inset: 0 }}>
+              {/* Hit grid — 12 rows × 8 cols, torso-wide like the sensor pad */}
+              <div style={bagTorsoStyle}>
                 <div style={{
                   display: "grid",
                   gridTemplateColumns: "repeat(8, 1fr)",
                   gridTemplateRows: "repeat(12, 1fr)",
                   gap: 3,
-                  padding: "28px 6px 6px",
+                  padding: 6,
                   width: "100%",
                   height: "100%",
                   boxSizing: "border-box",
@@ -414,7 +403,7 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                             boxShadow: isAlive ? `0 0 10px 2px ${glow}` : "none",
                             border: isAlive
                               ? `1px solid ${color}${Math.round(intensity * 0.6 * 255).toString(16).padStart(2,"0")}`
-                              : undefined,
+                              : "1px solid rgba(255,255,255,0.12)",
                             transform: isJustHit ? "scale(1.12)" : isAlive && intensity > 0.7 ? "scale(1.06)" : "scale(1)",
                             transition: "background 80ms, box-shadow 80ms, transform 80ms, border-color 80ms",
                             position: "relative",
@@ -424,13 +413,12 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                     })
                   )}
                 </div>
-              </div>
 
               {/* Impact ripples */}
               {heatmapRipples.map(ripple => {
-                // Grid renders rows top→bottom as R12→R1 with padding: "28px 6px 6px".
+                // Grid renders rows top→bottom as R12→R1 with padding: 6.
                 // ri = visual row index (0 = top = R12), so ri = 12 - ripple.r
-                const gridPadTop    = 28; // matches padding "28px 6px 6px"
+                const gridPadTop    = 6;  // matches the grid's padding
                 const gridPadBottom = 6;
                 const gridPadSide   = 6;
                 const ri = 12 - ripple.r; // 0-based from top
@@ -455,6 +443,7 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                   </div>
                 );
               })}
+              </div>
 
               {/* Volume mode window badge */}
               {(() => {
