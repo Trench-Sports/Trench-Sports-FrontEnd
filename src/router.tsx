@@ -6,24 +6,33 @@ import MobileLayout from "./components/mobileLayout";
 import Landing from "./pages/landing";
 import Signup from "./pages/signup";
 import Login from "./pages/login";
-import Dashboard from "./pages/dashboard";
 import Onboarding from "./pages/onboarding";
 import Contact from "./pages/contact";
 import UseCasePage from "./pages/useCasePage";
-import Privacy from "./pages/privacy";
-import Terms from "./pages/terms";
-import Session from "./pages/session";
-import Dummy from "./pages/dummy";
 import Invite from "./pages/invite";
 
 // Internal-only observability dashboard. Lazy-loaded so its code (and any
 // future charting lib) never ships to coaches' bundles. Not linked in nav.
 const Admin = React.lazy(() => import("./pages/admin"));
 
+// Heavy app pages (session, dashboard, demo, legal) are split out of the
+// landing bundle. A visitor on "/" only downloads them when they navigate.
+const Dashboard = React.lazy(() => import("./pages/dashboard"));
+const Session = React.lazy(() => import("./pages/session"));
+const Dummy = React.lazy(() => import("./pages/dummy"));
+const Privacy = React.lazy(() => import("./pages/privacy"));
+const Terms = React.lazy(() => import("./pages/terms"));
+
 // ── Mobile (iOS / phone) page variants ──────────────────────────────────────
-import MobileLogin from "./pages/mobile/login";
-import MobileHome from "./pages/mobile/home";
-import MobileSwipeDeck from "./components/mobileSwipeDeck";
+const MobileLogin = React.lazy(() => import("./pages/mobile/login"));
+const MobileHome = React.lazy(() => import("./pages/mobile/home"));
+const MobileSwipeDeck = React.lazy(() => import("./components/mobileSwipeDeck"));
+
+// Suspense boundary for a lazy page. fallback={null} matches the blank frame
+// RequireOnboarding already shows while it checks the session.
+function Lazy({ children }: { children: React.ReactNode }) {
+  return <React.Suspense fallback={null}>{children}</React.Suspense>;
+}
 
 import { supabase } from "./supabaseClient";
 import { platform } from "./platform";
@@ -161,37 +170,33 @@ export const router = createBrowserRouter([
       // paint on first frame.
       { path: "/invite/:token", element: <Invite /> },
       { path: "/onboarding", element: <Onboarding /> },
-      { path: "/dummy",      element: <Dummy /> },
+      { path: "/dummy",      element: <Lazy><Dummy /></Lazy> },
       { path: "/contact",    element: <Contact /> },
       // ── Audience use-case pages (one template, one content entry each) ──
       { path: "/college",    element: <UseCasePage slug="college" /> },
       { path: "/pro",        element: <UseCasePage slug="pro" /> },
       { path: "/sports-science", element: <UseCasePage slug="sports-science" /> },
       { path: "/facilities", element: <UseCasePage slug="facilities" /> },
-      { path: "/privacy",    element: <Privacy /> },
-      { path: "/terms",      element: <Terms /> },
+      { path: "/privacy",    element: <Lazy><Privacy /></Lazy> },
+      { path: "/terms",      element: <Lazy><Terms /></Lazy> },
       {
         // Internal analytics. Gating happens inside the page (renders a
         // 404-equivalent for non-internal users), so we don't wrap it in
         // RequireOnboarding — an internal admin may not have a full profile.
         path: "/admin",
-        element: (
-          <React.Suspense fallback={null}>
-            <Admin />
-          </React.Suspense>
-        ),
+        element: <Lazy><Admin /></Lazy>,
       },
       {
         path: "/dashboard",
         element: platform.isNative
           ? <NativeAwareRedirect to="/m/dashboard" />
-          : <RequireOnboarding><Dashboard /></RequireOnboarding>,
+          : <RequireOnboarding><Lazy><Dashboard /></Lazy></RequireOnboarding>,
       },
       {
         path: "/session",
         element: platform.isNative
           ? <NativeAwareRedirect to="/m/session" />
-          : <RequireOnboarding><Session /></RequireOnboarding>,
+          : <RequireOnboarding><Lazy><Session /></Lazy></RequireOnboarding>,
       },
     ],
   },
@@ -214,12 +219,12 @@ export const router = createBrowserRouter([
       // is intentionally NOT wrapped in <RequireOnboarding>, so it's reachable
       // with no account.
       { index: true,   element: <Navigate to="/m/home" replace /> },
-      { path: "home",  element: <MobileHome /> },
-      { path: "login", element: <MobileLogin /> },
+      { path: "home",  element: <Lazy><MobileHome /></Lazy> },
+      { path: "login", element: <Lazy><MobileLogin /></Lazy> },
       {
         // Layout route — no path of its own. The element keeps mounted as
         // long as one of its children matches.
-        element: <RequireOnboarding mobile><MobileSwipeDeck /></RequireOnboarding>,
+        element: <RequireOnboarding mobile><Lazy><MobileSwipeDeck /></Lazy></RequireOnboarding>,
         children: [
           // The children are placeholders — the deck itself decides what to
           // render. We give them an empty fragment instead of leaving the
