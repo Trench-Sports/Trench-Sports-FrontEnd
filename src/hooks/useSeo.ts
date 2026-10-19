@@ -4,20 +4,33 @@
 // next page that mounts overwrites them, and the base index.html tags cover
 // any route that doesn't call this.
 //
-// Known limit: this runs at runtime, so Google (which renders JS) indexes the
-// per-page tags fine, but link unfurlers that read static HTML (LinkedIn,
-// Slack, Twitter) will see index.html's generic tags until a build-time
-// prerender step exists. Tracked as a follow-up in the build plan.
+// This runs at runtime, so on its own only JS-rendering crawlers (Google) would
+// see the per-page tags. scripts/prerender.mjs fixes that for the public
+// marketing routes: after `vite build` it renders each one in headless Chromium
+// and writes the tags this hook set, plus the page text, into
+// dist/<route>.html for crawlers and unfurlers that don't run JS (GPTBot,
+// ClaudeBot, LinkedIn, Slack). A route not in its ROUTES list still only gets
+// index.html's generic tags in static HTML.
 import { useEffect } from "react";
 
 export type SeoInput = {
   title: string;
   description: string;
+  /** Absolute URL, or a path like "/college" resolved against SITE_ORIGIN. */
   canonical?: string;
   ogImage?: string;
+  /** Keep the page out of search results (auth, utility pages). */
+  noindex?: boolean;
 };
 
 const SITE_NAME = "Trench Sports";
+// The apex domain 308-redirects here, so www is the one canonical host.
+export const SITE_ORIGIN = "https://www.trenchsports.ai";
+const DEFAULT_OG_IMAGE = `${SITE_ORIGIN}/trench-sports-og.png`;
+
+function absolute(url: string) {
+  return url.startsWith("http") ? url : `${SITE_ORIGIN}${url}`;
+}
 
 /** Upsert a <meta> tag keyed by name= or property=. */
 function upsertMeta(attr: "name" | "property", key: string, content: string) {
@@ -41,26 +54,30 @@ function upsertCanonical(href: string) {
   el.setAttribute("href", href);
 }
 
-export function useSeo({ title, description, canonical, ogImage }: SeoInput) {
+export function useSeo({ title, description, canonical, ogImage, noindex }: SeoInput) {
   useEffect(() => {
+    const url = canonical ? absolute(canonical) : undefined;
+    const image = ogImage ? absolute(ogImage) : DEFAULT_OG_IMAGE;
+
     document.title = title;
 
     upsertMeta("name", "description", description);
+    upsertMeta("name", "robots", noindex ? "noindex, nofollow" : "index, follow");
 
     // Open Graph
     upsertMeta("property", "og:title", title);
     upsertMeta("property", "og:description", description);
     upsertMeta("property", "og:type", "website");
     upsertMeta("property", "og:site_name", SITE_NAME);
-    if (canonical) upsertMeta("property", "og:url", canonical);
-    if (ogImage) upsertMeta("property", "og:image", ogImage);
+    upsertMeta("property", "og:image", image);
+    if (url) upsertMeta("property", "og:url", url);
 
     // Twitter
-    upsertMeta("name", "twitter:card", ogImage ? "summary_large_image" : "summary");
+    upsertMeta("name", "twitter:card", "summary_large_image");
     upsertMeta("name", "twitter:title", title);
     upsertMeta("name", "twitter:description", description);
-    if (ogImage) upsertMeta("name", "twitter:image", ogImage);
+    upsertMeta("name", "twitter:image", image);
 
-    if (canonical) upsertCanonical(canonical);
-  }, [title, description, canonical, ogImage]);
+    if (url) upsertCanonical(url);
+  }, [title, description, canonical, ogImage, noindex]);
 }

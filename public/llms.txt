@@ -1,0 +1,24 @@
+# Trench Sports
+
+> Trench Sports is a player development platform for football and contact sports. Smart contact sensors measure strike force, speed, and placement on every rep, with live dashboards and session reports so coaches can track how every athlete improves over time.
+
+## What it does
+
+- **Hardware:** a 12×8 matrix sensor pad with 96 pressure cells, burst sampling at up to 3,600 events/second, and sub-100ms feedback. Battery-powered, no wires, no calibration. It mounts to any standard training surface.
+- **Software:** realtime force maps, velocity curves, and placement heatmaps appear on the coach dashboard the moment a rep finishes. Session history, athlete profiles, and trend analytics are all in one view.
+- **Intelligence:** AI flags load asymmetry, tempo drift, and output decline across sessions, and produces auto-generated session summaries and weekly performance reports.
+
+## Who it's for
+
+- [College Athletics](https://www.trenchsports.ai/college): objective contact data for the entire roster, from walk-ons to starters, with coach-ready dashboards and athlete profiles.
+- [Professional Teams](https://www.trenchsports.ai/pro): per-rep force, speed, and placement metrics that feed into the AMS stack a team already runs.
+- [Sports Science Staff](https://www.trenchsports.ai/sports-science): standardized, repeatable contact testing (consistency, symmetry, and output), measured the same way every session.
+- [Performance Facilities](https://www.trenchsports.ai/facilities): measurable athlete development that athletes and parents can see, and a new line of revenue for the facility.
+
+## Pages
+
+- [Home](https://www.trenchsports.ai/): platform overview
+- [Contact](https://www.trenchsports.ai/contact): request a demo or partnership
+- [Sign up](https://www.trenchsports.ai/signup): create an account
+- [Privacy Policy](https://www.trenchsports.ai/privacy)
+- [Terms of Service](https://www.trenchsports.ai/terms)
