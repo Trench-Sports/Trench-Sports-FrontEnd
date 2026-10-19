@@ -7,6 +7,7 @@ import LandingNav from "../components/landingNav";
 import { IconBarChart, IconCrosshair, IconDumbbell, IconFlask, IconGraduationCap, IconTrophy, IconZap } from "../components/icons";
 import { AIInsightVisual, DataCaptureVisual, ImpactPropagationVisual } from "../components/platformVisuals";
 import { TESTIMONIALS, type Testimonial } from "../content/testimonials";
+import { useSeo } from "../hooks/useSeo";
 
 // ── Request Demo Modal ────────────────────────────────────────────────────────
 function RequestDemoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -254,6 +255,12 @@ function TestimonialMarquee({ items }: { items: Testimonial[] }) {
 }
 
 export default function Landing() {
+  useSeo({
+    title: "Trench Sports | Player Development Platform & Contact Analytics",
+    description:
+      "Trench Sports is a player development platform for football and contact sports. Smart contact sensors measure strike force, speed, and placement on every rep so coaches can track athlete progress and develop better players.",
+    canonical: "/",
+  });
   const { ref: impactRef, inView: impactInView } = useInView();
   const { ref: navRef, inView: _navInView } = useInView(0);
   const [scrolled, setScrolled] = useState(false);
@@ -362,8 +369,8 @@ export default function Landing() {
             </h1>
 
             <p className="ts-sub">
-              Measure strike force, speed, and placement — instantly. Built for training sessions where data needs to be
-              fast, clean, and useful.
+              The player development platform for contact sports. Measure strike force, speed, and placement on every
+              rep — instantly — and track how every athlete improves over time.
             </p>
 
             <div className="ts-ctaRow">

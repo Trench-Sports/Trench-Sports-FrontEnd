@@ -77,11 +77,11 @@ export const USE_CASES: Partial<Record<UseCaseSlug, UseCaseContent>> = {
     slug: "college",
     audienceTag: "College Athletics",
     seo: {
-      title: "Contact Data for College Football Programs | Trench Sports",
+      title: "Player Development Data for College Football Programs | Trench Sports",
       description:
-        "Measure force, speed, and placement on every contact rep. Objective development and evaluation data for your entire roster.",
-      // canonical points at the marketing domain, not the Vercel preview host.
-      canonical: "https://trenchsports.ai/college",
+        "Measure force, speed, and placement on every contact rep. Objective player development and evaluation data for your entire roster, from walk-ons to starters.",
+      // canonical points at the marketing domain (www — the apex redirects there).
+      canonical: "https://www.trenchsports.ai/college",
     },
     hero: {
       kicker: "College Football",
@@ -192,10 +192,10 @@ export const USE_CASES: Partial<Record<UseCaseSlug, UseCaseContent>> = {
     slug: "pro",
     audienceTag: "Professional Teams",
     seo: {
-      title: "Contact Analytics for Professional Teams | Trench Sports",
+      title: "Contact Analytics & Player Development for Pro Teams | Trench Sports",
       description:
-        "Per-rep force, speed, and placement metrics that integrate with the AMS stack you already run.",
-      canonical: "https://trenchsports.ai/pro",
+        "Per-rep force, speed, and placement metrics to track player development and readiness, integrated with the AMS stack you already run.",
+      canonical: "https://www.trenchsports.ai/pro",
     },
     hero: {
       kicker: "Professional Football",
@@ -309,8 +309,8 @@ export const USE_CASES: Partial<Record<UseCaseSlug, UseCaseContent>> = {
     seo: {
       title: "Standardized Contact Testing for Sports Science Staff | Trench Sports",
       description:
-        "Repeatable contact-measurement protocols — consistency, symmetry, and output, measured the same way every session.",
-      canonical: "https://trenchsports.ai/sports-science",
+        "Repeatable contact-measurement protocols — consistency, symmetry, and output, measured the same way every session to track athlete development over time.",
+      canonical: "https://www.trenchsports.ai/sports-science",
     },
     hero: {
       kicker: "Sports Science",
@@ -422,10 +422,10 @@ export const USE_CASES: Partial<Record<UseCaseSlug, UseCaseContent>> = {
     slug: "facilities",
     audienceTag: "Performance Facilities",
     seo: {
-      title: "Measurable Training for Performance Facilities | Trench Sports",
+      title: "Measurable Athlete Development for Performance Facilities | Trench Sports",
       description:
-        "Turn every session into measurable data — a new draw for athletes and a new line of revenue.",
-      canonical: "https://trenchsports.ai/facilities",
+        "Turn every session into measurable player development data — show athletes and parents real progress, and add a new line of revenue.",
+      canonical: "https://www.trenchsports.ai/facilities",
     },
     hero: {
       kicker: "Performance Facilities",

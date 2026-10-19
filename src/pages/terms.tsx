@@ -8,6 +8,7 @@ import {
   IconScale, IconHandshake, IconPin, IconLogout, IconMail,
   IconCrosshair, IconBan, IconKey, type IconProps,
 } from "../components/icons";
+import { useSeo } from "../hooks/useSeo";
 
 /* ─── Section data ───────────────────────────────────────── */
 type Section = {
@@ -397,6 +398,11 @@ const SECTIONS: Section[] = [
 
 /* ─── Component ─────────────────────────────────────────── */
 export default function Terms() {
+  useSeo({
+    title: "Terms of Service | Trench Sports",
+    description: "The terms that govern use of the Trench Sports player development platform and hardware.",
+    canonical: "/terms",
+  });
   const [openSection, setOpenSection] = useState<string | null>("agreement");
 
   function toggle(id: string) {

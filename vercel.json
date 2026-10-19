@@ -1,5 +1,15 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "rewrites": [
+    { "source": "/college", "destination": "/college.html" },
+    { "source": "/pro", "destination": "/pro.html" },
+    { "source": "/sports-science", "destination": "/sports-science.html" },
+    { "source": "/facilities", "destination": "/facilities.html" },
+    { "source": "/contact", "destination": "/contact.html" },
+    { "source": "/privacy", "destination": "/privacy.html" },
+    { "source": "/terms", "destination": "/terms.html" },
+    { "source": "/signup", "destination": "/signup.html" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
   "headers": [
     {
       "source": "/(.*)",

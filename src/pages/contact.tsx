@@ -6,6 +6,7 @@ import {
   IconMessage, IconWrench, IconHandshake, IconNewspaper, IconZap,
   IconMail, IconCheck, IconTrendUp, type IconProps,
 } from "../components/icons";
+import { useSeo } from "../hooks/useSeo";
 
 /* ─── Types ─────────────────────────────────────────────── */
 type InquiryType = "general" | "sales" | "support" | "partnership" | "press" | "feedback";
@@ -58,6 +59,12 @@ const FAQS: FAQ[] = [
 
 /* ─── Component ─────────────────────────────────────────── */
 export default function Contact() {
+  useSeo({
+    title: "Contact Us | Trench Sports",
+    description:
+      "Talk to Trench Sports about player development data for your program, partnerships, or support. We read every message.",
+    canonical: "/contact",
+  });
   /* Contact form state */
   const [name, setName]           = useState("");
   const [email, setEmail]         = useState("");

@@ -8,6 +8,7 @@ import { ageFromDob, isAdultDob, maxAdultDob, UNDERAGE_MESSAGE } from "../lib/ag
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
+import { useSeo } from "../hooks/useSeo";
 
 type Role = "coach" | "admin";
 
@@ -30,6 +31,11 @@ function scorePassword(pw: string) {
 }
 
 export default function Signup() {
+  useSeo({
+    title: "Create Your Account | Trench Sports",
+    description: "Start tracking player development with Trench Sports. Create a coach or athlete account.",
+    canonical: "/signup",
+  });
   const navigate = useNavigate();
   const loc = useLocation();
 

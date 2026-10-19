@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /session
+Disallow: /admin
+Disallow: /onboarding
+Disallow: /invite/
+Disallow: /dummy
+Disallow: /login
+Disallow: /m/
+
+Sitemap: https://www.trenchsports.ai/sitemap.xml

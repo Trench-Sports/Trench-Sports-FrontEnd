@@ -7,6 +7,7 @@ import { publicUrl } from "../lib/publicOrigin";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
+import { useSeo } from "../hooks/useSeo";
 
 type LoginForm = {
   email: string;
@@ -22,6 +23,12 @@ function getTheme(): "dark" | "light" {
 }
 
 export default function LoginPage() {
+  useSeo({
+    title: "Log In | Trench Sports",
+    description: "Log in to your Trench Sports account.",
+    canonical: "/login",
+    noindex: true,
+  });
   const nav = useNavigate();
   const loc = useLocation();
 

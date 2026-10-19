@@ -7,6 +7,7 @@ import {
   IconUserCheck, IconCalendar, IconClipboard, IconKey, IconDatabase,
   IconLayers, IconSearch, IconMail, type IconProps,
 } from "../components/icons";
+import { useSeo } from "../hooks/useSeo";
 
 /* ─── Section data ───────────────────────────────────────── */
 type Section = {
@@ -262,6 +263,11 @@ const SECTIONS: Section[] = [
 
 /* ─── Component ─────────────────────────────────────────── */
 export default function Privacy() {
+  useSeo({
+    title: "Privacy Policy | Trench Sports",
+    description: "How Trench Sports collects, uses, and protects athlete and coach data.",
+    canonical: "/privacy",
+  });
   const [openSection, setOpenSection] = useState<string | null>("collect");
 
   function toggle(id: string) {
