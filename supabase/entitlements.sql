@@ -961,7 +961,10 @@ grant execute on function public.export_session_summaries(text, int, uuid[]) to 
 --
 -- INSERT is untouched — session.tsx, mobile/session.tsx and mobile/home.tsx
 -- keep writing every column exactly as before; none of them chain .select()
--- onto an insert, so none of them need SELECT on what they write.
+-- onto an insert. They DO upsert with ON CONFLICT (idempotent_session_upload.sql),
+-- and Postgres requires SELECT on every conflict-target column for that. Each
+-- table below therefore keeps SELECT on its conflict key, or uploads fail with
+-- "permission denied for table" (event_cells_upsert_grant.sql).
 -- service_role keeps full access, which is what the future API surface
 -- (§6.5) and any edge function will run as.
 
@@ -992,6 +995,8 @@ grant select (
 -- event_cells is the substrate for contact-area and 3D angle reconstruction.
 -- Served only through tiered_session_events().
 revoke select on public.event_cells from anon, authenticated;
+-- Conflict key only, for the upload's ON CONFLICT (event_id, r, c).
+grant select (event_id, r, c) on public.event_cells to anon, authenticated;
 
 commit;
 
