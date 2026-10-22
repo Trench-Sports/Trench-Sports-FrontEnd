@@ -78,6 +78,16 @@ import {
   type ImpactUpload,
   type AccelCapture,
 } from "../../bluetooth/impacts";
+import {
+  IDLE_GAP_MS,
+  SI_VERSION,
+  pairedPeakMg,
+  scoreStrike,
+  segmentStrikes,
+  strikeRateLog,
+  strikeSiByEvent,
+  type StrikeCell,
+} from "../../lib/strengthIndex";
 
 import { ModeRolodex } from "../../components/modeRolodex";
 import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
@@ -1564,30 +1574,9 @@ function hexAlpha(fraction: number) {
  * Per-event computed fields (no calibration needed):
  *   • iei_prev_ms   — wall-clock gap since previous event
  *   • angle_deg     — direction of hit centroid from grid center (0° = right, CCW+)
- *   • quality.strength_index (0–1000):
- *       Rate of force DEVELOPMENT — the peak speed at which voltage rises, i.e. the
- *       steepest scan-to-scan climb during the strike (max instantaneous dV/dt):
- *         slope_i  = (mv_i − mv_{i-1}) / (t_i − t_{i-1})   per cell, per scan   [mV/ms]
- *         maxSlope = max over the rising edge of the contact                    [mV/ms]
- *         SI       = round(clamp(maxSlope / SI_MAX_SLOPE_MV_PER_MS, 0, 1) × 1000)
- *
- *       Why max slope (not peakMv / riseTime): a slow lean and an explosive snap can
- *       reach the same peak voltage, but only the snap has a steep dV/dt. A flat hold
- *       contributes slope 0 and the falling edge is negative (clamped to 0), so
- *       sustained pressure cannot inflate the score — it scores the first explosive
- *       rise and nothing else.
- *
- *       SI_MAX_SLOPE_MV_PER_MS is a SINGLE shared ceiling across all builds, so scores
- *       stay comparable. Slower hardware physically can't resolve as steep a slope
- *       (its scan period is the smallest measurable Δt), so it caps proportionally:
- *         • Model IV  (2.5 ms scan) → resolves up to ~1320 mV/ms → full 1000 reachable
- *         • Model III (8.33 ms scan)→ ~396 mV/ms ceiling → SI ≲ 300
- *         • Model II  (37 ms scan)  → ~89 mV/ms ceiling  → SI ≲ 68
- *
- *       The ceiling is PROVISIONAL (set to the IV hardware speed limit). logStrikeRates()
- *       records the real mV/ms distribution per session so it can be recalibrated to the
- *       elite-human peak slope — at which point SI 1000 = top of human ability, not
- *       top of hardware.
+ *   • strength_index (0–1000): SI v2, one score per strike, shared by every
+ *       frame of that strike. Pad speed-to-peak and contact, blended with the
+ *       paired accelerometer peak on TSA-V. Defined in src/lib/strengthIndex.ts.
  */
 
 // ── helpers (module-level, no closure deps) ──────────────────────────────────
@@ -1610,165 +1599,6 @@ function eventAngleDeg(hits: RichHit[]): number | null {
   const cC = hits.reduce((s, [, c, mv]) => s + c * mv, 0) / totalMv;
   const angleDeg = Math.atan2(cR - centerR, cC - centerC) * (180 / Math.PI);
   return +angleDeg.toFixed(1);
-}
-
-// SI scaling constants.
-// MAX_SENSOR_MV          : ADC ceiling — 3.3 V rail in millivolts.
-// HIT_THRESHOLD_MV       : firmware HIT_THRESHOLD_V (0.10 V). The voltage a cell is
-//                          assumed to have crossed up from at contact onset — used to
-//                          estimate the onset slope on a contact's first frame.
-// SI_FASTEST_SCAN_HZ     : scan rate of the fastest adapter shipping (Model IV).
-// SI_MAX_SLOPE_MV_PER_MS : the rising slope (mV/ms) that maps to SI 1000. SHARED across
-//                          all builds for cross-model comparability — slower builds can't
-//                          resolve as steep a slope (their scan period is the smallest
-//                          measurable Δt) so they cap proportionally lower.
-//                          PROVISIONAL: a full-rail climb in one Model IV scan
-//                          (3300 mV / 2.5 ms = 1320 mV/ms) = the hardware speed limit.
-//                          Recalibrate to the elite-human peak slope from logStrikeRates()
-//                          data so 1000 = top of human ability, not top of hardware.
-// SI_DELOAD_TAU_MS       : decay constant for the LIVE tile only — after the last steep
-//                          slope, the displayed SI decays to 0 (~69 ms half-life) so a
-//                          held contact visibly resets instead of staying pinned.
-const MAX_SENSOR_MV          = 3300;
-const HIT_THRESHOLD_MV       = 100;
-const SI_FASTEST_SCAN_HZ     = 400;                                  // Model IV (native C) nominal
-const SI_MAX_SLOPE_MV_PER_MS = MAX_SENSOR_MV / (1000 / SI_FASTEST_SCAN_HZ);   // = 1320 mV/ms
-const SI_DELOAD_TAU_MS       = 100;
-
-// Strength Index from a rising slope (mV/ms). 0 for non-positive slope (flat hold or
-// falling edge), so sustained pressure never scores. Shared ceiling across all builds.
-function siFromSlope(slopeMvPerMs: number): number {
-  if (!(slopeMvPerMs > 0)) return 0;
-  return Math.round(Math.max(0, Math.min(1, slopeMvPerMs / SI_MAX_SLOPE_MV_PER_MS)) * 1000);
-}
-
-// ── Strike segmentation ──────────────────────────────────────────────────────
-// A "strike" is one continuous contact: a run of frames with no gap longer than
-// IDLE_GAP_MS. We score ONE SI per strike (not per frame), so a single hit yields a
-// single, stable number instead of a noisy per-frame stream.
-const IDLE_GAP_MS = 90;
-
-// Per-strike cell accumulator (shared by the upload path and the live feed).
-type StrikeCell = { r: number; c: number; samples: { mv: number; t: number }[] };
-
-// 3-point median — drops an isolated single-sample saturation spike (e.g. a cell
-// momentarily railing to ~3.3 V) before slope is measured, while preserving a genuine
-// multi-sample rise.
-function median3(a: number, b: number, c: number): number {
-  return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
-}
-
-// De-spiked peak voltage (mV) and steepest GENUINE rising slope (mV/ms) of one cell.
-// A 3-point median filter removes isolated single-sample spikes BEFORE both the peak
-// and the slope are taken — so a cell that momentarily rails doesn't get credited with
-// either a huge peak or a huge slope. Falls back to the onset estimate only when the
-// cell has a single sample (sub-scan rise on slow hardware, e.g. II).
-function cellRise(samples: { mv: number; t: number }[], scanPeriodMs: number): { peak: number; slope: number } {
-  const floorDt = Math.max(scanPeriodMs, 0.1);
-  if (samples.length === 0) return { peak: 0, slope: 0 };
-  if (samples.length === 1) {
-    const peak = samples[0].mv;
-    return { peak, slope: Math.max(0, (peak - HIT_THRESHOLD_MV) / floorDt) };
-  }
-  const mv = samples.map((s, i) =>
-    (i === 0 || i === samples.length - 1) ? s.mv : median3(samples[i - 1].mv, s.mv, samples[i + 1].mv));
-  let maxSlope = 0;
-  for (let i = 1; i < samples.length; i++) {
-    if (mv[i] > mv[i - 1]) {
-      const slope = (mv[i] - mv[i - 1]) / Math.max(samples[i].t - samples[i - 1].t, floorDt);
-      if (slope > maxSlope) maxSlope = slope;
-    }
-  }
-  const peak = Math.max(...mv);
-  // Never rose after de-spiking (flat/declining) → onset fallback from the peak.
-  if (maxSlope === 0) maxSlope = Math.max(0, (peak - HIT_THRESHOLD_MV) / floorDt);
-  return { peak, slope: maxSlope };
-}
-
-// Score one strike from its DOMINANT cell — the cell with the highest DE-SPIKED peak,
-// so a neighbouring cell that merely blips to the rail (high raw peak, removed by the
-// median filter) can't hijack the score. SI is that cell's rise rate.
-function scoreStrike(cells: Map<number, StrikeCell>, scanPeriodMs: number):
-    { r: number; c: number; peakMv: number; slope: number; si: number; cellCount: number } | null {
-  let best: { r: number; c: number; peak: number; slope: number } | null = null;
-  for (const cell of cells.values()) {
-    const cr = cellRise(cell.samples, scanPeriodMs);
-    if (!best || cr.peak > best.peak) best = { r: cell.r, c: cell.c, peak: cr.peak, slope: cr.slope };
-  }
-  if (!best) return null;
-  return { r: best.r, c: best.c, peakMv: best.peak, slope: best.slope, si: siFromSlope(best.slope), cellCount: cells.size };
-}
-
-type Strike = {
-  tStart: number; tEnd: number;
-  r: number; c: number; peakMv: number; slope: number; si: number; cellCount: number;
-  eventIds: string[];
-};
-
-// Split the frame stream into idle-gap-separated strikes and score each once.
-function segmentStrikes(frames: BleFrame[], scanPeriodMs: number): Strike[] {
-  const strikes: Strike[] = [];
-  let cur: { tStart: number; tEnd: number; eventIds: string[]; cells: Map<number, StrikeCell> } | null = null;
-
-  const close = () => {
-    if (!cur) return;
-    const sc = scoreStrike(cur.cells, scanPeriodMs);
-    if (sc) strikes.push({ tStart: cur.tStart, tEnd: cur.tEnd, eventIds: cur.eventIds, ...sc });
-    cur = null;
-  };
-
-  for (const f of frames) {
-    if (!f.hits.length) continue;
-    const ft = f.t_device_ms;
-    if (cur && ft - cur.tEnd > IDLE_GAP_MS) close();
-    if (!cur) cur = { tStart: ft, tEnd: ft, eventIds: [], cells: new Map() };
-    cur.tEnd = ft;
-    cur.eventIds.push(f.event_id);
-    for (const h of f.hits) {
-      const key = h[0] * 100 + h[1];
-      let cell = cur.cells.get(key);
-      if (!cell) { cell = { r: h[0], c: h[1], samples: [] }; cur.cells.set(key, cell); }
-      cell.samples.push({ mv: h[2], t: ft });
-    }
-  }
-  close();
-  return strikes;
-}
-
-// Map each frame's event_id to the SI of the strike it belongs to, so the per-frame
-// events table stays intact while every frame in a strike shares one stable SI.
-function strikeSiByEvent(strikes: Strike[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const s of strikes) for (const id of s.eventIds) m.set(id, s.si);
-  return m;
-}
-
-// Rate-logging — records the per-session distribution of rising slopes (mV/ms) so the
-// SI ceiling can later be recalibrated to elite-human ability. Logs a one-line summary
-// to the console and returns a stats object persisted in session_summaries.quality.
-function logStrikeRates(
-  strikes:      Strike[],
-  scanPeriodMs: number,
-  deviceModel:  string,
-): { count: number; max: number; mean: number; p50: number; p90: number; p95: number; scan_period_ms: number } | null {
-  const slopes = strikes.map(s => s.slope).filter(s => s > 0).sort((a, b) => a - b);
-  if (!slopes.length) return null;
-  const q = (p: number) => slopes[Math.min(slopes.length - 1, Math.floor(p * slopes.length))];
-  const stats = {
-    count:          slopes.length,
-    max:            +slopes[slopes.length - 1].toFixed(2),
-    mean:           +(slopes.reduce((a, b) => a + b, 0) / slopes.length).toFixed(2),
-    p50:            +q(0.50).toFixed(2),
-    p90:            +q(0.90).toFixed(2),
-    p95:            +q(0.95).toFixed(2),
-    scan_period_ms: scanPeriodMs,
-  };
-  console.log(
-    `[SI] ${deviceModel} rate-log (mV/ms): n=${stats.count} max=${stats.max} ` +
-    `mean=${stats.mean} p50=${stats.p50} p90=${stats.p90} p95=${stats.p95} ` +
-    `| ceiling=${SI_MAX_SLOPE_MV_PER_MS} → peak SI=${siFromSlope(stats.max)}`,
-  );
-  return stats;
 }
 
 /**
@@ -1973,7 +1803,8 @@ async function uploadSession(opts: {
 
   // Segment the stream into strikes (idle-gap separated) and score each once from its
   // dominant cell. Every frame in a strike shares that one SI — see segmentStrikes.
-  const strikes      = segmentStrikes(frames, scanPeriodMs);
+  // TSA-V impacts pair to strikes by onset; G = 0 for strikes under impact_on.
+  const strikes      = segmentStrikes(frames, scanPeriodMs, { present: accelCapture?.present === true, impacts });
   const siByEvent    = strikeSiByEvent(strikes);
 
   const derived: EventDerived[] = frames.map((f, i) => {
@@ -2019,7 +1850,7 @@ async function uploadSession(opts: {
       decay_time_ms:   d.decayTimeMs,
       iei_prev_ms:     d.iei,
       angle_deg:       d.angle,
-      strength_index:  { value: d.si },
+      strength_index:  { value: d.si, version: SI_VERSION },
       impulse_index:   d.ii,
       // accuracy{} — stored in existing jsonb column, used by two modes:
       //   accuracy → { score }                               centroid 0–100
@@ -2107,7 +1938,8 @@ async function uploadSession(opts: {
 
   // Rate-logging — per-session mV/ms distribution (one per strike) for recalibrating
   // the SI ceiling to elite-human ability.
-  const rateLog = logStrikeRates(strikes, scanPeriodMs, deviceModel);
+  const rateLog = strikeRateLog(strikes, scanPeriodMs);
+  if (rateLog) console.log(`[SI] ${deviceModel} v${SI_VERSION} rate-log`, rateLog);
 
   // Per-event timing distributions — collected from eventRows which already have
   // rise/decay/duration computed. Used to populate session_summaries aggregate columns.
@@ -2350,7 +2182,8 @@ async function uploadSession(opts: {
     //   windows[], si_fatigue_slope, etc → volume mode only
     quality: {
       strength_index: statSummary(siVals),
-      rate_log:       rateLog,   // mV/ms slope distribution — for SI ceiling calibration
+      si_version:     SI_VERSION,
+      rate_log:       rateLog,   // slope + paired-g distributions — for SI recalibration
       ...(accuracyQuality  ?? {}),
       ...(reactionQuality  ?? {}),
       ...(targetQuality    ?? {}),
@@ -3143,7 +2976,7 @@ export default function Home() {
   // Live strike accumulator — collects the cells of the in-progress contact so it can
   // be scored once (one feed row per hit) when it closes on an idle gap. Mirrors
   // segmentStrikes; lastWallMs lets the flush timer close the trailing strike.
-  const liveStrikeRef = useRef<{ lastT: number; lastWallMs: number; cells: Map<number, StrikeCell> } | null>(null);
+  const liveStrikeRef = useRef<{ tOnset: number; lastT: number; lastWallMs: number; cells: Map<number, StrikeCell> } | null>(null);
   const [ripples, setRipples] = useState<Array<{ id: number; x: number | string; y: number | string; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
@@ -3356,7 +3189,11 @@ export default function Home() {
     if (!s) return;
     liveStrikeRef.current = null;
     const sp = deviceInfoRef.current?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
-    const sc = scoreStrike(s.cells, sp);
+    // The impact frame fires on the accelerometer FSM's falling edge, a few ms
+    // after onset — well inside the IDLE_GAP_MS that closes this strike.
+    const accelPresent = accelCaptureRef.current?.present === true;
+    const peakMg = accelPresent ? pairedPeakMg(impactsRef.current, s.tOnset) : null;
+    const sc = scoreStrike(s.cells, sp, peakMg, accelPresent);
     if (!sc) return;
     setFeed(prev => [{
       r: sc.r, c: sc.c, peakMv: sc.peakMv, si: sc.si, cellCount: sc.cellCount,
@@ -3727,7 +3564,10 @@ export default function Home() {
       const prevStrike = liveStrikeRef.current;
       if (prevStrike && frameT - prevStrike.lastT > IDLE_GAP_MS) closeLiveStrike();
       const strike = liveStrikeRef.current
-        ?? (liveStrikeRef.current = { lastT: frameT, lastWallMs: performance.now(), cells: new Map() });
+        ?? (liveStrikeRef.current = {
+          tOnset: Math.min(frameT, ...hits.map(h => h[3])),   // h[3] = firmware cell onset
+          lastT: frameT, lastWallMs: performance.now(), cells: new Map(),
+        });
       strike.lastT      = frameT;
       strike.lastWallMs = performance.now();
       for (const h of hits) {

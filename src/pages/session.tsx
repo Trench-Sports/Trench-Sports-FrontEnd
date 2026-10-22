@@ -69,6 +69,7 @@ import {
   type ImpactUpload,
   type AccelCapture,
 } from "../bluetooth/impacts";
+import { SI_VERSION, segmentStrikes, strikeRateLog, strikeSiByEvent } from "../lib/strengthIndex";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
@@ -976,22 +977,9 @@ function hexAlpha(fraction: number) {
  * Per-event computed fields (no calibration needed):
  *   • iei_prev_ms   — wall-clock gap since previous event
  *   • angle_deg     — direction of hit centroid from grid center (0° = right, CCW+)
- *   • quality.strength_index (0–1000):
- *       Rate of force application — how fast the user reached peak voltage.
- *       rate           = peakMv / max(riseTimeMs, scanPeriodMs)             [mV/ms]
- *       MAX_RATE       = 3300 mV / (1000 / 120) ms  ≈ 396 mV/ms             [SI 1000 ceiling]
- *       baseSi         = clamp(rate / MAX_RATE, 0, 1) × 1000
- *       deload         = exp(-timeSincePeakMs / SI_DELOAD_TAU_MS)
- *       SI             = round(baseSi × deload)
- *
- *       The MAX_RATE ceiling is intentionally tied to Model III's 120 Hz scan period:
- *         • Model III (8.33 ms scan)  → can resolve up to 396 mV/ms → full 1000 reachable
- *         • Model II  (37 ms  scan)   → physically capped at 3300/37 ≈ 89 mV/ms → SI ≲ 225
- *       Slower hardware can't see fast impacts, so it can't score them — by design.
- *
- *       Deload ramp: once a cell hits v_peak, subsequent frames in the same sustained
- *       contact carry a growing timeSincePeak, so SI decays exponentially with a half-life
- *       of SI_DELOAD_TAU_MS × ln(2) ≈ 69 ms. Holding past the impact does not keep scoring.
+ *   • strength_index (0–1000): SI v2, one score per strike, shared by every
+ *       frame of that strike. Pad speed-to-peak and contact, blended with the
+ *       paired accelerometer peak on TSA-V. Defined in src/lib/strengthIndex.ts.
  */
 
 // ── helpers (module-level, no closure deps) ──────────────────────────────────
@@ -1016,7 +1004,9 @@ function eventAngleDeg(hits: RichHit[]): number | null {
   return +angleDeg.toFixed(1);
 }
 
-// SI scaling constants — exported for live-display callers and unit-level checks.
+// LIVE TILE ONLY — v1 per-frame SI with deload, Model III ceiling. Stored SI is
+// v2 (src/lib/strengthIndex.ts); these two scales do not match. Pending: move
+// this tile to per-strike v2 the way mobile/home.tsx's live feed already is.
 // MAX_SENSOR_MV          : ADC ceiling — 3.3 V rail in millivolts
 // SI_MAX_RATE_MV_PER_MS  : human/hardware ceiling — 3300 mV applied in one Model III
 //                          scan cycle (1000/120 ≈ 8.33 ms) → ~396 mV/ms → SI 1000.
@@ -1031,7 +1021,7 @@ const SI_MAX_RATE_MV_PER_MS = MAX_SENSOR_MV / (1000 / 120);   // ≈ 396 mV/ms
 const SI_DELOAD_TAU_MS      = 100;
 
 /**
- * Rate-based Strength Index — see uploadSession JSDoc for the formal definition.
+ * v1 rate-based Strength Index — live tile only (see above).
  *
  * @param peakMv          v_peak_mv for the event (highest voltage observed for the
  *                        dominant cell in this frame).
@@ -1253,13 +1243,19 @@ async function uploadSession(opts: {
     decayTimeMs: number;          // tEnd  − tPeak  (== timeSincePeak for this frame)
   };
 
+  // Segment the stream into strikes (idle-gap separated) and score each once —
+  // SI v2, shared with mobile/home.tsx via src/lib/strengthIndex.ts. TSA-V
+  // impacts pair to strikes by onset; G = 0 for strikes under impact_on.
+  const strikes   = segmentStrikes(frames, scanPeriodMs, { present: accelCapture?.present === true, impacts });
+  const siByEvent = strikeSiByEvent(strikes);
+
   const derived: EventDerived[] = frames.map((f, i) => {
     const iei       = i === 0 ? null : f.epoch_ms - frames[i - 1].epoch_ms;
     const cellCount = f.hits.length;
     const t         = eventTimingFromFrame(f);
-    // Rate-based SI: faster adapter sees faster impacts → higher achievable score.
-    // Sustained contacts deload exponentially via decayTime (== time-since-peak).
-    const si = strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
+    // Strength Index = the SI of the strike this frame belongs to. Constant across
+    // the strike, so one hit = one score.
+    const si = siByEvent.get(f.event_id) ?? 0;
     return {
       iei,
       angle:       eventAngleDeg(f.hits),
@@ -1296,7 +1292,7 @@ async function uploadSession(opts: {
       decay_time_ms:   d.decayTimeMs,
       iei_prev_ms:     d.iei,
       angle_deg:       d.angle,
-      strength_index:  { value: d.si },
+      strength_index:  { value: d.si, version: SI_VERSION },
       impulse_index:   d.ii,
       // accuracy{} — stored in existing jsonb column, used by two modes:
       //   accuracy → { score }                               centroid 0–100
@@ -1378,8 +1374,11 @@ async function uploadSession(opts: {
   // Angles across all events
   const angleVals = derived.map(d => d.angle).filter((a): a is number => a !== null);
 
-  // Strength index across all events
-  const siVals = derived.map(d => d.si);
+  // Strength index across STRIKES (one value per hit, not per frame).
+  const siVals = strikes.map(s => s.si).filter(v => v > 0);
+
+  // Slope + paired-g distributions, for recalibrating the SI v2 constants.
+  const rateLog = strikeRateLog(strikes, scanPeriodMs);
 
   // Per-event timing distributions — collected from eventRows which already have
   // rise/decay/duration computed. Used to populate session_summaries aggregate columns.
@@ -1502,12 +1501,8 @@ async function uploadSession(opts: {
       .map(([idx, wFrames]) => {
         // Sort by sequence so intra-window slope is meaningful
         const sorted = [...wFrames].sort((a, b) => (a.vol_hit_seq ?? 0) - (b.vol_hit_seq ?? 0));
-        // Rate-based SI — same formula as the stored per-event SI, evaluated
-        // per hit with the frame's own rise/decay window. No cadence component.
-        const siPerHit = sorted.map(f => {
-          const t = eventTimingFromFrame(f);
-          return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
-        });
+        // Same strike SI as the stored per-event value. No cadence component.
+        const siPerHit = sorted.map(f => siByEvent.get(f.event_id) ?? 0);
         // IEI between consecutive hits in this window (wall-clock ms)
         const ieiWithin = sorted.slice(1).map((f, i) => f.epoch_ms - sorted[i].epoch_ms);
 
@@ -1571,10 +1566,7 @@ async function uploadSession(opts: {
     // Session-level SI values in chronological hit order for dashboard charting
     const allHitSiValues = frames
       .filter(f => f.vol_window_idx !== null)
-      .map(f => {
-        const t = eventTimingFromFrame(f);
-        return strengthIndex(t.peakMv, t.riseTimeMs, scanPeriodMs, t.decayTimeMs);
-      });
+      .map(f => siByEvent.get(f.event_id) ?? 0);
 
     return {
       windows,
@@ -1629,6 +1621,8 @@ async function uploadSession(opts: {
     //   windows[], si_fatigue_slope, etc → volume mode only
     quality: {
       strength_index: statSummary(siVals),
+      si_version:     SI_VERSION,
+      rate_log:       rateLog,
       ...(accuracyQuality  ?? {}),
       ...(reactionQuality  ?? {}),
       ...(targetQuality    ?? {}),
