@@ -10,6 +10,7 @@ import { initTheme, toggleTheme } from "../lib/themeManager";
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 import { IconSun, IconMoon } from "./icons";
+import { OpeningSplash } from "./brandLoaders";
 
 export default function MobileLayout() {
   const loc = useLocation();
@@ -39,6 +40,7 @@ export default function MobileLayout() {
 
   return (
     <div className="mShell">
+      <OpeningSplash />
       <header
         className="mHeader"
         style={{

@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
 import { authLoginSucceeded, authLoginFailed } from "../lib/telemetryEvents";
 import { publicUrl } from "../lib/publicOrigin";
+import { playOpeningSplash } from "../components/brandLoaders";
 
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
@@ -107,6 +108,7 @@ export default function LoginPage() {
       }
 
       authLoginSucceeded();
+      playOpeningSplash();
       nav(redirectTo);
     } catch (e: any) {
       setErr(e?.message || "Something went wrong.");

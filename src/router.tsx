@@ -10,6 +10,7 @@ import Onboarding from "./pages/onboarding";
 import Contact from "./pages/contact";
 import UseCasePage from "./pages/useCasePage";
 import Invite from "./pages/invite";
+import { LoadingScreen } from "./components/brandLoaders";
 
 // Internal-only observability dashboard. Lazy-loaded so its code (and any
 // future charting lib) never ships to coaches' bundles. Not linked in nav.
@@ -28,10 +29,10 @@ const MobileLogin = React.lazy(() => import("./pages/mobile/login"));
 const MobileHome = React.lazy(() => import("./pages/mobile/home"));
 const MobileSwipeDeck = React.lazy(() => import("./components/mobileSwipeDeck"));
 
-// Suspense boundary for a lazy page. fallback={null} matches the blank frame
-// RequireOnboarding already shows while it checks the session.
+// Suspense boundary for a lazy page. Same brand loading screen RequireOnboarding
+// shows while it checks the session, so the two waits read as one.
 function Lazy({ children }: { children: React.ReactNode }) {
-  return <React.Suspense fallback={null}>{children}</React.Suspense>;
+  return <React.Suspense fallback={<LoadingScreen />}>{children}</React.Suspense>;
 }
 
 import { supabase } from "./supabaseClient";
@@ -130,7 +131,7 @@ function RequireOnboarding({
     return () => { alive = false; };
   }, [navigate, loginPath]);
 
-  if (!ready) return null;
+  if (!ready) return <LoadingScreen />;
   return <>{children}</>;
 }
 

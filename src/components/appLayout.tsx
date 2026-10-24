@@ -15,6 +15,7 @@ import { useScrollToTop } from "../hooks/useScrollToTop";
 import logoDark from "../images/NEW Master TS Logo Enhancement Set 1-03.png";
 import logoLight from "../images/NEW Master TS Logo Enhancement Set 1-01.png";
 import { IconSun, IconMoon } from "./icons";
+import { OpeningSplash } from "./brandLoaders";
 
 // ── Bottom nav tabs — point at the /m/* routes so native taps stay on the
 //    mobile pages even if the shell ever falls through to AppLayout.
@@ -74,6 +75,7 @@ export default function AppLayout() {
   // ── Web / desktop shell (unchanged from your original) ───────────────────
   return (
     <div className="mobileShell">
+      <OpeningSplash on="login" />
       <header className="mobileHeader">
         <TopBar theme={theme} onToggleTheme={onToggleTheme} logoSrc={logoSrc} />
       </header>

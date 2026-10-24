@@ -145,6 +145,7 @@ export { MODES, MODE_META } from "../../lib/sessionModes";
 export type { SessionMode } from "../../lib/sessionModes";
 import { MODES, MODE_META, type SessionMode } from "../../lib/sessionModes";
 import { ModeIcon } from "../../components/modeIcon";
+import { TsLoader } from "../../components/brandLoaders";
 import { IconBluetoothScan, IconSignalBars, IconUser, IconZap, IconFlame, IconThumbsUp, IconDumbbell } from "../../components/icons";
 import tsPowerBolt from "../../images/TS Logomark Power Bolt-01.png";
 
@@ -864,7 +865,7 @@ function AssignModal({
         {/* List */}
         <div style={{ display: "flex", flexDirection: "column", gap: 6, overflowY: "auto", paddingRight: 2 }}>
           {loading ? (
-            <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>Loading…</div>
+            <div className="tsLoaderInline"><TsLoader size={48} /></div>
           ) : list.length === 0 ? (
             <div style={{ fontSize: 13, color: "var(--muted)", textAlign: "center", padding: "16px 0" }}>
               {q ? "No results" : "No athletes found"}
