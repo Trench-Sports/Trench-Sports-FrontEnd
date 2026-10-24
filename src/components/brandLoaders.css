@@ -1,0 +1,117 @@
+/* Brand animations — ported from the "TS App Animations" design canvas.
+   Opening A (draw-in), the full-screen loading screen, and inline loaders. */
+
+:root { --ts-brand: #42297A; }
+
+.tsBrand { font-family: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif; }
+
+/* ── Opening splash (plays once, then fades out) ───────────────────────────── */
+
+.tsSplash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ts-brand);
+  animation: tsSplashOut 4.8s ease-in forwards;
+  -webkit-tap-highlight-color: transparent;
+}
+.tsSplash svg { overflow: visible; position: relative; }
+.tsSplash .sp-mark { transform-box: fill-box; transform-origin: center; animation: spMark 4.8s cubic-bezier(.2,.8,.2,1) forwards; }
+.tsSplash .sp-t,
+.tsSplash .sp-s { fill: var(--ts-brand); stroke: #fff; stroke-width: 22; stroke-linejoin: miter; stroke-dasharray: 1 1; stroke-dashoffset: 1; }
+.tsSplash .sp-t { animation: spDrawT 4.8s cubic-bezier(.65,0,.35,1) forwards; }
+.tsSplash .sp-s { animation: spDrawS 4.8s cubic-bezier(.65,0,.35,1) forwards; }
+.tsSplash .sp-b1,
+.tsSplash .sp-b2 { fill: #fff; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.tsSplash .sp-b1 { animation: spBoltA 4.8s cubic-bezier(.2,.9,.25,1.2) forwards; }
+.tsSplash .sp-b2 { animation: spBoltB 4.8s cubic-bezier(.2,.9,.25,1.2) forwards; }
+.tsSplash .sp-flash {
+  position: absolute; left: 50%; top: 50%; width: 260px; height: 260px; margin: -130px 0 0 -130px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255,255,255,.55) 0%, rgba(255,255,255,0) 65%);
+  opacity: 0; transform: scale(0);
+  animation: spFlash 4.8s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes spDrawT { 0% { stroke-dashoffset: 1 } 20%, 100% { stroke-dashoffset: 0 } }
+@keyframes spDrawS { 0%, 8% { stroke-dashoffset: 1 } 28%, 100% { stroke-dashoffset: 0 } }
+@keyframes spBoltA { 0%, 28% { opacity: 0; transform: translate(180px,-220px) } 34%, 100% { opacity: 1; transform: translate(0,0) } }
+@keyframes spBoltB { 0%, 30% { opacity: 0; transform: translate(-180px,220px) } 36%, 100% { opacity: 1; transform: translate(0,0) } }
+@keyframes spFlash { 0%, 35% { opacity: 0; transform: scale(0) } 37% { opacity: 1; transform: scale(.6) } 50%, 100% { opacity: 0; transform: scale(2.2) } }
+@keyframes spMark { 0%, 35% { transform: scale(1); opacity: 1 } 38% { transform: scale(1.07) } 43% { transform: scale(1) } 86% { transform: scale(1); opacity: 1 } 96%, 100% { transform: scale(.94); opacity: 0 } }
+/* The canvas loops on a purple frame; in the app the backdrop fades to reveal
+   the page once the mark has left. */
+@keyframes tsSplashOut { 0%, 90% { opacity: 1 } 100% { opacity: 0 } }
+
+/* ── Full-screen loading screen ────────────────────────────────────────────── */
+
+.tsLoadingScreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 44px;
+  background: var(--ts-brand);
+  /* Fast loads finish before this shows, so they never flash purple. */
+  opacity: 0;
+  animation: tsFadeIn .2s ease-out .3s forwards;
+}
+.tsLoadingScreen .ld-bar { position: relative; width: 180px; height: 6px; overflow: hidden; background: rgba(255,255,255,.2); transform: skewX(-10deg); }
+.tsLoadingScreen .ld-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 40%; background: #fff; animation: ldBar 1.4s cubic-bezier(.6,0,.4,1) infinite; }
+.tsLoadingScreen .ld-label {
+  color: #fff; font-size: 15px; font-weight: 700; font-style: italic;
+  text-transform: uppercase; letter-spacing: .3em; padding-left: .3em;
+}
+@keyframes tsFadeIn { to { opacity: 1 } }
+@keyframes ldBar { 0% { transform: translateX(-110%) } 100% { transform: translateX(260%) } }
+
+/* ── Tracing mark (loading screen + inline loaders) ────────────────────────── */
+
+.tsMark { overflow: visible; display: block; }
+.tsMark .lx-base { stroke-width: 22; stroke-linejoin: miter; }
+.tsMark .lx-trace { fill: none; stroke-width: 22; stroke-linejoin: miter; stroke-linecap: square; stroke-dasharray: .24 .76; animation: lxTrace 1.8s linear infinite; }
+.tsMark .lx-trace-s { animation-delay: -.9s; }
+.tsMark .lx-b { opacity: .25; animation: lxBolt 1.2s ease-in-out infinite; }
+.tsMark .lx-b2 { animation-delay: .3s; }
+/* Thin strokes vanish at small sizes, so the 48px mark draws them heavier. */
+.tsMark.is-sm .lx-base,
+.tsMark.is-sm .lx-trace { stroke-width: 34; }
+
+/* On the brand color (loading screen) or the dark theme. `on-auto` follows
+   the app theme set on <html data-theme>. */
+.tsMark.on-dark .lx-base,
+:root:not([data-theme="light"]) .tsMark.on-auto .lx-base { fill: var(--ts-brand); stroke: rgba(255,255,255,.22); }
+.tsMark.on-dark .lx-trace,
+:root:not([data-theme="light"]) .tsMark.on-auto .lx-trace { stroke: #fff; }
+.tsMark.on-dark .lx-b,
+:root:not([data-theme="light"]) .tsMark.on-auto .lx-b { fill: #fff; }
+/* On a light surface */
+.tsMark.on-light .lx-base,
+:root[data-theme="light"] .tsMark.on-auto .lx-base { fill: #fff; stroke: color-mix(in srgb, var(--ts-brand) 18%, #fff); }
+.tsMark.on-light .lx-trace,
+:root[data-theme="light"] .tsMark.on-auto .lx-trace { stroke: var(--ts-brand); }
+.tsMark.on-light .lx-b,
+:root[data-theme="light"] .tsMark.on-auto .lx-b { fill: var(--ts-brand); }
+
+@keyframes lxTrace { from { stroke-dashoffset: 1 } to { stroke-dashoffset: 0 } }
+@keyframes lxBolt { 0%, 100% { opacity: .25 } 35% { opacity: 1 } 60% { opacity: .25 } }
+
+.tsLoaderInline { display: flex; justify-content: center; padding: 16px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tsSplash .sp-mark, .tsSplash .sp-t, .tsSplash .sp-s, .tsSplash .sp-b1, .tsSplash .sp-b2, .tsSplash .sp-flash,
+  .tsMark .lx-trace, .tsMark .lx-b, .tsLoadingScreen .ld-fill { animation: none; }
+  .tsSplash .sp-t, .tsSplash .sp-s { stroke-dashoffset: 0; }
+  .tsSplash .sp-b1, .tsSplash .sp-b2 { opacity: 1; }
+  .tsMark .lx-trace { stroke-dasharray: none; }
+  .tsMark .lx-b { opacity: 1; }
+  .tsLoadingScreen .ld-fill { width: 100%; opacity: .6; }
+}

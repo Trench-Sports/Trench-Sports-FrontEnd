@@ -2,6 +2,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../supabaseClient";
+import { TsLoader } from "../components/brandLoaders";
 import { onboardingStepCompleted, inviteRedeemed, inviteRejected } from "../lib/telemetryEvents";
 import { readInvite, clearInvite, tokenPrefix, type StashedInvite } from "../lib/inviteToken";
 import { ageFromDob, isAdultDob, maxAdultDob, UNDERAGE_MESSAGE } from "../lib/age";
@@ -592,7 +593,7 @@ export default function Onboarding() {
       <div className="ts-pageWrap">
         <div className="ts-card" style={{ maxWidth: 520, margin: "40px auto" }}>
           <h2 style={{ marginTop: 0 }}>Onboarding</h2>
-          <p>Loading…</p>
+          <div className="tsLoaderInline"><TsLoader size={96} /></div>
         </div>
       </div>
     );
