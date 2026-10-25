@@ -81,6 +81,9 @@ import {
 import {
   IDLE_GAP_MS,
   SI_VERSION,
+  accelTerm,
+  isFreshHit,
+  padTerm,
   pairedPeakMg,
   scoreStrike,
   segmentStrikes,
@@ -97,6 +100,11 @@ import { StrengthIndexInfo } from "../../components/strengthIndexInfo";
 const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const NUS_TX_CHAR      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // ESP32 → app (notify)
 const NUS_RX_CHAR      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // app → ESP32 (write)
+
+// Shown when a session is started before the bag has sent hello.
+const HELLO_WAIT_MSG =
+  "The bag hasn't identified itself yet, so this session can't be recorded correctly. " +
+  "Wait a moment, or disconnect and reconnect the bag.";
 
 // Resolved at runtime — prefers .env, falls back to constants above
 function getCharUuids() {
@@ -1297,7 +1305,7 @@ type SaveState = "idle" | "saving" | "saved" | "error";
 type SavedRecap = {
   mode:       string;   // session mode at save time
   events:     number;   // BLE frames recorded (one per detected impact event)
-  hits:       number;   // total cell contacts across all events
+  hits:       number;   // strikes (idle-gap-separated hits), same count as the live Hits tile
   peakMv:     number;   // highest voltage observed (mV) — 0 if none
   peakSi:     number;   // highest strength index observed — 0 if none
   durationMs: number;   // session wall-clock duration
@@ -2973,15 +2981,18 @@ export default function Home() {
   const [now,     setNow]     = useState(Date.now());
   const [peakMv,  setPeakMv]  = useState(0);   // all-time session peak voltage (mV)
   const [peakSi,  setPeakSi]  = useState(0);   // all-time session peak Strength Index (max slope SI)
+  const [strikeCount, setStrikeCount] = useState(0);   // strikes scored this session — the feed keeps only the last 60
   // Live strike accumulator — collects the cells of the in-progress contact so it can
   // be scored once (one feed row per hit) when it closes on an idle gap. Mirrors
   // segmentStrikes; lastWallMs lets the flush timer close the trailing strike.
-  const liveStrikeRef = useRef<{ tOnset: number; lastT: number; lastWallMs: number; cells: Map<number, StrikeCell> } | null>(null);
+  const liveStrikeRef = useRef<{ tOnset: number; prevEndT: number; lastT: number; lastWallMs: number; cells: Map<number, StrikeCell> } | null>(null);
+  // Device time of the last frame of the previous live strike — see isFreshHit.
+  const liveStrikePrevEndRef = useRef(-Infinity);
   const [ripples, setRipples] = useState<Array<{ id: number; x: number | string; y: number | string; color: string }>>([]);
   const rippleIdRef = useRef(0);
 
   // One impact-feed row per strike: dominant cell, its peak voltage, and the strike SI.
-  type FeedItem = { r: number; c: number; peakMv: number; si: number; cellCount: number; key: string };
+  type FeedItem = { r: number; c: number; peakMv: number; si: number; cellCount: number; peakMg: number | null; key: string };
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const feedCounter = useRef(0);
 
@@ -3188,6 +3199,7 @@ export default function Home() {
     const s = liveStrikeRef.current;
     if (!s) return;
     liveStrikeRef.current = null;
+    liveStrikePrevEndRef.current = s.lastT;
     const sp = deviceInfoRef.current?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
     // The impact frame fires on the accelerometer FSM's falling edge, a few ms
     // after onset — well inside the IDLE_GAP_MS that closes this strike.
@@ -3195,11 +3207,23 @@ export default function Home() {
     const peakMg = accelPresent ? pairedPeakMg(impactsRef.current, s.tOnset) : null;
     const sc = scoreStrike(s.cells, sp, peakMg, accelPresent);
     if (!sc) return;
+    if (import.meta.env.DEV) {
+      // Calibration aid: what each term contributed, next to the v1 score this
+      // strike would have got (slope / 1320 mV/ms, the old home.tsx ceiling).
+      const v = padTerm(sc.slope, sc.contactMv);
+      console.log(
+        `[SI v2] R${sc.r}C${sc.c} cells=${sc.cellCount} slope=${sc.slope.toFixed(0)}mV/ms ` +
+        `contact=${sc.contactMv}mV V=${v.toFixed(2)} | ` +
+        (accelPresent ? `g=${sc.peakMg === null ? "none" : (sc.peakMg / 1000).toFixed(1)} G=${accelTerm(sc.peakMg).toFixed(2)} | ` : "no accel | ") +
+        `SI=${sc.si} (v1 ${Math.round(Math.min(1, sc.slope / 1320) * 1000)})`,
+      );
+    }
     setFeed(prev => [{
-      r: sc.r, c: sc.c, peakMv: sc.peakMv, si: sc.si, cellCount: sc.cellCount,
+      r: sc.r, c: sc.c, peakMv: sc.peakMv, si: sc.si, cellCount: sc.cellCount, peakMg: sc.peakMg,
       key: String(feedCounter.current++),
     }, ...prev].slice(0, 60));
     setPeakSi(prev => Math.max(prev, sc.si));
+    setStrikeCount(n => n + 1);
   }, []);
 
   // Flush timer — closes the trailing strike once frames stop arriving for IDLE_GAP_MS,
@@ -3212,6 +3236,22 @@ export default function Home() {
     }, 40);
     return () => clearInterval(id);
   }, [sessionActive, closeLiveStrike]);
+
+  // The bag scans only between {"cmd":"start"} and {"cmd":"stop"}. Matrix frames
+  // outside a session mean the two have drifted apart — a stop write that failed,
+  // or a page reload that kept the native BLE link but lost the session — so
+  // re-send stop, at most every 2 s.
+  const lastIdleStopRef = useRef(0);
+  const stopIdleStream = useCallback(() => {
+    const now = performance.now();
+    if (now - lastIdleStopRef.current < 2000) return;
+    lastIdleStopRef.current = now;
+    const conn = connRef.current;
+    if (!conn) return;
+    void writeUtf8(conn, getCharUuids().RX, JSON.stringify({ cmd: "stop" }))
+      .then(() => console.log("[BLE] frames outside a session → sent cmd=stop"))
+      .catch(err => console.warn("[BLE] idle cmd=stop failed:", err));
+  }, []);
 
   // ── BLE notify handler ────────────────────────────────────────────────────────
   // Accepts a DataView directly — same signature used by both adapter paths.
@@ -3249,6 +3289,7 @@ export default function Home() {
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
+      setBleError(prev => prev === HELLO_WAIT_MSG ? null : prev);
       // Capture conditions for impact_events rows. Null when the adapter has no
       // accelerometer, or declares one without usable detection thresholds.
       accelCaptureRef.current = captureFromHello(obj, info.hasAccel, timing.samplingHz);
@@ -3267,6 +3308,9 @@ export default function Home() {
           if (next && accelCaptureRef.current === sent) accelCaptureRef.current = next;
         });
       }
+      // hello arrives on every (re)subscribe. Outside a session, make sure the bag
+      // is not left scanning from a session this page no longer knows about.
+      if (!captureRef.current) stopIdleStream();
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
       //   1. Claimed by a different program → disconnect immediately, show error.
@@ -3375,6 +3419,13 @@ export default function Home() {
         if (imp) impactsRef.current.push(imp);
         else impactRejectsRef.current++;
       }
+      continue;
+    }
+
+    // No session, no readings: drop matrix frames before they reach the grid,
+    // ripples, live feed or peak tiles, and tell the bag to stop scanning.
+    if (!captureRef.current) {
+      if (obj.type === "batch" || Array.isArray(obj.hits)) stopIdleStream();
       continue;
     }
 
@@ -3565,12 +3616,15 @@ export default function Home() {
       if (prevStrike && frameT - prevStrike.lastT > IDLE_GAP_MS) closeLiveStrike();
       const strike = liveStrikeRef.current
         ?? (liveStrikeRef.current = {
-          tOnset: Math.min(frameT, ...hits.map(h => h[3])),   // h[3] = firmware cell onset
+          tOnset: Infinity, prevEndT: liveStrikePrevEndRef.current,
           lastT: frameT, lastWallMs: performance.now(), cells: new Map(),
         });
       strike.lastT      = frameT;
       strike.lastWallMs = performance.now();
       for (const h of hits) {
+        // Held-over contact (resting load, an unreleased press) is not this strike.
+        if (!isFreshHit(h, strike.prevEndT)) continue;
+        if (h[3] < strike.tOnset) strike.tOnset = h[3];   // h[3] = firmware cell onset
         const key = h[0] * 100 + h[1];
         let cell = strike.cells.get(key);
         if (!cell) { cell = { r: h[0], c: h[1], samples: [] }; strike.cells.set(key, cell); }
@@ -4208,6 +4262,14 @@ export default function Home() {
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
+    // No hello yet means no device model, scan rate or accelerometer capture
+    // conditions: the session would save as Model II at 25 Hz and drop every
+    // impact. The bag sends hello only when notifications are (re)subscribed, so
+    // a page reload that kept the BLE link alive never gets one.
+    if (!deviceInfoRef.current) {
+      setBleError(HELLO_WAIT_MSG);
+      return;
+    }
     // Unlock audio context synchronously inside the user-gesture handler.
     // This satisfies iOS/Android's requirement that AudioContext be resumed
     // during a tap — all subsequent playSignal calls will reuse this context.
@@ -4250,7 +4312,9 @@ export default function Home() {
     setRipples([]);
     setPeakMv(0);
     setPeakSi(0);
+    setStrikeCount(0);
     liveStrikeRef.current = null;
+    liveStrikePrevEndRef.current = -Infinity;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
@@ -4539,18 +4603,21 @@ export default function Home() {
       if (primaryHasFrames) {
         const savedFrames = framesRef.current;
         const scanMs = deviceInfo?.scanPeriodMs ?? SCAN_PERIOD_MS_DEFAULT;
-        const recapStrikes = segmentStrikes(savedFrames, scanMs);
-        let totalHits = 0;
+        // Same accel context as the upload and the live feed, or the recap scores
+        // pad-only and every railed strike reads exactly 900.
+        const recapStrikes = segmentStrikes(savedFrames, scanMs, {
+          present: accelCaptureRef.current?.present === true,
+          impacts: impactsRef.current,
+        });
         let peakMvSnap = 0;
         for (const f of savedFrames) {
-          totalHits += f.hits.length;
           for (const h of f.hits) if (h[5] > peakMvSnap) peakMvSnap = h[5];
         }
         const peakSiSnap = recapStrikes.reduce((m, s) => Math.max(m, s.si), 0);
         setLastSaved({
           mode:       sessionMode,
           events:     savedFrames.length,
-          hits:       totalHits,
+          hits:       recapStrikes.length,
           peakMv:     peakMvSnap,
           peakSi:     peakSiSnap,
           durationMs: elapsedMs,
@@ -4599,7 +4666,9 @@ export default function Home() {
     setGrid(new Map());
     setPeakMv(0);
     setPeakSi(0);
+    setStrikeCount(0);
     liveStrikeRef.current = null;
+    liveStrikePrevEndRef.current = -Infinity;
     setElapsedMs(0);
     setSaveState("idle");
     setSaveError(null);
@@ -4691,7 +4760,7 @@ export default function Home() {
     : [
         { label: "Time",   value: formatTime(elapsedMs) },
         { label: "Events", value: String(sessionActive ? frameCount : framesRef.current.length), color: MODE_META.power.color },
-        { label: "Hits",   value: String(feed.length) },
+        { label: "Hits",   value: String(strikeCount) },
         { label: "Peak",   value: feedMetric === "si"
             ? (peakSi ? String(peakSi) : "—")
             : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
@@ -4796,7 +4865,7 @@ export default function Home() {
           key:         "primary",
           grid,
           label:       deviceInfo?.id ?? "Bag 1",
-          hitCount:    feed.length,
+          hitCount:    strikeCount,
           peakMv,
           status:      "connected" as const,
           // Bag identity color (index 0) — mirrors the LED pushed on connect.
@@ -5212,7 +5281,7 @@ export default function Home() {
               )}
 
               {/* Connection error hint */}
-              {bleError && bleStatus === "disconnected" && (
+              {bleError && (bleStatus === "disconnected" || bleError === HELLO_WAIT_MSG) && (
                 <div style={{
                   marginTop: 10, padding: "9px 11px", borderRadius: 9,
                   background: "rgba(255,80,80,0.07)",
@@ -5386,7 +5455,7 @@ export default function Home() {
             {sessionActive && (() => {
               const modeColor = MODE_META[sessionMode].color;
               const isHits   = topMetric === "hits";
-              const topValue = isHits ? String(feed.length) : String(frameCount);
+              const topValue = isHits ? String(strikeCount) : String(frameCount);
               // Both tiles show the all-time session peak: peak SI (best strike) and
               // peak voltage. Peak SI only rises on a fast rise — a slow press/hold
               // produces no slope, so it can't inflate the score.
@@ -6014,7 +6083,7 @@ export default function Home() {
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>Impact Feed</span>
-              {feed.length > 0 && <span style={{ fontWeight: 600, color: "var(--accent)", fontSize: 11 }}>{feed.length}</span>}
+              {feed.length > 0 && <span style={{ fontWeight: 600, color: "var(--accent)", fontSize: 11 }}>{strikeCount}</span>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 340, overflowY: "auto" }}>
               {feed.length === 0 ? (
@@ -6055,6 +6124,11 @@ export default function Home() {
                   </span>
                   {feedMetric === "si" ? (
                     <span style={{ fontWeight: 700, fontVariantNumeric: "tabular-nums", color: "#b400ff" }}>
+                      {h.peakMg !== null && (
+                        <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginRight: 6 }}>
+                          {(h.peakMg / 1000).toFixed(1)}g
+                        </span>
+                      )}
                       {h.si || "—"}
                       <span style={{ fontSize: 10, fontWeight: 500, color: "var(--muted)", marginLeft: 2 }}>SI</span>
                     </span>

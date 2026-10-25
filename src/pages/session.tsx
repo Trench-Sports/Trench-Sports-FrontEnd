@@ -69,13 +69,18 @@ import {
   type ImpactUpload,
   type AccelCapture,
 } from "../bluetooth/impacts";
-import { SI_VERSION, segmentStrikes, strikeRateLog, strikeSiByEvent } from "../lib/strengthIndex";
+import { SI_VERSION, countStrikeFrame, segmentStrikes, strikeRateLog, strikeSiByEvent, type StrikeRun } from "../lib/strengthIndex";
 
 // ─── BLE / NUS constants (mirror of ble_connect.py) ──────────────────────────
 // These are the fallback values used when .env vars are absent.
 const NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const NUS_TX_CHAR      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";  // ESP32 → app (notify)
 const NUS_RX_CHAR      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";  // app → ESP32 (write)
+
+// Shown when a session is started before the bag has sent hello.
+const HELLO_WAIT_MSG =
+  "The bag hasn't identified itself yet, so this session can't be recorded correctly. " +
+  "Wait a moment, or disconnect and reconnect the bag.";
 
 // Resolved at runtime — prefers .env, falls back to constants above
 function getCharUuids() {
@@ -2159,6 +2164,8 @@ export default function Session() {
 
   type FeedItem = { row: number; col: number; mv: number; key: string };
   const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [strikeCount, setStrikeCount] = useState(0);   // strikes this session — the feed keeps only the last 60 rows
+  const strikeRunRef = useRef<StrikeRun>(null);
   const feedCounter = useRef(0);
 
   // Raw frames accumulated during session — written to Supabase on save
@@ -2367,6 +2374,22 @@ export default function Session() {
     if (volTickTimer.current) clearInterval(volTickTimer.current);
   }, [sessionActive]);
 
+  // The bag scans only between {"cmd":"start"} and {"cmd":"stop"}. Matrix frames
+  // outside a session mean the two have drifted apart — a stop write that failed,
+  // or a page reload that kept the native BLE link but lost the session — so
+  // re-send stop, at most every 2 s.
+  const lastIdleStopRef = useRef(0);
+  const stopIdleStream = useCallback(() => {
+    const now = performance.now();
+    if (now - lastIdleStopRef.current < 2000) return;
+    lastIdleStopRef.current = now;
+    const conn = connRef.current;
+    if (!conn) return;
+    void writeUtf8(conn, getCharUuids().RX, JSON.stringify({ cmd: "stop" }))
+      .then(() => console.log("[BLE] frames outside a session → sent cmd=stop"))
+      .catch(err => console.warn("[BLE] idle cmd=stop failed:", err));
+  }, []);
+
   // ── BLE notify handler ────────────────────────────────────────────────────────
   // Accepts a DataView directly — same signature used by both adapter paths.
   const handleNotify = useCallback((value: DataView) => {
@@ -2403,6 +2426,7 @@ export default function Session() {
       };
       setDeviceInfo(info);
       deviceInfoRef.current = info;
+      setBleError(prev => prev === HELLO_WAIT_MSG ? null : prev);
       // Battery rides on the hello from fw 1.4.4-c. Only apply when present so a
       // batt-less hello (older firmware) doesn't wipe a reading.
       const helloBatt = parseBatteryPct(obj);
@@ -2420,6 +2444,9 @@ export default function Session() {
           if (next && accelCaptureRef.current === sent) accelCaptureRef.current = next;
         });
       }
+      // hello arrives on every (re)subscribe. Outside a session, make sure the bag
+      // is not left scanning from a session this page no longer knows about.
+      if (!captureRef.current) stopIdleStream();
       // ── Device claim check ────────────────────────────────────────────────
       // Three outcomes:
       //   1. Claimed by a different program → disconnect immediately, show error.
@@ -2528,6 +2555,13 @@ export default function Session() {
         if (imp) impactsRef.current.push(imp);
         else impactRejectsRef.current++;
       }
+      continue;
+    }
+
+    // No session, no readings: drop matrix frames before they reach the grid,
+    // ripples, live feed or peak tiles, and tell the bag to stop scanning.
+    if (!captureRef.current) {
+      if (obj.type === "batch" || Array.isArray(obj.hits)) stopIdleStream();
       continue;
     }
 
@@ -2714,6 +2748,11 @@ export default function Session() {
       row, col, mv, key: String(feedCounter.current++),
     }));
     setFeed(prev => [...newItems, ...prev].slice(0, 60));
+
+    // Strike count — same boundaries as segmentStrikes, so it matches the saved session.
+    const step = countStrikeFrame(strikeRunRef.current, frameT, hits);
+    strikeRunRef.current = step.run;
+    if (step.opened) setStrikeCount(n => n + 1);
 
     const batchMaxMv = Math.max(...hits.map(h => h[5]));        // h[5] = v_peak_mv
     setPeakMv(prev => Math.max(prev, batchMaxMv));               // all-time session peak (V tile)
@@ -3298,6 +3337,14 @@ export default function Session() {
 
   // ── Session controls ──────────────────────────────────────────────────────────
   const startSession = async () => {
+    // No hello yet means no device model, scan rate or accelerometer capture
+    // conditions: the session would save as Model II at 25 Hz and drop every
+    // impact. The bag sends hello only when notifications are (re)subscribed, so
+    // a page reload that kept the BLE link alive never gets one.
+    if (!deviceInfoRef.current) {
+      setBleError(HELLO_WAIT_MSG);
+      return;
+    }
     // Unlock audio context synchronously inside the user-gesture handler.
     // This satisfies iOS/Android's requirement that AudioContext be resumed
     // during a tap — all subsequent playSignal calls will reuse this context.
@@ -3332,6 +3379,8 @@ export default function Session() {
 
     setGrid(new Map());
     setFeed([]);
+    setStrikeCount(0);
+    strikeRunRef.current = null;
     setRipples([]);
     setPeakMv(0);
     liveSiPeakMvRef.current = 0;
@@ -3618,6 +3667,8 @@ export default function Session() {
     frameIndex.current = 0;
     feedCounter.current = 0;
     setFeed([]);
+    setStrikeCount(0);
+    strikeRunRef.current = null;
     setGrid(new Map());
     setPeakMv(0);
     liveSiPeakMvRef.current = 0;
@@ -3715,7 +3766,7 @@ export default function Session() {
     : [
         { label: "Time",   value: formatTime(elapsedMs) },
         { label: "Events", value: String(sessionActive ? frameCount : framesRef.current.length), color: MODE_META.power.color },
-        { label: "Hits",   value: String(feed.length) },
+        { label: "Hits",   value: String(strikeCount) },
         { label: "Peak",   value: feedMetric === "si"
             ? (liveSi ? String(liveSi) : "—")
             : (peakMv ? (peakMv / 1000).toFixed(3) : "—"),
@@ -4309,7 +4360,7 @@ export default function Session() {
               )}
 
               {/* Connection error hint */}
-              {bleError && bleStatus === "disconnected" && (
+              {bleError && (bleStatus === "disconnected" || bleError === HELLO_WAIT_MSG) && (
                 <div style={{
                   marginTop: 10, padding: "9px 11px", borderRadius: 9,
                   background: "rgba(255,80,80,0.07)",
@@ -4370,7 +4421,7 @@ export default function Session() {
                 pointerEvents: "none",
               }}>
                 {[
-                  { label: "hits", value: String(feed.length) },
+                  { label: "hits", value: String(strikeCount) },
                   { label: "peak", value: peakMv ? `${(peakMv / 1000).toFixed(2)}V` : "—" },
                   { label: "time", value: formatTime(elapsedMs) },
                 ].map(s => (
@@ -4848,7 +4899,7 @@ export default function Session() {
           <div style={{ background: "var(--panel)", border: "1px solid var(--panel-border)", borderRadius: 16, padding: 16, flex: 1 }}>
             <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--muted)", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>Impact Feed</span>
-              {feed.length > 0 && <span style={{ fontWeight: 600, color: "var(--accent)", fontSize: 11 }}>{feed.length}</span>}
+              {feed.length > 0 && <span style={{ fontWeight: 600, color: "var(--accent)", fontSize: 11 }}>{strikeCount}</span>}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 5, maxHeight: 340, overflowY: "auto" }}>
               {feed.length === 0 ? (
