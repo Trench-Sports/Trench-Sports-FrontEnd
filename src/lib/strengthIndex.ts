@@ -258,20 +258,30 @@ export function pairedPeakMg(impacts: readonly ImpactFrame[], tOnset: number, cl
   return peak;
 }
 
-/** Earliest firmware-tracked cell onset among a frame's hits. */
-function frameOnset(f: SiFrame): number {
-  let t = f.t_device_ms;
-  for (const h of f.hits) if (h[3] < t) t = h[3];
-  return t;
+/**
+ * True when a hit's cell made contact after prevEndT — the last frame of the
+ * previous run of frames — rather than being held over from before it. The
+ * firmware keeps a cell's onset (h[3]) for as long as it stays above
+ * threshold, and BLE frames arrive in bursts with gaps longer than
+ * IDLE_GAP_MS, so a bag resting on the pad, or a contact that is never
+ * released, shows up in burst after burst. Counting those cells would start a
+ * phantom strike per burst, drag its onset back to the original press
+ * (breaking impact pairing), and fill the contact term with resting load.
+ *
+ * Measured against the previous run's end, not this run's first frame: a
+ * punch can start well before its first frame reaches the app.
+ */
+export function isFreshHit(h: SiHit, prevEndT: number): boolean {
+  return h[3] > prevEndT;
 }
 
 /**
  * Split the frame stream into idle-gap-separated strikes and score each once.
  *
- * A strike's onset is the earliest cell onset in its first frame — firmware
- * tracks it per cell, so it survives dropped BLE frames. A new strike starts
- * only after a gap with no contact at all, so no cell held over from an
- * earlier strike can drag that onset back.
+ * Only cells that made contact during the strike count toward it (isFreshHit);
+ * the strike's onset is the earliest of their firmware onsets, which survives
+ * dropped BLE frames. A burst that carries only held-over cells is a hold, not
+ * a strike, and scores nothing.
  */
 export function segmentStrikes(
   frames:       readonly SiFrame[],
@@ -282,12 +292,18 @@ export function segmentStrikes(
   const accelPresent = accel?.present === true;
   const claimed = new Set<ImpactFrame>();
   let cur: { tOnset: number; tStart: number; tEnd: number; eventIds: string[]; cells: Map<number, StrikeCell> } | null = null;
+  // End of the previous run of frames. The first run has nothing before it, so
+  // resting load present when scanning starts counts once, there.
+  let prevEndT = -Infinity;
 
   const close = () => {
     if (!cur) return;
-    const peakMg = accelPresent ? pairedPeakMg(accel!.impacts, cur.tOnset, claimed) : null;
-    const sc = scoreStrike(cur.cells, scanPeriodMs, peakMg, accelPresent);
-    if (sc) strikes.push({ tOnset: cur.tOnset, tStart: cur.tStart, tEnd: cur.tEnd, eventIds: cur.eventIds, ...sc });
+    prevEndT = cur.tEnd;
+    if (cur.cells.size) {
+      const peakMg = accelPresent ? pairedPeakMg(accel!.impacts, cur.tOnset, claimed) : null;
+      const sc = scoreStrike(cur.cells, scanPeriodMs, peakMg, accelPresent);
+      if (sc) strikes.push({ tOnset: cur.tOnset, tStart: cur.tStart, tEnd: cur.tEnd, eventIds: cur.eventIds, ...sc });
+    }
     cur = null;
   };
 
@@ -295,10 +311,12 @@ export function segmentStrikes(
     if (!f.hits.length) continue;
     const ft = f.t_device_ms;
     if (cur && ft - cur.tEnd > IDLE_GAP_MS) close();
-    if (!cur) cur = { tOnset: frameOnset(f), tStart: ft, tEnd: ft, eventIds: [], cells: new Map() };
+    if (!cur) cur = { tOnset: Infinity, tStart: ft, tEnd: ft, eventIds: [], cells: new Map() };
     cur.tEnd = ft;
     cur.eventIds.push(f.event_id);
     for (const h of f.hits) {
+      if (!isFreshHit(h, prevEndT)) continue;
+      if (h[3] < cur.tOnset) cur.tOnset = h[3];
       const key = h[0] * 100 + h[1];
       let cell = cur.cells.get(key);
       if (!cell) { cell = { r: h[0], c: h[1], samples: [] }; cur.cells.set(key, cell); }
@@ -307,6 +325,26 @@ export function segmentStrikes(
   }
   close();
   return strikes;
+}
+
+/** In-progress run of frames for countStrikeFrame. null before the first frame. */
+export type StrikeRun = { lastT: number; prevEndT: number; fresh: boolean } | null;
+
+/**
+ * Fold one live frame into the strike run and report whether it opened a new
+ * strike. Same boundaries as segmentStrikes — an IDLE_GAP_MS gap closes a run,
+ * and a run counts only once it carries a fresh hit — so a live tally of
+ * `opened` equals segmentStrikes(frames).length, with no flush timer needed.
+ */
+export function countStrikeFrame(run: StrikeRun, frameT: number, hits: readonly SiHit[]): { run: StrikeRun; opened: boolean } {
+  if (!hits.length) return { run, opened: false };
+  let cur = run;
+  if (cur && frameT - cur.lastT > IDLE_GAP_MS) cur = { lastT: frameT, prevEndT: cur.lastT, fresh: false };
+  if (!cur) cur = { lastT: frameT, prevEndT: -Infinity, fresh: false };
+  cur.lastT = frameT;
+  const opened = !cur.fresh && hits.some(h => isFreshHit(h, cur!.prevEndT));
+  if (opened) cur.fresh = true;
+  return { run: cur, opened };
 }
 
 /**
