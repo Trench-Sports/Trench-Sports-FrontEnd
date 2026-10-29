@@ -41,14 +41,6 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Trench Sports connects to your Trench adapter over Bluetooth to record impacts from the training bag in real time.</string>
 
-	<!-- Location. Required: src/pages/mobile/home.tsx calls                     -->
-	<!-- navigator.geolocation.getCurrentPosition() at session start to stamp    -->
-	<!-- the session with where it was recorded (Settings ▸ Location, on by      -->
-	<!-- default). A WKWebView geolocation call with no purpose string here      -->
-	<!-- terminates the app, so this key is load-bearing, not cosmetic.          -->
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Trench Sports tags each training session with the location it was recorded so coaches can tell field, weight-room and facility sessions apart. You can turn this off in Session Settings.</string>
-
 	<!-- ── Export compliance ───────────────────────────────────────────────── -->
 	<!-- The app uses only HTTPS/TLS, which is exempt encryption. Declaring it   -->
 	<!-- here stops App Store Connect asking the compliance question on every    -->
