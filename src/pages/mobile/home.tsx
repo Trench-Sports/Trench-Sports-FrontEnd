@@ -1681,9 +1681,8 @@ async function uploadSession(opts: {
   athleteId:    string | null;
   coreTeamId:   string | null;
   createdBy:    string | null;
-  // Anonymous device id + capture location (MVP /m/home only).
+  // Anonymous device id (MVP /m/home only).
   deviceUid?:   string | null;
-  location?:    { lat: number; lng: number; accuracy_m: number } | null;
   frames:       BleFrame[];
   startedAtMs:  number;
   endedAtMs:    number;
@@ -1717,7 +1716,7 @@ async function uploadSession(opts: {
 
   const {
     sessionId, programId, athleteId, coreTeamId,
-    createdBy, deviceUid = null, location = null,
+    createdBy, deviceUid = null,
     frames, startedAtMs, endedAtMs, mode = "power",
     deviceModel = "TSII", samplingHz = 25, scanPeriodMs = SCAN_PERIOD_MS_DEFAULT,
     rxBestMs = null, rxAvgMs = null, rxAttempts = 0,
@@ -1759,7 +1758,6 @@ async function uploadSession(opts: {
     raw:           _rawArr,
     ...(deviceId ? { device_id: deviceId } : {}),
     ...(deviceUid ? { device_uid: deviceUid } : {}),
-    ...(location  ? { location } : {}),
   }, { onConflict: "id", ignoreDuplicates: true });
   if (sessErr) {
     sessionUploadStageFailed({ session_id: sessionId, stage: "sessions", error_code: sessErr.message?.slice(0, 64) });
@@ -2533,27 +2531,6 @@ export default function Home() {
       // private mode / storage disabled — leave blank, save still works.
     }
   }, []);
-
-  // ── Geolocation ──────────────────────────────────────────────────────────────
-  // Captured at session start when the Location setting is on (default). The
-  // latest fix is held in a ref and attached to the saved session row. Denied
-  // or unavailable → stays null and the save proceeds without coordinates.
-  const geoRef = useRef<{ lat: number; lng: number; accuracy_m: number } | null>(null);
-  const captureLocation = useCallback(() => {
-    if (!sessionSettings.locationEnabled) { geoRef.current = null; return; }
-    if (typeof navigator === "undefined" || !navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(
-      pos => {
-        geoRef.current = {
-          lat: pos.coords.latitude,
-          lng: pos.coords.longitude,
-          accuracy_m: pos.coords.accuracy,
-        };
-      },
-      () => { /* permission denied / unavailable — leave null */ },
-      { enableHighAccuracy: false, timeout: 8_000, maximumAge: 300_000 },
-    );
-  }, [sessionSettings.locationEnabled]);
 
   // ── Athletes ─────────────────────────────────────────────────────────────────
   const [athletes,        setAthletes]        = useState<Athlete[]>([]);
@@ -4275,11 +4252,6 @@ export default function Home() {
     // during a tap — all subsequent playSignal calls will reuse this context.
     unlockAudio();
 
-    // Capture where this session is being recorded (if the user left the
-    // Location setting on). Fires inside the tap gesture so the OS permission
-    // prompt is tied to a user action. The async fix lands before save.
-    captureLocation();
-
     sessionIdRef.current = genSessionId();
     framesRef.current    = [];
     impactsRef.current    = [];
@@ -4457,7 +4429,7 @@ export default function Home() {
   // ── Save to Supabase ──────────────────────────────────────────────────────────
   const saveSession = async () => {
     // MVP: no athlete / user / program. Anonymous rows are attributed by
-    // device_uid + location instead, so only the Supabase client is required.
+    // device_uid instead, so only the Supabase client is required.
     if (!supabase) return;
     // Allow save if primary OR any secondary slot has frames
     const primaryHasFrames = framesRef.current.length > 0;
@@ -4485,7 +4457,6 @@ export default function Home() {
         coreTeamId:  null,
         createdBy:   null,
         deviceUid:   deviceUidRef.current || null,
-        location:    geoRef.current,
         frames:      framesRef.current,
         impacts:      impactsRef.current,
         impactRejects: impactRejectsRef.current,
@@ -4528,7 +4499,6 @@ export default function Home() {
         coreTeamId:  null,
         createdBy:   null,
         deviceUid:   deviceUidRef.current || null,
-        location:    geoRef.current,
         frames:      slot.frames,
         impacts:      slot.impacts,
         impactRejects: slot.impactRejects,

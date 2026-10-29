@@ -37,19 +37,12 @@ export type SessionSettings = {
   timerMs: SessionTimerMs;
   defaultMetric: DefaultMetric;
   autoSave: boolean;
-  /**
-   * When true, the mobile /m/home page captures the device's GPS coordinates at
-   * session start and stores them on the saved session row. On by default; the
-   * browser/OS still shows its own permission prompt the first time.
-   */
-  locationEnabled: boolean;
 };
 
 export const DEFAULT_SESSION_SETTINGS: SessionSettings = {
   timerMs: 30_000,        // preserves current production behaviour
   defaultMetric: "v",     // V was the prior hard-coded default for feedMetric
   autoSave: false,        // manual save button is the current production flow
-  locationEnabled: true,  // /m/home tracks where sessions are recorded
 };
 
 /**
@@ -79,10 +72,7 @@ export function normalizeSettings(raw: unknown): SessionSettings {
   const autoSave = typeof r.autoSave === "boolean"
     ? r.autoSave
     : DEFAULT_SESSION_SETTINGS.autoSave;
-  const locationEnabled = typeof r.locationEnabled === "boolean"
-    ? r.locationEnabled
-    : DEFAULT_SESSION_SETTINGS.locationEnabled;
-  return { timerMs: timer, defaultMetric: metric, autoSave, locationEnabled };
+  return { timerMs: timer, defaultMetric: metric, autoSave };
 }
 
 /** Read settings from localStorage (SSR-safe). Returns defaults on any error. */
