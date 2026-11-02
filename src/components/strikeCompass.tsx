@@ -26,6 +26,12 @@ interface StrikeCompassProps {
   activeAngle:  number | null;
   anglesDeg?:   any;
   isReplaying:  boolean;          // ← new: keeps arrow alive when paused
+  // TSA-V accelerometer peak for the active strike, and the session max it is
+  // scaled against. Drives arrow weight and the pill label — NOT direction:
+  // the accelerometer's azimuth is in the sensor frame and has no mount
+  // transform yet, so the arrow keeps the pad's angle_deg.
+  peakG?:       number | null;
+  maxG?:        number;
   modeAccent:   string;
   modeGlow:     string;
   isDark:       boolean;
@@ -85,6 +91,8 @@ type Phase = "idle" | "in" | "hold" | "out";
 interface AnimState {
   angleDeg:    number | null;
   si:          number | null;
+  peakG:       number | null;
+  gNorm:       number | null;   // peakG / session max; null when not measured
   startTs:     number;
   phase:       Phase;
 }
@@ -255,7 +263,8 @@ function renderFrame(
 
     if (alpha > 0) {
       const aRad   = (anim.angleDeg * Math.PI) / 180;
-      const siNorm = anim.si != null ? clamp01(anim.si / 1000) : 0.5;
+      // Arrow weight: measured g when the strike has it, else SI.
+      const siNorm = anim.gNorm ?? (anim.si != null ? clamp01(anim.si / 1000) : 0.5);
 
       // Impact point: centre of bag face
       const impactP: V3 = [0, 0, 0];
@@ -363,7 +372,10 @@ function renderFrame(
           ctx.globalAlpha = alpha * pillVis;
           ctx.shadowColor = glow;
           ctx.shadowBlur  = 8;
-          const pW = 42, pH = 20;
+          const label = anim.peakG != null
+            ? `${anim.angleDeg!.toFixed(0)}° · ${anim.peakG} g`
+            : `${anim.angleDeg!.toFixed(0)}°`;
+          const pW = anim.peakG != null ? 86 : 42, pH = 20;
           ctx.fillStyle   = `rgba(${acR},${acG},${acB},0.18)`;
           ctx.strokeStyle = `rgba(${acR},${acG},${acB},0.45)`;
           ctx.lineWidth   = 1;
@@ -373,7 +385,7 @@ function renderFrame(
           ctx.textAlign    = "center";
           ctx.textBaseline = "middle";
           ctx.shadowBlur   = 4;
-          ctx.fillText(`${anim.angleDeg!.toFixed(0)}°`, lx, ly);
+          ctx.fillText(label, lx, ly);
           ctx.restore();
         }
       }
@@ -426,10 +438,12 @@ export default function StrikeCompass({
   modeAccent,
   modeGlow,
   isDark,
+  peakG = null,
+  maxG = 0,
 }: StrikeCompassProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const camRef    = useRef<Cam>({ rotY: 0.25, rotX: 0.22, tY: 0.25, tX: 0.22 });
-  const animRef   = useRef<AnimState>({ angleDeg: null, si: null, startTs: 0, phase: "idle" });
+  const animRef   = useRef<AnimState>({ angleDeg: null, si: null, peakG: null, gNorm: null, startTs: 0, phase: "idle" });
   const dragRef   = useRef({ active: false, lastX: 0, lastY: 0 });
   const rafRef    = useRef(0);
 
@@ -473,12 +487,13 @@ export default function StrikeCompass({
     const angle = activeEvent?.angleDeg ?? activeAngle ?? null;
 
     if (angle == null) {
-      animRef.current = { angleDeg: null, si: null, startTs: 0, phase: "idle" };
+      animRef.current = { angleDeg: null, si: null, peakG: null, gNorm: null, startTs: 0, phase: "idle" };
       return;
     }
 
     // Always restart the arrow animation on a new event
-    animRef.current = { angleDeg: angle, si: activeEvent?.si ?? null, startTs: 0, phase: "in" };
+    const gNorm = peakG != null && maxG > 0 ? clamp01(peakG / maxG) : null;
+    animRef.current = { angleDeg: angle, si: activeEvent?.si ?? null, peakG, gNorm, startTs: 0, phase: "in" };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeEvent]);
 

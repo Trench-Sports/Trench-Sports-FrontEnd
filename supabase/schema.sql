@@ -68,6 +68,7 @@ CREATE TABLE public.athletes (
   date_of_birth date,
   sport text,
   position text,
+  ams_user_id integer,
   CONSTRAINT athletes_pkey PRIMARY KEY (id),
   CONSTRAINT athletes_program_id_fkey FOREIGN KEY (program_id) REFERENCES public.programs(id),
   CONSTRAINT athletes_core_team_id_fkey FOREIGN KEY (core_team_id) REFERENCES public.teams(id),
@@ -238,6 +239,9 @@ CREATE TABLE public.session_summaries (
   -- (supabase/accel_capture_diagnostics.sql). impact_count = 0 with this set
   -- means "detected none"; NULL counts mean not measured or insert fell short.
   accel_capture jsonb CHECK (accel_capture IS NULL OR jsonb_typeof(accel_capture) = 'object'::text),
+  -- Sync columns (supabase/api_prereqs.sql): row arrival, and last rewrite.
+  ingested_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
   CONSTRAINT session_summaries_pkey PRIMARY KEY (session_id),
   CONSTRAINT session_summaries_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.sessions(id),
   CONSTRAINT session_summaries_program_id_fkey FOREIGN KEY (program_id) REFERENCES public.programs(id),
