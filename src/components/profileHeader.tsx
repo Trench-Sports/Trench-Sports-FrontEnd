@@ -40,7 +40,7 @@ export default function ProfileHeader({ profile, onEdit, onShare, onViewProgram 
       .join("") || "U";
 
   return (
-    <header className="ts-profileHeader">
+    <header className="ts-profileHeader" data-tour="profile">
       {/* Left: avatar + identity */}
       <div className="ts-profileHeader__left">
         <div className="ts-profileHeader__avatar">
