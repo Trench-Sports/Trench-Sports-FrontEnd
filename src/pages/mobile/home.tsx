@@ -5,7 +5,8 @@
 //   • No login / auth required (route is unguarded; this is the app's entry).
 //   • No athlete selection or queue — sessions are recorded anonymously and
 //     attributed to a per-device id (localStorage) instead of an athlete.
-//   • Power mode only — the ModeRolodex and mode cycling are removed.
+//   • ModeRolodex renders standalone (fixed to the viewport) since home lives
+//     outside the swipe deck. No entitlements here, so no modes are locked.
 //   • Captures device GPS at session start (toggle in Settings, on by default).
 // The BLE adapter, live bag grid, impact capture, and save pipeline are reused
 // from session.tsx unchanged.
@@ -29,7 +30,6 @@ import {
 import { initTheme } from "../../lib/themeManager";
 import { useSessionSettings, warnMsFor } from "../../lib/sessionSettings";
 import SessionSettingsModal from "../../components/sessionSettings";
-import tsLogoMark from "../../images/TS Logo Enhancement Set 2-01.png";
 import tsPowerBolt from "../../images/TS Logomark Power Bolt-01.png";
 import { useSignalAudio } from "../../hooks/signalAudio";
 import type { ZoneTarget, ZoneRow, ZoneCol } from "../../hooks/signalAudio";
@@ -4749,11 +4749,10 @@ export default function Home() {
   // Wave 1 #2 — Horizontal swipe on the bag cycles modes (only when the bag is
   // connected and a session isn't running). Suppresses the synthesized click
   // that would otherwise fire startSession() at the end of a swipe.
-  // MVP is power-only: pass `false` so horizontal bag swipes never cycle modes.
   const bagSwipe = useBagModeSwipe(
     sessionMode,
     setSessionMode,
-    false,
+    bleStatus === "connected" && !sessionActive,
   );
 
   // Wave 2 #4 — Focus mode. Double-click/double-tap the bag to collapse both
@@ -5747,25 +5746,6 @@ export default function Home() {
               />
             )}
 
-            {/* Watermark logo, centered behind the hit grid */}
-            <img
-              src={tsLogoMark}
-              alt=""
-              aria-hidden="true"
-              style={{
-                position: "absolute",
-                top: "50%",
-                left: "50%",
-                transform: "translate(-50%, -50%)",
-                width: "85%",
-                maxWidth: 360,
-                opacity: 0.14,
-                pointerEvents: "none",
-                userSelect: "none",
-                zIndex: 0,
-              }}
-            />
-
             {/* Hit grid — torso-wide, full height, like the sensor pad */}
             <div style={bagTorsoStyle}>
               <div style={{
@@ -6128,8 +6108,17 @@ export default function Home() {
         />
       )}
 
-      {/* Mode Rolodex removed for the MVP — power is the only mode. The
-          post-session Save / Discard controls live in the right-column card. */}
+      <ModeRolodex
+        standalone
+        connected={bleStatus === "connected"}
+        sessionActive={sessionActive}
+        mode={sessionMode}
+        onModeSelect={setSessionMode}
+        saveComplete={saveState === "saved"}
+        canSave={canSave && !sessionSettings.autoSave}
+        saving={saveState === "saving"}
+        onSave={saveSession}
+      />
 
       <style>{`
         @keyframes tsSheetUp {
