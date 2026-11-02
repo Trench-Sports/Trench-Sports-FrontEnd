@@ -8,6 +8,7 @@ import ProgramModal from "../components/program";
 import ManageTeamModal from "../components/manageTeam";
 import ImportRosterModal from "../components/importRoster";
 import ExportSessionsModal from "../components/exportSessionsModal";
+import DashboardTour, { hasSeenDashboardTour } from "../components/dashboardTour";
 import { IconDownload, IconGauge, IconBullseye, IconStopwatch, IconTrendUp, IconBarChart, IconRocket } from "../components/icons";
 import { ModeIcon } from "../components/modeIcon";
 import { LockedPanel, LockBadge, LapsedBanner, TrialBanner, RetainedDataNotice, SampleTable, SAMPLE_INSIGHT_CARDS } from "../components/lockedFeature";
@@ -134,6 +135,13 @@ export default function Dashboard() {
 
   const [showImportRoster, setShowImportRoster] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showTour, setShowTour] = useState(false);
+
+  // First visit: open the tour once we know who the user is (the seen flag is
+  // per-user so a shared machine still tours each coach).
+  useEffect(() => {
+    if (currentUserId && !hasSeenDashboardTour(currentUserId)) setShowTour(true);
+  }, [currentUserId]);
   const athleteListRef = useRef<HTMLDivElement>(null);
   const [athleteListFade, setAthleteListFade] = useState<{ top: boolean; bottom: boolean }>({ top: false, bottom: true });
 
@@ -248,6 +256,13 @@ export default function Dashboard() {
         athletes={athletes}
       />
 
+      <DashboardTour
+        open={showTour}
+        onClose={() => setShowTour(false)}
+        setActiveTab={setActiveTab}
+        userId={currentUserId}
+      />
+
       {/* PROFILE HEADER — null while fetching, populates once Supabase responds */}
       <ProfileHeader
         profile={profile}
@@ -262,12 +277,25 @@ export default function Dashboard() {
 
           {/* TABS + ACTIONS — single row */}
           <div className="ts-tabsRow" role="tablist" aria-label="Dashboard sections">
-            <div className="ts-tabs">
+            <div className="ts-tabs" data-tour="tabs">
               {tabBtn("recent", "Recent Session")}
               {tabBtn("insights", "Insights and Analysis")}
               {tabBtn("athletes", "Individual Athletes")}
             </div>
-            <div className="ts-tabs ts-dashActions">
+            <div className="ts-tabs ts-dashActions" data-tour="actions">
+              <button
+                type="button"
+                className="ts-tabBtn"
+                data-tour="tour-button"
+                onClick={() => setShowTour(true)}
+                title="Take a quick tour of the dashboard"
+              >
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true" style={{ marginRight: 6, flexShrink: 0 }}>
+                  <circle cx="7" cy="7" r="6" stroke="currentColor" strokeWidth="1.6"/>
+                  <path d="M5.3 5.4a1.8 1.8 0 1 1 2.4 1.7c-.5.2-.7.6-.7 1.1M7 10.3v.1" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/>
+                </svg>
+                Tour
+              </button>
               <button
                 type="button"
                 className="ts-tabBtn"
@@ -336,7 +364,7 @@ export default function Dashboard() {
 
       {/* TAB CONTENT — keyed wrapper so a tab switch replays the
            fade/slide-in animation defined in .ts-tabContent. */}
-      <div key={activeTab} className="ts-tabContent">
+      <div key={activeTab} className="ts-tabContent" data-tour="content">
       {activeTab === "recent" ? (
         <>
           {/* MAIN GRID */}
