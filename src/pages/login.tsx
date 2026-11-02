@@ -51,7 +51,7 @@ export default function LoginPage() {
   const [form, setForm] = useState<LoginForm>({ email: "", password: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [noAccount, setNoAccount] = useState(false);
+  const [badCreds, setBadCreds] = useState(false);
   const [showPw, setShowPw] = useState(false);
 
   function update<K extends keyof LoginForm>(k: K, v: LoginForm[K]) {
@@ -61,7 +61,7 @@ export default function LoginPage() {
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setErr(null);
-    setNoAccount(false);
+    setBadCreds(false);
 
     const email = form.email.trim();
     const password = form.password;
@@ -84,17 +84,16 @@ export default function LoginPage() {
 
       if (error) {
         const msg = error.message || "";
+        // Supabase returns the same invalid_credentials error for a wrong
+        // password and an unknown email, so we can't tell them apart. Don't key
+        // off status 400 alone — "Email not confirmed" is a 400 too.
         const isInvalidCreds =
-          msg.toLowerCase().includes("invalid login credentials") ||
-          msg.toLowerCase().includes("invalid credentials") ||
-          msg.toLowerCase().includes("user not found") ||
-          error.status === 400;
+          error.code === "invalid_credentials" ||
+          msg.toLowerCase().includes("invalid login credentials");
 
         authLoginFailed(isInvalidCreds ? "invalid_credentials" : (error.status ? `http_${error.status}` : "unknown"));
         if (isInvalidCreds) {
-          setNoAccount(true);
-          setErr("No account found with that email.");
-          setTimeout(() => nav(`/signup?email=${encodeURIComponent(form.email.trim())}`), 2500);
+          setBadCreds(true);
         } else {
           setErr(msg || "Unable to sign in.");
         }
@@ -119,6 +118,7 @@ export default function LoginPage() {
 
   async function onForgotPassword() {
     setErr(null);
+    setBadCreds(false);
     const email = form.email.trim();
     if (!email) {
       setErr("Enter your email first, then click Forgot password.");
@@ -159,16 +159,6 @@ export default function LoginPage() {
             </div>
           </div>
 
-          {noAccount ? (
-            <div className="ts-error">
-              No account found with that email.{" "}
-              <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
-                Create one now →
-              </Link>
-              <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4 }}>Redirecting you to sign up…</div>
-            </div>
-          ) : null}
-
           <form onSubmit={onSubmit} className="ts-signupForm">
             <label className="ts-field">
               <span>Email</span>
@@ -208,7 +198,16 @@ export default function LoginPage() {
               </div>
             </label>
 
-            {!noAccount && err ? <div className="ts-error">{err}</div> : null}
+            {badCreds ? (
+              <div className="ts-error" role="alert">
+                That email and password don't match. Don't have an account yet?{" "}
+                <Link className="ts-linkish" to={`/signup?email=${encodeURIComponent(form.email.trim())}`}>
+                  Create one
+                </Link>
+              </div>
+            ) : err ? (
+              <div className="ts-error">{err}</div>
+            ) : null}
 
             <button className="ts-btnPrimaryWide" type="submit" disabled={busy}>
               {busy ? "Logging in…" : "Login"}

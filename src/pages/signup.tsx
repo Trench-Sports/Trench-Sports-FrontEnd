@@ -62,8 +62,8 @@ export default function Signup() {
     setInvite(readInvite());
   }, []);
 
-  // login.tsx bounces "no account for that email" here as /signup?email=… —
-  // this page used to drop the param and make them retype it.
+  // login.tsx's "Create one" link after a rejected sign-in lands here as
+  // /signup?email=… — this page used to drop the param and make them retype it.
   const [email, setEmail] = useState(() => new URLSearchParams(loc.search).get("email") ?? "");
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
