@@ -109,6 +109,12 @@ export interface ModeRolodexProps {
    * see the "NOT YET ENFORCED" note at the bottom of that file.
    */
   lockedModes?: SessionMode[];
+  /**
+   * Render outside the swipe deck (e.g. /m/home). Skips the /m/session route
+   * check and the deck portal host, and pins the panel to the viewport via a
+   * document.body portal instead.
+   */
+  standalone?: boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -123,6 +129,7 @@ export function ModeRolodex({
   saving = false,
   onSave,
   lockedModes = [],
+  standalone = false,
 }: ModeRolodexProps) {
   const isLocked = useCallback(
     (m: SessionMode) => lockedModes.includes(m),
@@ -135,13 +142,13 @@ export function ModeRolodex({
   // the panel's coordinate space — same width, slides off with the panel
   // during a horizontal swipe, hidden when the dashboard panel is active.
   const swipeCtx = useContext(SwipeDeckContext);
-  const portalHost = swipeCtx.sessionPanelEl;
+  const portalHost = standalone ? document.body : swipeCtx.sessionPanelEl;
 
   // The route check is still useful as a belt-and-suspenders: in development,
   // hot-reload can leave a stale host pointer briefly. If the URL isn't on the
   // session page we bail entirely.
   const loc = useLocation();
-  const onSessionPage = loc.pathname.startsWith("/m/session");
+  const onSessionPage = standalone || loc.pathname.startsWith("/m/session");
 
   // Continuous scroll position — integer = mode snapped to centre, fractional = mid-scroll
   const scrollPos  = useRef(0);
@@ -377,7 +384,7 @@ export function ModeRolodex({
         // Anchored to the session panel — width tracks the panel exactly,
         // and translation by the deck's transform during a swipe carries the
         // rolodex with the page (no more "fixed-to-viewport" mismatch).
-        position: "absolute",
+        position: standalone ? "fixed" : "absolute",
         left: 0,
         right: 0,
         bottom: 0,
