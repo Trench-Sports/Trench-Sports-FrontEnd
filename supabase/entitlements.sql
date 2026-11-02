@@ -773,7 +773,13 @@ returns table (
   reaction_time_ms numeric,
   accuracy        jsonb,
   temporal        jsonb,
-  cells           jsonb
+  cells           jsonb,
+  -- Appended last. TSA-V accelerometer peak for the impact paired to this
+  -- strike (process_session_impacts.sql). NULL means NOT MEASURED — no
+  -- accelerometer, an older session, or no impact paired — never zero g.
+  -- The sensor-frame azimuth/elevation are deliberately not served: without
+  -- a mount transform they are not a bag-relative direction (accel_events.sql §3).
+  accel_peak_mg   integer
 )
 language plpgsql
 stable
@@ -849,7 +855,8 @@ begin
                 order by c.r, c.c)
          from public.event_cells c
         where c.event_id = e.event_id),
-      '[]'::jsonb)
+      '[]'::jsonb),
+    case when v_comparative then e.accel_peak_mg end
   from public.events e
   where e.session_id = p_session_id
   order by e.t_start_ms;
@@ -857,6 +864,53 @@ end;
 $$;
 
 grant execute on function public.tiered_session_events(text) to authenticated;
+
+
+-- ── 6b-ii. Session accelerometer rollup (Tier II+) ───────────────────
+-- impact_count / peak_g_mg / mean_impact_g_mg for one session, for the
+-- dashboard's Session Stats. A separate function rather than three more
+-- columns on 6a: export_session_summaries (6c) mirrors 6a's fixed column
+-- list, so growing 6a would break the CSV export.
+--
+-- Same session authorisation as 6b. Tier I gets no row at all, the same
+-- way 6b nulls accel_peak_mg below Tier II.
+drop function if exists public.tiered_session_accel(text);
+create or replace function public.tiered_session_accel(p_session_id text)
+returns table (
+  accel_present    boolean,
+  impact_count     integer,
+  peak_g_mg        integer,
+  mean_impact_g_mg integer
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+  v_tier        text := public.my_tier();
+  v_program     uuid := public.get_my_program_id();
+  v_role        text := public.get_my_role();
+  v_team        uuid := public.get_my_core_team_id();
+  v_cutoff      timestamptz := public.tier_history_cutoff(v_tier);
+  v_modes       text[] := public.tier_modes(v_tier);
+begin
+  if v_tier = 'none' or v_program is null or public.tier_rank(v_tier) < 2 then
+    return;
+  end if;
+
+  return query
+  select s.accel_present, s.impact_count, s.peak_g_mg, s.mean_impact_g_mg
+  from public.session_summaries s
+  where s.session_id = p_session_id
+    and s.program_id = v_program
+    and (v_role = 'admin' or (v_role = 'coach' and s.core_team_id = v_team))
+    and s.mode::text = any(v_modes)
+    and (v_cutoff is null or s.date_of_record >= v_cutoff);
+end;
+$$;
+
+grant execute on function public.tiered_session_accel(text) to authenticated;
 
 
 -- ── 6c. Session-summary CSV export (Tier II+) ────────────────────────

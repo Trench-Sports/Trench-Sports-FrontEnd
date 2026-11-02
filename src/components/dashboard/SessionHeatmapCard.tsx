@@ -3,6 +3,7 @@
 // Selected-session card on the coach dashboards: contact heatmap with live/history
 // views and event replay, session and per-event stats, and the Strike Compass.
 // Shared by the desktop and mobile dashboard pages.
+import { useEffect, useState } from "react";
 import { Skel } from "./Skel";
 import StrikeCompass from "../strikeCompass";
 import { IconCompass } from "../icons";
@@ -11,6 +12,8 @@ import { BagShellArt, bagShellStyle, bagTorsoStyle } from "../bagShell";
 import type { CoachDashboard } from "../../hooks/useCoachDashboard";
 
 export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
+  // History heatmap colouring: hit count, or average accelerometer peak g.
+  const [colorBy, setColorBy] = useState<"hits" | "force">("hits");
   const {
     activeEvent,
     activeEventIdx,
@@ -19,8 +22,10 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
     heatmapLoading,
     heatmapRipples,
     heatmapViewMode,
+    hasAccelEvents,
     isDark,
     isReplaying,
+    maxReplayG,
     maxReplayHits,
     modeAccent,
     modeGlow,
@@ -28,6 +33,7 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
     pressureToColor,
     pressureToGlow,
     replayEvents,
+    replayGHeatmap,
     replayHeatmap,
     replaySpeed,
     replayTimeMs,
@@ -42,6 +48,12 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
     startReplay,
     summaryStats,
   } = dash;
+
+  // A session without accelerometer data has nothing to colour by force.
+  useEffect(() => {
+    if (!hasAccelEvents) setColorBy("hits");
+  }, [hasAccelEvents]);
+  const byForce = colorBy === "force" && hasAccelEvents && heatmapViewMode === "history";
 
   return (
     <div className="ts-card ts-heatmapCard">
@@ -60,7 +72,39 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
             const showToggle = mode !== "accuracy";
             if (!showToggle) return null;
             const toggleInk = isDark ? "255,255,255" : "20,20,40";
+            const segBtn = (active: boolean) => ({
+              padding: "4px 10px",
+              borderRadius: 5,
+              border: active ? `1px solid ${modeAccent}` : "1px solid transparent",
+              background: active ? `${modeAccent}15` : "transparent",
+              color: active ? modeAccent : `rgba(${toggleInk},0.50)`,
+              font: "inherit",
+              fontSize: 11,
+              fontWeight: 700,
+              cursor: "pointer",
+              transition: "background 140ms ease, color 140ms ease, border-color 140ms ease",
+            });
+            const segWrap = {
+              display: "inline-flex",
+              alignItems: "center",
+              background: `rgba(${toggleInk},0.04)`,
+              border: `1px solid rgba(${toggleInk},0.10)`,
+              borderRadius: 7,
+              padding: "2px 4px",
+              gap: 1,
+            };
             return (
+              <>
+              {/* Colour the history heatmap by hit count or by average peak g.
+                  Only offered when the session has accelerometer data. */}
+              {heatmapViewMode === "history" && hasAccelEvents && (
+                <div style={segWrap} role="group" aria-label="Color heatmap by">
+                  <button type="button" style={segBtn(colorBy === "hits")} onClick={() => setColorBy("hits")}
+                    title="Color cells by how often they were hit">Hits</button>
+                  <button type="button" style={segBtn(colorBy === "force")} onClick={() => setColorBy("force")}
+                    title="Color cells by the average accelerometer peak g of strikes that landed there">Force</button>
+                </div>
+              )}
               <div style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -93,6 +137,7 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                   </button>
                 ))}
               </div>
+              </>
             );
           })()}
           <div className="ts-cardMeta">
@@ -245,6 +290,7 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                 <span>Event {activeEventIdx + 1} of {replayEvents.length}</span>
                 {activeEvent.si   != null && <span>SI {activeEvent.si}</span>}
                 {activeEvent.cellCount > 0  && <span>{activeEvent.cellCount} cells</span>}
+                {activeEvent.peakG != null && <span>{activeEvent.peakG} g</span>}
               </div>
             )}
 
@@ -359,9 +405,14 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                       const key = `${r}-${c}`;
                       let intensity = 0;
                       let kpa = 0;
+                      let avgG: number | null = null;
 
                       // In history view, always show cumulative replay heatmap
-                      if (heatmapViewMode === "history" && replayEvents.length > 0) {
+                      if (byForce) {
+                        avgG = replayGHeatmap.get(key) ?? null;
+                        intensity = avgG != null ? avgG / maxReplayG : 0;
+                        kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;
+                      } else if (heatmapViewMode === "history" && replayEvents.length > 0) {
                         const hits = replayHeatmap.get(key) ?? 0;
                         intensity = hits / maxReplayHits;
                         kpa = intensity > 0.6 ? 90 : intensity > 0.2 ? 40 : 0;
@@ -394,7 +445,8 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                         <div
                           key={key}
                           className="ts-sim-cell ts-dash-cell"
-                          title={`R${String(r).padStart(2,"0")} C${String(c).padStart(2,"0")}${isAlive ? ` · ${Math.round(intensity * 100)}%` : ""}`}
+                          title={`R${String(r).padStart(2,"0")} C${String(c).padStart(2,"0")}${
+                            avgG != null ? ` · ${avgG.toFixed(1)} g avg` : isAlive ? ` · ${Math.round(intensity * 100)}%` : ""}`}
                           style={{
                             borderRadius: 4,
                             background: isAlive
@@ -430,13 +482,13 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                     transform: "translate(-50%,-50%)", pointerEvents: "none", zIndex: 10,
                   }}>
                     <div style={{
-                      width: 14, height: 14, borderRadius: "50%",
+                      width: ripple.size, height: ripple.size, borderRadius: "50%",
                       background: ripple.color, boxShadow: `0 0 16px 6px ${ripple.color}`,
                       animation: "tsCorePulse 0.9s ease-out forwards",
                     }} />
                     <div style={{
                       position: "absolute", left: "50%", top: "50%",
-                      width: 14, height: 14, borderRadius: "50%",
+                      width: ripple.size, height: ripple.size, borderRadius: "50%",
                       border: `2px solid ${ripple.color}`,
                       animation: "tsRipple 0.9s ease-out forwards",
                     }} />
@@ -624,6 +676,12 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                 ];
               }
 
+              // Accelerometer peak for this strike, in every mode, when the
+              // session has any. A dash means no impact paired to this strike.
+              if (hasAccelEvents) {
+                eventStatRows.push({ label: "Peak Force", value: ev?.peakG != null ? `${ev.peakG} g` : "—" });
+              }
+
               return (
                 <div style={{ marginTop: 14 }}>
                   {/* Header — same style as "Session Stats" label above */}
@@ -688,6 +746,8 @@ export function SessionHeatmapCard({ dash }: { dash: CoachDashboard }) {
                   <StrikeCompass
                     activeEvent={activeEvent ?? null}
                     activeAngle={activeEvent?.angleDeg ?? null}
+                    peakG={activeEvent?.peakG ?? null}
+                    maxG={maxReplayG}
                     anglesDeg={sessionSummary.angles_deg}
                     isReplaying={isReplaying}
                     modeAccent={modeAccent}

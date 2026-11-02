@@ -46,6 +46,17 @@ export type ReplayEvent = {
   // ── Volume mode ────────────────────────────────────────────────────────────
   volWindowIdx: number | null;   // temporal.vol_window_idx
   volHitSeq:    number | null;   // temporal.vol_hit_seq
+  // ── TSA-V accelerometer (Tier II+) ─────────────────────────────────────────
+  peakG:        number | null;   // accel_peak_mg / 1000; null = not measured, never 0 g
+};
+
+// Session-level accelerometer rollup from tiered_session_accel(). Null when
+// the session has no row there (Tier I, or the function is not deployed).
+export type SessionAccel = {
+  present:     boolean | null;   // adapter reported an accelerometer in hello
+  impactCount: number | null;
+  peakG:       number | null;
+  meanG:       number | null;
 };
 
 export type SessionSummaryData = {
@@ -61,6 +72,7 @@ export type SessionSummaryData = {
   cadence_hz_avg: number | null;
   iei_ms: any;
   quality: any;
+  accel: SessionAccel | null;
 };
 
 export type Athlete = {
@@ -710,10 +722,15 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
         // 1. Grab the summary row, tier-masked. Fields above the program's
         //    tier come back null rather than absent, so the metric rows below
         //    render their "—" placeholder instead of breaking.
-        const { data: summaryRows } = await supabase!.rpc("tiered_session_summaries", {
-          p_session_id: selectedSessionId!,
-        });
+        // The accel rollup rides alongside. An error (Tier I gets no row; an
+        // older database has no function) just means no accel stats.
+        const [{ data: summaryRows }, { data: accelRows }] = await Promise.all([
+          supabase!.rpc("tiered_session_summaries", { p_session_id: selectedSessionId! }),
+          supabase!.rpc("tiered_session_accel", { p_session_id: selectedSessionId! }),
+        ]);
         const summary = (summaryRows ?? [])[0] as any;
+        const accelRow = (accelRows ?? [])[0] as any;
+        const mgToG = (mg: any) => (mg != null ? Math.round(Number(mg) / 100) / 10 : null);
 
         if (summary) {
           setSessionSummary({
@@ -729,6 +746,12 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
             cadence_hz_avg: summary.cadence_hz_avg ?? null,
             iei_ms: summary.iei_ms ?? null,
             quality: summary.quality ?? null,
+            accel: accelRow ? {
+              present:     accelRow.accel_present ?? null,
+              impactCount: accelRow.impact_count ?? null,
+              peakG:       mgToG(accelRow.peak_g_mg),
+              meanG:       mgToG(accelRow.mean_impact_g_mg),
+            } : null,
           });
 
           if (summary.heatmap) {
@@ -786,6 +809,7 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
             // Volume mode — stored in temporal jsonb column alongside cell_count
             volWindowIdx: ev.temporal?.vol_window_idx ?? null,
             volHitSeq:    ev.temporal?.vol_hit_seq    ?? null,
+            peakG:        mgToG(ev.accel_peak_mg),
           }));
           setReplayEvents(replayEvs);
         }
@@ -799,7 +823,8 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
 
   // ── Replay engine — true-time, setTimeout-based ─────────────────────────────
 
-  const [heatmapRipples, setHeatmapRipples] = useState<Array<{ id: number; r: number; c: number; color: string }>>([]);
+  // size: ripple diameter in px — scaled by the strike's peak g when measured.
+  const [heatmapRipples, setHeatmapRipples] = useState<Array<{ id: number; r: number; c: number; color: string; size: number }>>([]);
   const rippleIdRef = useRef(0);
 
   // Snapshot of fired events used to build the cumulative heatmap
@@ -822,6 +847,7 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
     const totalMs = sessionSummary?.session_duration_ms ?? replayEvents[replayEvents.length - 1]?.tMs ?? 1;
     const mode    = (sessionSummary?.mode ?? "power").toLowerCase();
     const accent  = mode === "accuracy" ? "#00dcff" : mode === "reaction" ? "#ffcc00" : "#b400ff";
+    const maxG    = maxReplayG;
 
     replayEvents.slice(startIdx).forEach((ev, offset) => {
       const idx     = startIdx + offset;
@@ -835,14 +861,16 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
         // Add to fired events for cumulative heatmap
         setFiredEvents(prev => [...prev, ev]);
 
-        // Spawn ripples for each cell in this event
+        // Spawn ripples for each cell in this event. Harder strikes (by the
+        // accelerometer) ripple larger; unmeasured strikes keep the base size.
+        const size = ev.peakG != null && maxG > 0 ? Math.round(10 + 14 * (ev.peakG / maxG)) : 14;
         ev.cells.forEach(cell => {
           const intensity = Math.min(1, cell.mv / 3300);
           const color = intensity > 0.5 ? accent
                       : intensity > 0.2 ? "rgba(255,255,255,0.75)"
                       : "rgba(255,255,255,0.5)";
           const id = ++rippleIdRef.current;
-          setHeatmapRipples(prev => [...prev, { id, r: cell.r, c: cell.c, color }]);
+          setHeatmapRipples(prev => [...prev, { id, r: cell.r, c: cell.c, color, size }]);
           setTimeout(() => setHeatmapRipples(prev => prev.filter(x => x.id !== id)), 900);
         });
 
@@ -919,6 +947,29 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
     [replayHeatmap]
   );
 
+  // Accelerometer: average peak g of the fired strikes that touched each
+  // cell. Only strikes with a measured g count — an unpaired strike is "not
+  // measured", and averaging it in as 0 g would drag the cell down.
+  const replayGHeatmap = useMemo<Map<string, number>>(() => {
+    const sums = new Map<string, { g: number; n: number }>();
+    for (const ev of firedEvents) {
+      if (ev.peakG == null) continue;
+      for (const cell of ev.cells) {
+        const key = `${cell.r}-${cell.c}`;
+        const cur = sums.get(key) ?? { g: 0, n: 0 };
+        sums.set(key, { g: cur.g + ev.peakG, n: cur.n + 1 });
+      }
+    }
+    return new Map(Array.from(sums, ([k, v]) => [k, v.g / v.n]));
+  }, [firedEvents]);
+
+  // Session-wide max, so the colour scale doesn't shift while replay runs.
+  const maxReplayG = useMemo(
+    () => Math.max(0, ...replayEvents.map(ev => ev.peakG ?? 0)),
+    [replayEvents]
+  );
+  const hasAccelEvents = maxReplayG > 0;
+
   // Derived: most recent event's cells for "just hit" highlight
   const activeEvent = activeEventIdx >= 0 ? replayEvents[activeEventIdx] : null;
 
@@ -976,7 +1027,7 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
     return `${Number(mean).toFixed(0)}°`;
   }
 
-  const summaryStats = useMemo<SummaryStatItem[]>(() => {
+  const modeSummaryStats = useMemo<SummaryStatItem[]>(() => {
     const s = sessionSummary;
     if (!s) return [];
     const mode = (s.mode ?? "power").toLowerCase();
@@ -1103,6 +1154,20 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
       iei,
     ];
   }, [sessionSummary]);
+
+  // Accelerometer rows follow the mode's own rows in every mode — g-force is
+  // meaningful whatever the drill. Shown only when the session was captured
+  // with an accelerometer, so Model IV sessions don't fill up with dashes.
+  const summaryStats = useMemo<SummaryStatItem[]>(() => {
+    const a = sessionSummary?.accel;
+    if (!a || (a.present !== true && a.impactCount == null)) return modeSummaryStats;
+    return [
+      ...modeSummaryStats,
+      { label: "Impacts",    value: a.impactCount != null ? String(a.impactCount) : "—" },
+      { label: "Peak Force", value: fmtNum(a.peakG, 1, " g") },
+      { label: "Avg Force",  value: fmtNum(a.meanG, 1, " g") },
+    ];
+  }, [modeSummaryStats, sessionSummary]);
 
   function formatSessionTime(isoString: string) {
     const d = new Date(isoString);
@@ -2494,6 +2559,9 @@ export function useCoachDashboard(options: CoachDashboardOptions) {
     seekTo,
     replayHeatmap,
     maxReplayHits,
+    replayGHeatmap,
+    maxReplayG,
+    hasAccelEvents,
     activeEvent,
     modeAccent,
     modeGlow,
