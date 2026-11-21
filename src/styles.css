@@ -3852,9 +3852,8 @@ html.is-native .ts-webOnly {
 
 /* ── Testimonials ────────────────────────────────────────────────────────────── */
 
-/* Marquee: a row of quotes revolving endlessly right-to-left. The track holds
-   two copies of the set and scrolls exactly one set-width, so when it snaps back
-   the copy is already in place and the loop looks continuous. */
+/* Marquee: a row of quotes revolving endlessly right-to-left. Motion, looping
+   and pause-on-hover/touch live in TestimonialMarquee (landing.tsx). */
 .ts-quoteMarquee {
     position: relative;
     overflow: hidden;
@@ -3870,31 +3869,10 @@ html.is-native .ts-webOnly {
     display: flex;
     gap: 16px;
     width: max-content;
-    animation: ts-marquee 60s linear infinite;
-    /* Pin the track to its own compositor layer for the whole run. A layer this
-       wide, transformed continuously, is exactly what mobile Safari evicts under
-       memory pressure — and an evicted layer paints nothing, which is the row
-       going blank part-way through instead of coming back around. */
+    /* Moved by TestimonialMarquee (rAF) in landing.tsx, which recycles the lead
+       card to the back as it leaves, so the track stays only ~N+2 cards wide. */
     will-change: transform;
     backface-visibility: hidden;
-}
-
-/* Pause the revolve while the pointer is over the row. Gated to real pointers:
-   on touch devices :hover latches after a tap and stays latched until something
-   else is tapped, which would freeze the marquee and never let it come back
-   around for mobile users. */
-@media (hover: hover) and (pointer: fine) {
-    .ts-quoteMarquee:hover .ts-quoteTrack {
-        animation-play-state: paused;
-    }
-}
-
-@keyframes ts-marquee {
-    /* Offset by half the gap (8px) so the seam between the two sets is exact.
-       translate3d rather than translateX so the track is GPU-composited from the
-       first frame, instead of being promoted part-way in. */
-    from { transform: translate3d(0, 0, 0); }
-    to   { transform: translate3d(calc(-50% - 8px), 0, 0); }
 }
 
 /* With the revolve switched off, a frozen track would strand every quote past
@@ -3911,7 +3889,7 @@ html.is-native .ts-webOnly {
 
     .ts-quoteMarquee::-webkit-scrollbar { display: none; }
 
-    .ts-quoteTrack { animation: none; }
+    .ts-quoteTrack { transform: none !important; }
 
     .ts-quoteTrack > [aria-hidden="true"] { display: none; }
 
