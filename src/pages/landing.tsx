@@ -1,5 +1,6 @@
 // src/pages/landing.tsx
 import React, { useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import FooterLogo from "../components/footerLogo";
 import { Link } from "react-router-dom";
 import HitSimulator from "../components/hitSimulator";
@@ -221,20 +222,87 @@ function ImpactCounter({ value, prefix = "", suffix = "", label, started }: {
 }
 
 // ── Testimonial Marquee ───────────────────────────────────────────────────────
-// A row of quotes revolving endlessly right-to-left. The set is rendered twice so
-// the loop is seamless (CSS scrolls one full set, then the copy takes over with no
-// visible jump). Hovering anywhere over the row pauses the scroll.
+// A row of quotes revolving endlessly right-to-left, driven by rAF rather than a
+// CSS animation. Each time the lead card slides fully out on the left it's
+// recycled to the back of the row, so the list genuinely regenerates instead of
+// relying on one long duplicated track (which mobile Safari would stop painting
+// part-way through). Speed is in px/s, slower on phones so a quote is readable
+// while it's on screen. Pauses on mouse hover, while a finger is down, and while
+// the row is off-screen.
+const QUOTE_SPEED_DESKTOP = 34; // px per second
+const QUOTE_SPEED_MOBILE = 16;
+const QUOTE_EXTRA = 2; // cards repeated at the tail so the right edge is never empty
+
 function TestimonialMarquee({ items }: { items: Testimonial[] }) {
-  const row = [...items, ...items]; // duplicate for a seamless loop 
+  const n = items.length;
+  const [start, setStart] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const offset = useRef(0);
+  const paused = useRef(false);
+  const visible = useRef(true);
+
+  // Rotated view of the list starting at `start`, plus a short repeated tail.
+  // Keys follow the quote (not the slot) so React moves the recycled card's DOM
+  // node to the back instead of re-rendering every card.
+  const row = Array.from({ length: n + Math.min(QUOTE_EXTRA, n) }, (_, k) => {
+    const idx = (start + k) % n;
+    return { t: items[idx], key: k < n ? `q${idx}` : `d${idx}`, dup: k >= n };
+  });
+
+  useEffect(() => {
+    const track = trackRef.current;
+    const wrap = wrapRef.current;
+    if (!track || !wrap || n < 2) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const io = new IntersectionObserver(([e]) => { visible.current = e.isIntersecting; });
+    io.observe(wrap);
+
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      // Clamp dt so a backgrounded tab doesn't lurch forward when it returns.
+      const dt = Math.min(now - last, 64) / 1000;
+      last = now;
+      if (!paused.current && visible.current) {
+        const speed = wrap.clientWidth < 700 ? QUOTE_SPEED_MOBILE : QUOTE_SPEED_DESKTOP;
+        offset.current += speed * dt;
+        const first = track.firstElementChild as HTMLElement | null;
+        const gap = parseFloat(getComputedStyle(track).columnGap) || 0;
+        const step = first ? first.offsetWidth + gap : 0;
+        if (step > 0 && offset.current >= step) {
+          offset.current -= step;
+          // Commit the rotation synchronously so the card swap and the offset
+          // correction paint in the same frame, with no visible jump.
+          flushSync(() => setStart((s) => (s + 1) % n));
+        }
+        track.style.transform = `translate3d(${-offset.current}px,0,0)`;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); io.disconnect(); };
+  }, [n]);
+
+  const finePointer = () => window.matchMedia("(hover: hover) and (pointer: fine)").matches;
 
   return (
-    <div className="ts-quoteMarquee">
-      <div className="ts-quoteTrack">
-        {row.map((t, i) => (
+    <div
+      ref={wrapRef}
+      className="ts-quoteMarquee"
+      onMouseEnter={() => { if (finePointer()) paused.current = true; }}
+      onMouseLeave={() => { paused.current = false; }}
+      onTouchStart={() => { paused.current = true; }}
+      onTouchEnd={() => { paused.current = false; }}
+      onTouchCancel={() => { paused.current = false; }}
+    >
+      <div ref={trackRef} className="ts-quoteTrack">
+        {row.map(({ t, key, dup }) => (
           <div
-            key={i}
+            key={key}
             className="ts-testimonialCard ts-quoteCardRow"
-            aria-hidden={i >= items.length ? true : undefined}
+            aria-hidden={dup ? true : undefined}
           >
             <div className="ts-quoteMarks">"</div>
             <p className="ts-quoteBody">{t.quote}</p>
